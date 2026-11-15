@@ -15,6 +15,7 @@
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import "WQUI.h"
+#import "WQTheme.h"
 #import "WQSharing.h"
 #import "WQDir.h"
 #import "WQApps.h"
@@ -160,16 +161,16 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 static UIColor *wq_syntax_color(WQSyntaxKind kind)
 {
     switch (kind) {
-        case WQSyntaxComment: return UIColor.systemGrayColor;
-        case WQSyntaxString: return UIColor.systemRedColor;
-        case WQSyntaxKey: return UIColor.systemTealColor;
-        case WQSyntaxKeyword: return UIColor.systemPinkColor;
-        case WQSyntaxNumber: return UIColor.systemPurpleColor;
-        case WQSyntaxTag: return UIColor.systemBlueColor;
-        case WQSyntaxAttribute: return UIColor.systemOrangeColor;
-        case WQSyntaxPreprocessor: return UIColor.systemBrownColor;
+        case WQSyntaxComment: return [wq_theme_secondary_text() colorWithAlphaComponent:0.72];
+        case WQSyntaxString: return [UIColor colorWithRed:1.0 green:0.78 blue:0.76 alpha:1.0];
+        case WQSyntaxKey: return [UIColor colorWithRed:0.64 green:0.93 blue:0.90 alpha:1.0];
+        case WQSyntaxKeyword: return [UIColor colorWithRed:1.0 green:0.65 blue:0.82 alpha:1.0];
+        case WQSyntaxNumber: return [UIColor colorWithRed:0.84 green:0.75 blue:1.0 alpha:1.0];
+        case WQSyntaxTag: return [UIColor colorWithRed:0.68 green:0.85 blue:1.0 alpha:1.0];
+        case WQSyntaxAttribute: return [UIColor colorWithRed:1.0 green:0.84 blue:0.56 alpha:1.0];
+        case WQSyntaxPreprocessor: return wq_theme_secondary_text();
     }
-    return UIColor.labelColor;
+    return wq_theme_primary_text();
 }
 
 // Colors the text in the background; edits recolor after a short pause.
@@ -230,6 +231,7 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     _textView = [UITextView new];
+    _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
     _textView.translatesAutoresizingMaskIntoConstraints = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     // File contents stay left-to-right in right-to-left languages, like code editors.
@@ -1474,7 +1476,7 @@ static NSString *wq_info_date(struct timespec ts)
         _pathLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
         _pathLabel.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
         _pathLabel.textAlignment = NSTextAlignmentLeft;   // paths read left to right in every language
-        _pathLabel.textColor = UIColor.secondaryLabelColor;
+        _pathLabel.textColor = wq_theme_secondary_text();
         _pathLabel.userInteractionEnabled = YES;
         [_pathLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyPath)]];
     }
@@ -1779,7 +1781,7 @@ static NSString *wq_info_date(struct timespec ts)
                                                                   target:self action:@selector(cancelMove)];
         UILabel *label = [UILabel new];
         label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-        label.textColor = UIColor.secondaryLabelColor;
+        label.textColor = wq_theme_secondary_text();
         label.text = gWQCopyPending ? WQLocalized(@"Copy to Folder…") : gWQMovePaths.count == 1
             ? WQLocalizedFormat(@"Moving “%@”", gWQMovePaths.firstObject.lastPathComponent)
             : WQLocalizedFormat(@"Moving %lu items", (unsigned long)gWQMovePaths.count);
@@ -3291,6 +3293,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     self.title = WQLocalizedNullable(@"Log");
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     _textView = [[UITextView alloc] initWithFrame:self.view.bounds];
+    _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
     _textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _textView.editable = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
@@ -3340,16 +3343,20 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     [super viewDidLoad];
     self.delegate = self;
     self.interactivePopGestureRecognizer.delegate = self;
-    if (!wq_prism_enabled()) return;
-    self.navigationBar.prefersLargeTitles = YES;
+    if (wq_prism_enabled()) self.navigationBar.prefersLargeTitles = YES;
+    // Crimson Liquid Glass: the bar itself stays clear so iOS 26 floats its
+    // glass bar buttons over the canvas; titles are white.
     UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
     [appearance configureWithDefaultBackground];
     appearance.backgroundColor = [UIColor clearColor];
     appearance.shadowColor = [UIColor clearColor];
+    appearance.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+    appearance.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
     self.navigationBar.standardAppearance = appearance;
     self.navigationBar.scrollEdgeAppearance = appearance;
     self.navigationBar.compactAppearance = appearance;
-    self.navigationBar.tintColor = [UIColor colorWithRed:0.37 green:0.50 blue:1.0 alpha:1.0];
+    self.navigationBar.tintColor = wq_theme_primary_text();
+    self.toolbar.tintColor = wq_theme_primary_text();
 }
 
 - (void)navigationController:(UINavigationController *)nav willShowViewController:(UIViewController *)vc animated:(BOOL)animated
@@ -3534,7 +3541,7 @@ static NSString *wq_deleted_place(NSString *original)
         done(NO);
         [self restore:item];
     }];
-    restore.backgroundColor = UIColor.systemBlueColor;
+    restore.backgroundColor = wq_theme_accent();
     [actions addObject:restore];
     UISwipeActionsConfiguration *config = [UISwipeActionsConfiguration configurationWithActions:actions];
     config.performsFirstActionWithFullSwipe = NO;
@@ -3889,7 +3896,8 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     if ([tone isEqualToString:@"orange"]) return @[[UIColor colorWithRed:1.00 green:0.73 blue:0.49 alpha:1], [UIColor colorWithRed:0.89 green:0.42 blue:0.12 alpha:1]];
     if ([tone isEqualToString:@"indigo"]) return @[[UIColor colorWithRed:0.55 green:0.55 blue:1.00 alpha:1], [UIColor colorWithRed:0.26 green:0.25 blue:0.79 alpha:1]];
     if ([tone isEqualToString:@"gray"])   return @[[UIColor colorWithRed:0.67 green:0.71 blue:0.80 alpha:1], [UIColor colorWithRed:0.35 green:0.40 blue:0.49 alpha:1]];
-    return @[[UIColor colorWithRed:0.50 green:0.65 blue:1.00 alpha:1], [UIColor colorWithRed:0.24 green:0.38 blue:0.90 alpha:1]];
+    // Default tone: crimson-rose, matching the Liquid Glass canvas.
+    return @[[UIColor colorWithRed:0.95 green:0.52 blue:0.48 alpha:1], [UIColor colorWithRed:0.62 green:0.17 blue:0.16 alpha:1]];
 }
 
 @interface WQPrismGlassView : UIView
@@ -3899,6 +3907,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
 @implementation WQPrismGlassView {
     UIVisualEffectView *_effect;
+    CAGradientLayer *_sheen;
 }
 
 - (instancetype)initWithRadius:(CGFloat)radius
@@ -3908,11 +3917,14 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         self.layer.cornerRadius = radius;
         self.layer.cornerCurve = kCACornerCurveContinuous;
         self.clipsToBounds = YES;
-        self.backgroundColor = [UIColor colorWithWhite:0.42 alpha:0.055];
+        self.backgroundColor = [UIColor clearColor];
 
-        _effect = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial]];
+        // Native iOS 26 Liquid Glass, tinted crimson-rose.
+        _effect = [[UIVisualEffectView alloc] initWithEffect:nil];
         _effect.translatesAutoresizingMaskIntoConstraints = NO;
         _effect.userInteractionEnabled = NO;
+        _effect.layer.cornerRadius = radius;
+        _effect.layer.cornerCurve = kCACornerCurveContinuous;
         [self addSubview:_effect];
         [NSLayoutConstraint activateConstraints:@[
             [_effect.topAnchor constraintEqualToAnchor:self.topAnchor],
@@ -3920,6 +3932,15 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             [_effect.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_effect.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         ]];
+
+        // Layered reflection: a faint blush sheen across the top edge.
+        _sheen = [CAGradientLayer layer];
+        _sheen.startPoint = CGPointMake(0.5, 0.0);
+        _sheen.endPoint = CGPointMake(0.5, 1.0);
+        _sheen.colors = @[(id)[UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.16].CGColor,
+                          (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.0].CGColor];
+        _sheen.locations = @[@0.0, @0.42];
+        [self.layer addSublayer:_sheen];
 
         _contentView = [UIView new];
         _contentView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3931,20 +3952,38 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             [_contentView.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_contentView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         ]];
+        [self updateMaterial];
         [self updateBorder];
         [self registerForTraitChanges:@[UITraitUserInterfaceStyle.class, UITraitDisplayScale.class]
                            withAction:@selector(updateBorder)];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateMaterial)
+            name:UIAccessibilityReduceTransparencyStatusDidChangeNotification object:nil];
     }
     return self;
 }
 
+// Reduce Transparency: an opaque crimson surface instead of glass.
+- (void)updateMaterial
+{
+    UIVisualEffect *glass = wq_theme_glass_effect(NO);
+    _effect.effect = glass;
+    self.backgroundColor = glass ? [UIColor clearColor] : wq_theme_solid_surface();
+    _sheen.hidden = glass == nil;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    _sheen.frame = self.bounds;
+}
+
 - (void)updateBorder
 {
-    BOOL dark = self.traitCollection.userInterfaceStyle != UIUserInterfaceStyleLight;
+    // 0.5–1 pt warm coral specular rim.
     CGFloat scale = self.traitCollection.displayScale;
     if (scale <= 0) scale = 3.0;
-    self.layer.borderWidth = 1.0 / scale;
-    self.layer.borderColor = [UIColor colorWithWhite:(dark ? 1.0 : 0.0) alpha:(dark ? 0.14 : 0.08)].CGColor;
+    self.layer.borderWidth = MAX(0.5, 1.5 / scale);
+    self.layer.borderColor = wq_theme_rim().CGColor;
 }
 
 @end
@@ -4063,7 +4102,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         _metaLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _metaLabel.font = metaFont;
         _metaLabel.adjustsFontForContentSizeCategory = YES;
-        _metaLabel.textColor = UIColor.secondaryLabelColor;
+        _metaLabel.textColor = wq_theme_secondary_text();
         _metaLabel.text = meta;
         _metaLabel.numberOfLines = 1;
         _metaLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
@@ -4074,14 +4113,14 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             _moreButton = [UIButton buttonWithType:UIButtonTypeSystem];
             _moreButton.translatesAutoresizingMaskIntoConstraints = NO;
             [_moreButton setImage:[UIImage systemImageNamed:@"ellipsis"] forState:UIControlStateNormal];
-            _moreButton.tintColor = UIColor.tertiaryLabelColor;
+            _moreButton.tintColor = wq_theme_secondary_text();
             _moreButton.showsMenuAsPrimaryAction = YES;
             _moreButton.accessibilityLabel = WQLocalizedNullable(@"More");
             [self addSubview:_moreButton];
 
             _chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
             _chevron.translatesAutoresizingMaskIntoConstraints = NO;
-            _chevron.tintColor = UIColor.quaternaryLabelColor;
+            _chevron.tintColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.6];
             _chevron.image = [_chevron.image imageFlippedForRightToLeftLayoutDirection];
             _chevron.userInteractionEnabled = NO;
             [self addSubview:_chevron];
@@ -4157,7 +4196,7 @@ static UIView *WQPrismSectionHeaderView(NSString *title, NSString *detail)
         UILabel *right = [UILabel new];
         right.text = detail;
         right.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
-        right.textColor = UIColor.tertiaryLabelColor;
+        right.textColor = wq_theme_secondary_text();
         right.textAlignment = NSTextAlignmentNatural;
         [row addArrangedSubview:right];
     }
@@ -4363,28 +4402,28 @@ static void wq_apply_design(void);
     _heroSubtitle = [UILabel new];
     _heroSubtitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     _heroSubtitle.adjustsFontForContentSizeCategory = YES;
-    _heroSubtitle.textColor = UIColor.secondaryLabelColor;
+    _heroSubtitle.textColor = wq_theme_secondary_text();
     _heroSubtitle.numberOfLines = 2;
     _heroSubtitle.text = wq_device_line();
 
-    UIButtonConfiguration *quickCfg = [UIButtonConfiguration tintedButtonConfiguration];
+    // Primary call to action: white Liquid Glass capsule, deep crimson label.
+    UIButtonConfiguration *quickCfg = wq_theme_primary_button_configuration();
     quickCfg.attributedTitle = WQPrismButtonTitle(WQLocalizedNullable(@"Quick Check"));
     quickCfg.image = [UIImage systemImageNamed:@"arrow.clockwise"];
     quickCfg.imagePadding = 5;
-    quickCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     quickCfg.buttonSize = UIButtonConfigurationSizeSmall;
     __weak typeof(self) weakSelf = self;
     _quickButton = [UIButton buttonWithConfiguration:quickCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [weakSelf runHealthCheck];
     }]];
-    _quickButton.tintColor = [UIColor colorWithRed:0.42 green:0.53 blue:1.0 alpha:1.0];
+    _quickButton.tintColor = UIColor.whiteColor;
 
-    UIButtonConfiguration *logCfg = [UIButtonConfiguration plainButtonConfiguration];
+    // Secondary action: translucent crimson glass pill.
+    UIButtonConfiguration *logCfg = wq_theme_secondary_button_configuration();
     logCfg.attributedTitle = WQPrismButtonTitle(WQLocalizedNullable(@"Log"));
     logCfg.image = [UIImage systemImageNamed:@"doc.plaintext"];
     logCfg.imagePadding = 5;
     logCfg.buttonSize = UIButtonConfigurationSizeSmall;
-    logCfg.baseForegroundColor = UIColor.secondaryLabelColor;
     UIButton *logButton = [UIButton buttonWithConfiguration:logCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [weakSelf openLog];
     }]];
@@ -4393,8 +4432,10 @@ static void wq_apply_design(void);
     buttons.axis = UILayoutConstraintAxisHorizontal;
     buttons.spacing = 8;
     buttons.alignment = UIStackViewAlignmentCenter;
+    // One Liquid Glass container, so the two glass buttons blend and morph.
+    UIView *buttonGroup = wq_theme_glass_container(buttons, 8);
 
-    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[_statusPill, title, _heroSubtitle, buttons]];
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[_statusPill, title, _heroSubtitle, buttonGroup]];
     text.axis = UILayoutConstraintAxisVertical;
     text.alignment = UIStackViewAlignmentLeading;
     text.spacing = 8;
@@ -4504,7 +4545,7 @@ static void wq_apply_design(void);
     UILabel *version = [UILabel new];
     version.text = wq_app_version_line();
     version.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
-    version.textColor = UIColor.tertiaryLabelColor;
+    version.textColor = wq_theme_secondary_text();
     version.textAlignment = NSTextAlignmentCenter;
 
     UIButtonConfiguration *linkCfg = [UIButtonConfiguration plainButtonConfiguration];
@@ -4512,7 +4553,7 @@ static void wq_apply_design(void);
     linkCfg.image = [UIImage systemImageNamed:@"chevron.left.forwardslash.chevron.right"];
     linkCfg.imagePadding = 4;
     linkCfg.buttonSize = UIButtonConfigurationSizeSmall;
-    linkCfg.baseForegroundColor = UIColor.secondaryLabelColor;
+    linkCfg.baseForegroundColor = wq_theme_secondary_text();
     UIButton *github = [UIButton buttonWithConfiguration:linkCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz"] options:@{} completionHandler:nil];
     }]];
@@ -4522,7 +4563,7 @@ static void wq_apply_design(void);
     xcfg.image = [UIImage systemImageNamed:@"at"];
     xcfg.imagePadding = 4;
     xcfg.buttonSize = UIButtonConfigurationSizeSmall;
-    xcfg.baseForegroundColor = UIColor.secondaryLabelColor;
+    xcfg.baseForegroundColor = wq_theme_secondary_text();
     UIButton *x = [UIButton buttonWithConfiguration:xcfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://x.com/_kolbicz"] options:@{} completionHandler:nil];
     }]];
@@ -4536,7 +4577,7 @@ static void wq_apply_design(void);
     creditCfg.attributedTitle = [[NSAttributedString alloc] initWithString:WQLocalized(@"Sandbox escape: worse_query by @forcequitOS")
         attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2]}];
     creditCfg.buttonSize = UIButtonConfigurationSizeSmall;
-    creditCfg.baseForegroundColor = UIColor.tertiaryLabelColor;
+    creditCfg.baseForegroundColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.8];
     UIButton *credit = [UIButton buttonWithConfiguration:creditCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://x.com/forcequitOS"] options:@{} completionHandler:nil];
     }]];
@@ -4660,7 +4701,7 @@ static void wq_apply_design(void);
         note.text = WQLocalized(@"On iOS 26, System Data and System Groups can't be reached (worse_query covers them on iOS 27 only), and Internal Daemons need a scan of every file id: the first one can take most of an hour on a well-used device, later ones only check new files.");
         note.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
         note.adjustsFontForContentSizeCategory = YES;
-        note.textColor = UIColor.secondaryLabelColor;
+        note.textColor = wq_theme_secondary_text();
         note.numberOfLines = 0;
         [_containersStack addArrangedSubview:note];
     }
@@ -4677,7 +4718,7 @@ static void wq_apply_design(void);
         UILabel *empty = [UILabel new];
         empty.text = WQLocalizedNullable(@"Add a folder from its More menu.");
         empty.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-        empty.textColor = UIColor.tertiaryLabelColor;
+        empty.textColor = wq_theme_secondary_text();
         [_favoritesStack addArrangedSubview:empty];
         return;
     }
@@ -4685,7 +4726,7 @@ static void wq_apply_design(void);
     for (NSDictionary *entry in favorites) {
         NSString *path = entry[@"path"];
         if (![path isKindOfClass:NSString.class]) continue;
-        UIButtonConfiguration *cfg = [UIButtonConfiguration tintedButtonConfiguration];
+        UIButtonConfiguration *cfg = wq_theme_secondary_button_configuration();
         cfg.title = entry[@"title"] ?: path.lastPathComponent;
         cfg.image = [UIImage systemImageNamed:@"star.fill"];
         cfg.imagePadding = 4;
@@ -4738,7 +4779,7 @@ static void wq_apply_design(void);
     name.translatesAutoresizingMaskIntoConstraints = NO;
     name.text = title;
     name.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    name.textColor = UIColor.labelColor;
+    name.textColor = wq_theme_primary_text();
     name.numberOfLines = 1;
     [row addSubview:name];
 
@@ -4746,14 +4787,14 @@ static void wq_apply_design(void);
     sub.translatesAutoresizingMaskIntoConstraints = NO;
     sub.text = subtitle;
     sub.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2];
-    sub.textColor = UIColor.secondaryLabelColor;
+    sub.textColor = wq_theme_secondary_text();
     sub.numberOfLines = 1;
     sub.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [row addSubview:sub];
 
     UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
     chevron.translatesAutoresizingMaskIntoConstraints = NO;
-    chevron.tintColor = UIColor.tertiaryLabelColor;
+    chevron.tintColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.6];
     chevron.image = [chevron.image imageFlippedForRightToLeftLayoutDirection];
     [row addSubview:chevron];
 
@@ -5065,7 +5106,7 @@ static void wq_apply_design(void);
         [_updateBanner removeFromSuperview];
         _updateBanner = nil;
     }
-    UIButtonConfiguration *cfg = [UIButtonConfiguration tintedButtonConfiguration];
+    UIButtonConfiguration *cfg = wq_theme_primary_button_configuration();
     cfg.title = WQLocalizedFormat(@"WQ Files %@ is available", version);
     cfg.image = [UIImage systemImageNamed:@"arrow.down.circle"];
     cfg.imagePadding = 8;
@@ -5337,7 +5378,27 @@ static NSString *const kWQTroubleshootingFooter =
 
     self.viewControllers = @[homeNav, appsNav, cleanNav, vaultNav];
     self.selectedIndex = 0;
-    self.tabBar.tintColor = [UIColor colorWithRed:0.37 green:0.50 blue:1.0 alpha:1.0];
+    // iOS 26 floating Liquid Glass tab bar: glowing crimson active selection
+    // pill (#9B2627) with pure white active tab and blush (#E6B8B5) inactive
+    // tabs; shrinks while scrolling down so crimson content refracts beneath.
+    UITabBarAppearance *tabAppearance = [UITabBarAppearance new];
+    [tabAppearance configureWithDefaultBackground];
+    tabAppearance.selectionIndicatorTintColor = [UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:0.85];
+    for (UITabBarItemAppearance *item in @[
+        tabAppearance.stackedLayoutAppearance,
+        tabAppearance.inlineLayoutAppearance,
+        tabAppearance.compactInlineLayoutAppearance,
+    ]) {
+        item.normal.iconColor = wq_theme_secondary_text();
+        item.normal.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_secondary_text()};
+        item.selected.iconColor = wq_theme_primary_text();
+        item.selected.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+    }
+    self.tabBar.standardAppearance = tabAppearance;
+    self.tabBar.scrollEdgeAppearance = tabAppearance;
+    self.tabBar.tintColor = wq_theme_primary_text();
+    self.tabBar.unselectedItemTintColor = wq_theme_secondary_text();
+    self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -5544,7 +5605,7 @@ static NSString *const kWQTroubleshootingFooter =
 {
     if ([_availableVersion isEqualToString:version]) return;
     _availableVersion = version;
-    UIButtonConfiguration *config = [UIButtonConfiguration tintedButtonConfiguration];
+    UIButtonConfiguration *config = wq_theme_primary_button_configuration();
     config.title = WQLocalizedFormat(@"WQ Files %@ is available", version);
     config.image = [UIImage systemImageNamed:@"arrow.down.circle"];
     config.imagePadding = 8;
@@ -5634,10 +5695,10 @@ static NSString *const kWQTroubleshootingFooter =
     by.text = WQLocalizedFormat(@"WQ Files %@ (%@) by kolbicz",
                info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?");
     by.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    by.textColor = UIColor.secondaryLabelColor;
+    by.textColor = wq_theme_secondary_text();
 
     UIButton *(^link)(NSString *, NSString *, NSString *) = ^UIButton *(NSString *title, NSString *symbol, NSString *url) {
-        UIButtonConfiguration *cfg = [UIButtonConfiguration tintedButtonConfiguration];
+        UIButtonConfiguration *cfg = wq_theme_secondary_button_configuration();
         cfg.title = title;
         cfg.image = [UIImage systemImageNamed:symbol];
         cfg.imagePadding = 6;
@@ -5657,6 +5718,7 @@ static NSString *const kWQTroubleshootingFooter =
     creditCfg.attributedTitle = [[NSAttributedString alloc] initWithString:WQLocalized(@"Sandbox escape: worse_query by @forcequitOS")
         attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]}];
     creditCfg.buttonSize = UIButtonConfigurationSizeSmall;
+    creditCfg.baseForegroundColor = wq_theme_secondary_text();
     UIButton *credit = [UIButton buttonWithConfiguration:creditCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://x.com/forcequitOS"] options:@{} completionHandler:nil];
     }]];
@@ -6032,7 +6094,9 @@ static UIViewController *wq_make_root_view_controller(void)
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options
 {
+    wq_theme_install();
     UIWindow *window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    wq_theme_prepare_window(window);
     window.rootViewController = wq_make_root_view_controller();
     [window makeKeyAndVisible];
     self.window = window;
@@ -6100,32 +6164,34 @@ static NSString *wq_count_text(int64_t n)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
     _started = CFAbsoluteTimeGetCurrent();
     UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"magnifyingglass"]];
     icon.preferredSymbolConfiguration = [UIImageSymbolConfiguration configurationWithPointSize:40 weight:UIImageSymbolWeightRegular];
-    icon.tintColor = UIColor.tintColor;
+    icon.tintColor = wq_theme_primary_text();
     UILabel *title = [UILabel new];
     title.text = WQLocalizedNullable(@"Scanning all files");
     title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+    title.textColor = wq_theme_primary_text();
     title.adjustsFontForContentSizeCategory = YES;
     UILabel *text = [UILabel new];
     text.numberOfLines = 0;
     text.textAlignment = NSTextAlignmentCenter;
     text.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    text.textColor = UIColor.secondaryLabelColor;
+    text.textColor = wq_theme_secondary_text();
     text.text = WQLocalizedNullable(@"iOS doesn't let WQ Files list these folders directly, so it checks every file on this device once. This is only slow the first time: later scans only check new files.\n\nKeep WQ Files open. Switching to another app or locking the screen pauses the scan.");
     _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    _bar.progressTintColor = wq_theme_accent();
     _status = [UILabel new];
     _status.font = [UIFont monospacedDigitSystemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize
                                                     weight:UIFontWeightRegular];
+    _status.textColor = wq_theme_primary_text();
     _status.textAlignment = NSTextAlignmentCenter;
     _status.text = WQLocalizedNullable(@"Starting…");
-    UIButton *hide = [UIButton buttonWithConfiguration:UIButtonConfiguration.borderedButtonConfiguration primaryAction:
+    UIButton *hide = [UIButton buttonWithConfiguration:wq_theme_primary_button_configuration() primaryAction:
         [UIAction actionWithTitle:WQLocalizedNullable(@"Hide") image:nil identifier:nil handler:^(UIAction *__unused a) {
             [self dismissViewControllerAnimated:YES completion:nil];
         }]];
-    UIButtonConfiguration *stopConfig = UIButtonConfiguration.borderedButtonConfiguration;
+    UIButtonConfiguration *stopConfig = wq_theme_secondary_button_configuration();
     stopConfig.baseForegroundColor = UIColor.systemRedColor;
     UIButton *stop = [UIButton buttonWithConfiguration:stopConfig primaryAction:
         [UIAction actionWithTitle:WQLocalizedNullable(@"Stop Scan") image:nil identifier:nil handler:^(UIAction *__unused a) {
@@ -6139,19 +6205,25 @@ static NSString *wq_count_text(int64_t n)
     note.numberOfLines = 0;
     note.textAlignment = NSTextAlignmentCenter;
     note.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    note.textColor = UIColor.tertiaryLabelColor;
+    note.textColor = wq_theme_secondary_text();
     note.text = WQLocalizedNullable(@"Hide keeps the scan running; the list fills in when it's done.");
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[icon, title, text, _bar, _status, buttons, note]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentCenter;
     stack.spacing = 16;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:stack];
+    WQPrismGlassView *card = [[WQPrismGlassView alloc] initWithRadius:26];
+    [card.contentView addSubview:stack];
+    [self.view addSubview:card];
     UILayoutGuide *g = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [stack.centerYAnchor constraintEqualToAnchor:g.centerYAnchor],
-        [stack.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:24],
-        [stack.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-24],
+        [card.centerYAnchor constraintEqualToAnchor:g.centerYAnchor],
+        [card.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:20],
+        [card.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-20],
+        [stack.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:24],
+        [stack.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-24],
+        [stack.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:20],
+        [stack.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-20],
         [_bar.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
         [buttons.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
         [text.widthAnchor constraintEqualToAnchor:stack.widthAnchor],

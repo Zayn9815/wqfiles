@@ -5,6 +5,7 @@
 //
 
 #import "WQUI.h"
+#import "WQTheme.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import <fcntl.h>
@@ -50,8 +51,8 @@ UIView *wq_device_header(CGFloat width)
     header.numberOfLines = 2;
     header.textAlignment = NSTextAlignmentCenter;
     header.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
-    header.textColor = UIColor.secondaryLabelColor;
-    header.backgroundColor = wq_prism_enabled() ? [UIColor clearColor] : UIColor.secondarySystemBackgroundColor;
+    header.textColor = wq_theme_secondary_text();
+    header.backgroundColor = [UIColor clearColor];
     header.adjustsFontSizeToFitWidth = YES;   // keeps both lines on narrow screens
     header.minimumScaleFactor = 0.8;
     header.text = [NSString stringWithFormat:@"%@\n%@", wq_app_version_line(), wq_device_line()];
@@ -401,22 +402,17 @@ NSString *wq_size_text(unsigned long long size)
 
 - (void)updateColors
 {
-    BOOL dark = self.traitCollection.userInterfaceStyle != UIUserInterfaceStyleLight;
-    if (dark) {
-        _base.colors = @[(id)[UIColor colorWithRed:0.024 green:0.033 blue:0.062 alpha:1].CGColor,
-                         (id)[UIColor colorWithRed:0.043 green:0.063 blue:0.125 alpha:1].CGColor];
-        _glows[0].colors = @[(id)[UIColor colorWithRed:0.30 green:0.42 blue:0.95 alpha:0.62].CGColor, (id)[UIColor clearColor].CGColor];
-        _glows[1].colors = @[(id)[UIColor colorWithRed:0.55 green:0.36 blue:0.95 alpha:0.48].CGColor, (id)[UIColor clearColor].CGColor];
-        _glows[2].colors = @[(id)[UIColor colorWithRed:0.12 green:0.76 blue:0.66 alpha:0.32].CGColor, (id)[UIColor clearColor].CGColor];
-        _glows[3].colors = @[(id)[UIColor colorWithRed:0.95 green:0.34 blue:0.60 alpha:0.22].CGColor, (id)[UIColor clearColor].CGColor];
-    } else {
-        _base.colors = @[(id)[UIColor colorWithRed:0.92 green:0.95 blue:1.0 alpha:1].CGColor,
-                         (id)[UIColor colorWithRed:0.86 green:0.91 blue:1.0 alpha:1].CGColor];
-        _glows[0].colors = @[(id)[UIColor colorWithRed:0.56 green:0.69 blue:1.0 alpha:0.48].CGColor, (id)[UIColor clearColor].CGColor];
-        _glows[1].colors = @[(id)[UIColor colorWithRed:0.78 green:0.65 blue:1.0 alpha:0.38].CGColor, (id)[UIColor clearColor].CGColor];
-        _glows[2].colors = @[(id)[UIColor colorWithRed:0.52 green:0.92 blue:0.84 alpha:0.30].CGColor, (id)[UIColor clearColor].CGColor];
-        _glows[3].colors = @[(id)[UIColor colorWithRed:1.0 green:0.72 blue:0.84 alpha:0.24].CGColor, (id)[UIColor clearColor].CGColor];
-    }
+    // Crimson Liquid Glass canvas (same in light and dark: the window is dark).
+    // #5C1D1B at the top, #782623 through the middle, deepening to #4A1412.
+    _base.colors = @[(id)wq_theme_canvas_top().CGColor,
+                     (id)wq_theme_canvas_mid().CGColor,
+                     (id)wq_theme_canvas_edge().CGColor];
+    _base.locations = @[@0.0, @0.45, @1.0];
+    // Warm terracotta and blush light pools; the last one darkens the lower edge.
+    _glows[0].colors = @[(id)[UIColor colorWithRed:0.80 green:0.33 blue:0.29 alpha:0.42].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[1].colors = @[(id)[UIColor colorWithRed:0.91 green:0.52 blue:0.47 alpha:0.26].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[2].colors = @[(id)[UIColor colorWithRed:0.62 green:0.20 blue:0.18 alpha:0.36].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[3].colors = @[(id)[UIColor colorWithRed:0.20 green:0.05 blue:0.05 alpha:0.45].CGColor, (id)[UIColor clearColor].CGColor];
 }
 
 - (void)layoutSubviews

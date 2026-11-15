@@ -7,6 +7,7 @@
 #import "WQCache.h"
 #import "WQDir.h"
 #import "WQUI.h"
+#import "WQTheme.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import "WQCacheSafety.h"
@@ -275,13 +276,15 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         _iconView.clipsToBounds = YES;
         _nameLabel = [UILabel new];
         _nameLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        _nameLabel.textColor = wq_theme_primary_text();
         _nameLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
         _detailLabel = [UILabel new];
         _detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-        _detailLabel.textColor = UIColor.secondaryLabelColor;
+        _detailLabel.textColor = wq_theme_secondary_text();
         _detailLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
         _sizeLabel = [UILabel new];
         _sizeLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightSemibold];
+        _sizeLabel.textColor = wq_theme_primary_text();
         // Trailing edge in both layout directions.
         _sizeLabel.textAlignment = [UIView userInterfaceLayoutDirectionForSemanticContentAttribute:self.semanticContentAttribute]
             == UIUserInterfaceLayoutDirectionRightToLeft ? NSTextAlignmentLeft : NSTextAlignmentRight;
@@ -333,16 +336,17 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         self.selectionStyle = UITableViewCellSelectionStyleNone;
         _captionLabel = [UILabel new];
         _captionLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-        _captionLabel.textColor = UIColor.secondaryLabelColor;
+        _captionLabel.textColor = wq_theme_secondary_text();
         _totalLabel = [UILabel new];
         _totalLabel.font = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleLargeTitle]
                             scaledFontForFont:[UIFont systemFontOfSize:34 weight:UIFontWeightBold]];
+        _totalLabel.textColor = wq_theme_primary_text();
         _totalLabel.adjustsFontForContentSizeCategory = YES;
         _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-        _bar.progressTintColor = UIColor.systemBlueColor;
+        _bar.progressTintColor = wq_theme_accent();
         _statusLabel = [UILabel new];
         _statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-        _statusLabel.textColor = UIColor.secondaryLabelColor;
+        _statusLabel.textColor = wq_theme_secondary_text();
         _statusLabel.numberOfLines = 0;
         _spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
         _spinner.hidesWhenStopped = YES;
@@ -823,9 +827,9 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     cell.sizeLabel.text = wq_size_text(item.bytes);
     cell.iconView.image = wq_app_icon(item.bundleID)
         ?: [UIImage systemImageNamed:item.bundleID ? @"app.dashed" : @"exclamationmark.triangle"];
-    cell.iconView.tintColor = UIColor.secondaryLabelColor;
+    cell.iconView.tintColor = wq_theme_secondary_text();
     cell.checkView.image = [UIImage systemImageNamed:item.selected ? @"checkmark.circle.fill" : @"circle"];
-    cell.checkView.tintColor = item.selected ? UIColor.systemBlueColor : UIColor.tertiaryLabelColor;
+    cell.checkView.tintColor = item.selected ? wq_theme_accent() : UIColor.tertiaryLabelColor;
     return cell;
 }
 

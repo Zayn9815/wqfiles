@@ -10,6 +10,7 @@
 #import "WQAccess.h"
 #import "WQCore.h"
 #import "WQUI.h"
+#import "WQTheme.h"
 #import <sys/stat.h>
 #import <errno.h>
 #import <string.h>
@@ -326,14 +327,14 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     unsigned long long start = (unsigned long long)indexPath.row * _perRow;
     NSMutableAttributedString *line = [[NSMutableAttributedString alloc]
         initWithString:[NSString stringWithFormat:@"%0*llx  ", _offsetDigits, start]
-            attributes:@{ NSFontAttributeName: font, NSForegroundColorAttributeName: UIColor.secondaryLabelColor }];
+            attributes:@{ NSFontAttributeName: font, NSForegroundColorAttributeName: wq_theme_secondary_text() }];
     NSMutableString *ascii = [NSMutableString new];
     NSMutableArray<NSValue *> *asciiMarks = [NSMutableArray new];
     for (NSUInteger i = 0; i < _perRow; i++) {
         unsigned long long off = start + i;
         if (off >= _size) { [line appendAttributedString:[[NSAttributedString alloc] initWithString:@"   " attributes:@{ NSFontAttributeName: font }]]; continue; }
         int b = [self byteAt:off];
-        UIColor *color = UIColor.labelColor;
+        UIColor *color = wq_theme_primary_text();
         BOOL edited = _edits[@(off)] != nil;
         BOOL match = _matchLength && off >= _matchOffset && off < _matchOffset + _matchLength;
         if (edited) color = UIColor.systemOrangeColor;
@@ -345,7 +346,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         [ascii appendFormat:@"%c", (b >= 0x20 && b < 0x7f) ? b : '.'];
     }
     NSMutableAttributedString *asc = [[NSMutableAttributedString alloc] initWithString:[@" " stringByAppendingString:ascii]
-        attributes:@{ NSFontAttributeName: font, NSForegroundColorAttributeName: UIColor.secondaryLabelColor }];
+        attributes:@{ NSFontAttributeName: font, NSForegroundColorAttributeName: wq_theme_secondary_text() }];
     for (NSValue *v in asciiMarks) {
         NSRange r = v.rangeValue;
         [asc addAttribute:NSForegroundColorAttributeName value:UIColor.systemOrangeColor range:NSMakeRange(r.location + 1, 1)];

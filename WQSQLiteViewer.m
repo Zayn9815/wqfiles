@@ -16,6 +16,7 @@
 #import "WQAccess.h"
 #import "WQSharing.h"
 #import "WQUI.h"
+#import "WQTheme.h"
 #import <sqlite3.h>
 
 BOOL wq_is_sqlite_header(NSData *head)
@@ -722,6 +723,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     _textView = [UITextView new];
+    _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
     _textView.translatesAutoresizingMaskIntoConstraints = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightRegular];
     _textView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;   // SQL stays left to right
