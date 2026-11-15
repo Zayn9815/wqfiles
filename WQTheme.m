@@ -98,16 +98,23 @@ UIVisualEffectView *wq_theme_make_glass_card(CGFloat cornerRadius, BOOL interact
 
 UIButtonConfiguration *wq_theme_primary_button_configuration(void)
 {
-    UIButtonConfiguration *cfg = [UIButtonConfiguration prominentGlassButtonConfiguration];
+    // filledButtonConfiguration renders an opaque pure-white pill with crisp
+    // #6B211E text & SF Symbol across iOS 26/27 Liquid Glass UI (unlike
+    // prominentGlassButtonConfiguration, whose vibrant monochrome layer turns
+    // white text/icons invisible against a white platter).
+    UIButtonConfiguration *cfg = [UIButtonConfiguration filledButtonConfiguration];
     UIColor *cta = wq_theme_cta_text();
     cfg.baseBackgroundColor = UIColor.whiteColor;
     cfg.baseForegroundColor = cta;
+    cfg.background.backgroundColor = UIColor.whiteColor;
+    cfg.background.strokeColor = [UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.55];
+    cfg.background.strokeWidth = 0.75;
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
     cfg.imagePadding = 7;
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
-        NSMutableDictionary *out = [incoming mutableCopy];
+        NSMutableDictionary *out = [incoming mutableCopy] ?: [NSMutableDictionary new];
         out[NSForegroundColorAttributeName] = cta;
         if (!out[NSFontAttributeName]) {
             out[NSFontAttributeName] = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
@@ -147,7 +154,13 @@ void wq_theme_style_primary_button(UIButton *button, NSString *title, NSString *
     if (!button) return;
     UIColor *cta = wq_theme_cta_text();
     UIButtonConfiguration *cfg = wq_theme_primary_button_configuration();
-    if (title) cfg.title = title;
+    if (title) {
+        cfg.title = title;
+        cfg.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
+            NSForegroundColorAttributeName: cta,
+            NSFontAttributeName: [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold],
+        }];
+    }
     if (symbolName.length) {
         UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightBold];
         cfg.image = [[UIImage systemImageNamed:symbolName withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
@@ -282,19 +295,19 @@ void wq_theme_install_backdrop(UIViewController *vc)
         if (!wq_theme_is_backdrop(table.backgroundView)) table.backgroundView = wq_prism_background_view();
         table.backgroundColor = UIColor.clearColor;
         table.separatorColor = wq_theme_hairline();
-        wq_theme_apply_scroll_insets(table, 112.0);
+        wq_theme_apply_scroll_insets(table, 28.0);
         return;
     }
     if ([view isKindOfClass:UICollectionView.class]) {
         UICollectionView *collection = (UICollectionView *)view;
         if (!wq_theme_is_backdrop(collection.backgroundView)) collection.backgroundView = wq_prism_background_view();
         collection.backgroundColor = UIColor.clearColor;
-        wq_theme_apply_scroll_insets(collection, 112.0);
+        wq_theme_apply_scroll_insets(collection, 28.0);
         return;
     }
     if ([view isKindOfClass:UIScrollView.class]) {
         view.backgroundColor = wq_theme_canvas_mid();
-        wq_theme_apply_scroll_insets((UIScrollView *)view, 112.0);
+        wq_theme_apply_scroll_insets((UIScrollView *)view, 28.0);
         return;
     }
     if ([view viewWithTag:kWQThemeBackdropTag]) return;

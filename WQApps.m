@@ -56,6 +56,7 @@
     WQAppItem *_importApp;
     NSTimeInterval _lastScanFinished;
     NSMutableArray<UIButton *> *_filterPills;
+    CGFloat _appsLayoutWidth;
 }
 
 - (instancetype)initRestoringBundleID:(NSString *)bundleID
@@ -581,11 +582,42 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
-    wq_theme_apply_scroll_insets(self.tableView, 116.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     self.tableView.tableHeaderView = [self buildGlassAppsHeader];
+    self.tableView.tableFooterView = [self buildAppsFooter];
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     [self scan];
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    CGFloat width = self.tableView.bounds.size.width;
+    if (width > 0 && fabs(width - _appsLayoutWidth) > 0.5) {
+        _appsLayoutWidth = width;
+        self.tableView.tableFooterView = [self buildAppsFooter];
+    }
+}
+
+- (UIView *)buildAppsFooter
+{
+    CGFloat width = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
+    CGFloat insetX = 20.0;
+    CGFloat labelWidth = MAX(120.0, width - insetX * 2.0);
+    UILabel *label = [UILabel new];
+    label.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    label.textColor = wq_theme_secondary_text();
+    label.numberOfLines = 0;
+    label.lineBreakMode = NSLineBreakByWordWrapping;
+    label.text = WQLocalized(@"Tap an app to back up, restore or clear its Documents and Library. Close the app first (swipe it away in the app switcher); operations are not snapshot-consistent while it runs. Backups are stored in WQ Glass/AppBackups and are visible in the Files app. tmp is cleared when requested but is not backed up or restored.");
+    CGSize fit = [label sizeThatFits:CGSizeMake(labelWidth, CGFLOAT_MAX)];
+    UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, ceil(fit.height) + 28.0)];
+    footer.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    label.frame = CGRectMake(insetX, 12.0, labelWidth, ceil(fit.height));
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [footer addSubview:label];
+    return footer;
 }
 
 - (UIView *)buildGlassAppsHeader
@@ -1064,11 +1096,6 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     if (_query.length || [NSUserDefaults.standardUserDefaults integerForKey:kWQAppsFilterPref] > 0)
         return WQLocalizedFormat(@"%lu of %lu apps", (unsigned long)self.visibleApps.count, (unsigned long)_apps.count);
     return WQLocalizedFormat(@"%lu apps · %@ of app data", (unsigned long)_apps.count, wq_size_text(total));
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
-{
-    return WQLocalized(@"Tap an app to back up, restore or clear its Documents and Library. Close the app first (swipe it away in the app switcher); operations are not snapshot-consistent while it runs. Backups are stored in WQ Glass/AppBackups and are visible in the Files app. tmp is cleared when requested but is not backed up or restored.");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath

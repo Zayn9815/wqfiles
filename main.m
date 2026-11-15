@@ -246,7 +246,7 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     _textView.smartDashesType = UITextSmartDashesTypeNo;
     _textView.alwaysBounceVertical = YES;
     _textView.delegate = self;
-    wq_theme_apply_scroll_insets(_textView, 112.0);
+    wq_theme_apply_scroll_insets(_textView, 28.0);
     [self.view addSubview:_textView];
     __weak typeof(self) weakSelf = self;
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) { [weakSelf leave]; }];
@@ -3191,6 +3191,8 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
 
 static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/SystemGroup";
 
+- (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -3305,7 +3307,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     _textView.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     _textView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     _textView.textAlignment = NSTextAlignmentLeft;   // log lines stay left to right
-    wq_theme_apply_scroll_insets(_textView, 112.0);
+    wq_theme_apply_scroll_insets(_textView, 28.0);
     [self.view addSubview:_textView];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                                                                                            target:self action:@selector(share:)];
@@ -4488,8 +4490,8 @@ static void wq_apply_design(void);
         CGFloat neededTop = MAX(72.0, CGRectGetMaxY(_topHeader.frame) - self.view.safeAreaInsets.top + 10.0);
         if (fabs(_scroll.contentInset.top - neededTop) > 0.5) {
             BOOL atTop = _scroll.contentOffset.y <= -(_scroll.contentInset.top + self.view.safeAreaInsets.top) + 2.0;
-            _scroll.contentInset = UIEdgeInsetsMake(neededTop, 0, 116, 0);
-            _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(neededTop, 0, 116, 0);
+            _scroll.contentInset = UIEdgeInsetsMake(neededTop, 0, 28, 0);
+            _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(neededTop, 0, 28, 0);
             if (atTop) _scroll.contentOffset = CGPointMake(0, -(neededTop + self.view.safeAreaInsets.top));
         }
     }
@@ -5489,7 +5491,7 @@ static NSString *const kWQTroubleshootingFooter =
                                                                               target:self
                                                                               action:@selector(done)];
     [self installBrandHeader];
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
 }
 
 - (void)installBrandHeader
@@ -5686,7 +5688,7 @@ static NSString *const kWQTroubleshootingFooter =
     [super viewDidLoad];
     wq_prism_install_background(self);
     self.tableView.backgroundColor = [UIColor clearColor];
-    wq_theme_apply_scroll_insets(self.tableView, 116.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width ?: 360);
 }
 
@@ -5860,7 +5862,7 @@ static NSString *const kWQTroubleshootingFooter =
     [super viewDidLoad];
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     self.tableView.tableFooterView = [self authorFooter];
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     dispatch_async(wq_io(), ^{
         NSString *recovery = wq_recover_interrupted_restore();
         if (recovery) {
@@ -6336,7 +6338,7 @@ static NSString *const kWQTroubleshootingFooter =
     self.title = WQLocalizedNullable(@"WQ Glass");
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width);
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
 }
 
 - (void)retry

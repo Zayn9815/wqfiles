@@ -635,11 +635,14 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 
     UIButton *_importTendiesButton;
     UIButton *_photoWallpaperButton;
+    UIButton *_applyWallpaperButton;
     UIButton *_restoreBackupButton;
     UIButton *_browseStoreButton;
     UIButton *_openPosterBoardButton;
     UIButton *_respringButton;
 
+    UIImage *_Nullable _selectedWallpaperImage;
+    NSString *_Nullable _selectedWallpaperLabel;
     NSString *_Nullable _containerPath;
     NSString *_Nullable _storePath;
     NSArray<NSString *> *_storeVersions;
@@ -672,7 +675,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 {
     [super viewDidLayoutSubviews];
     if (_quickRow) {
-        BOOL narrow = self.view.bounds.size.width < 360.0;
+        BOOL narrow = self.view.bounds.size.width < 480.0;
         _quickRow.axis = narrow ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
     }
 }
@@ -683,7 +686,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     _scroll.translatesAutoresizingMaskIntoConstraints = NO;
     _scroll.alwaysBounceVertical = YES;
     _scroll.showsVerticalScrollIndicator = YES;
-    wq_theme_apply_scroll_insets(_scroll, 116.0);
+    wq_theme_apply_scroll_insets(_scroll, 28.0);
     [self.view addSubview:_scroll];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -828,11 +831,20 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
         [_photoWallpaperButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
     ]];
 
+    _applyWallpaperButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _applyWallpaperButton.translatesAutoresizingMaskIntoConstraints = NO;
+    wq_theme_style_primary_button(_applyWallpaperButton, @"Apply Wallpaper", @"checkmark.circle.fill");
+    [_applyWallpaperButton addTarget:self action:@selector(applySelectedWallpaper) forControlEvents:UIControlEventTouchUpInside];
+    [NSLayoutConstraint activateConstraints:@[
+        [_applyWallpaperButton.heightAnchor constraintGreaterThanOrEqualToConstant:48],
+    ]];
+
     [wallStack addArrangedSubview:wallTitle];
     [wallStack addArrangedSubview:wallSub];
     [wallStack addArrangedSubview:_previewImageView];
     [wallStack addArrangedSubview:_previewCaptionLabel];
     [wallStack addArrangedSubview:_photoWallpaperButton];
+    [wallStack addArrangedSubview:_applyWallpaperButton];
     [_stack addArrangedSubview:wallCard];
 
     // 3. Quick Actions: Open PosterBoard & Respring
@@ -950,6 +962,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     BOOL ready = _storePath.length > 0 && !_busy;
     _importTendiesButton.enabled = ready;
     _photoWallpaperButton.enabled = ready;
+    _applyWallpaperButton.enabled = ready && _selectedWallpaperImage != nil;
     _browseStoreButton.enabled = ready;
     _restoreBackupButton.enabled = ready && _backups.count > 0;
     _openPosterBoardButton.enabled = !_busy;
@@ -1122,12 +1135,40 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
+- (void)stageWallpaperImage:(UIImage *)image label:(NSString *)label
+{
+    if (!image) return;
+    _selectedWallpaperImage = image;
+    _selectedWallpaperLabel = [label copy];
+    _previewImageView.image = image;
+    _previewImageView.hidden = NO;
+    _previewCaptionLabel.text = [NSString stringWithFormat:@"Selected: %@ (%.0f × %.0f px) — tap Apply Wallpaper below.",
+        label ?: @"Wallpaper", image.size.width * image.scale, image.size.height * image.scale];
+    _previewCaptionLabel.hidden = NO;
+    _activityLabel.text = _storePath.length
+        ? @"Wallpaper preview ready — tap Apply Wallpaper"
+        : @"Wallpaper staged — waiting for PosterBoard store";
+    [self updateControls];
+}
+
+- (void)applySelectedWallpaper
+{
+    if (_busy || !_storePath.length) return;
+    if (!_selectedWallpaperImage) {
+        [self choosePhotoWallpaper];
+        return;
+    }
+    [self applyWallpaperImage:_selectedWallpaperImage label:_selectedWallpaperLabel];
+}
+
 - (void)applyWallpaperImage:(UIImage *)image label:(NSString *)label
 {
     if (!image || !_storePath.length) return;
+    _selectedWallpaperImage = image;
+    _selectedWallpaperLabel = [label copy];
     _previewImageView.image = image;
     _previewImageView.hidden = NO;
-    _previewCaptionLabel.text = [NSString stringWithFormat:@"Selected: %@ (%.0f × %.0f px)",
+    _previewCaptionLabel.text = [NSString stringWithFormat:@"Applying: %@ (%.0f × %.0f px)",
         label ?: @"Wallpaper", image.size.width * image.scale, image.size.height * image.scale];
     _previewCaptionLabel.hidden = NO;
 
@@ -1383,7 +1424,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
         NSString *name = url.lastPathComponent;
         [NSFileManager.defaultManager removeItemAtURL:url error:nil];
         if (image) {
-            [self applyWallpaperImage:image label:name];
+            [self stageWallpaperImage:image label:name];
         } else {
             wq_alert(self, WQVerbatim(@"Invalid Image"), WQVerbatim(@"The selected file could not be opened as an image."));
         }
@@ -1402,7 +1443,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     UIImage *image = info[UIImagePickerControllerOriginalImage];
     [picker dismissViewControllerAnimated:YES completion:^{
         if (image) {
-            [self applyWallpaperImage:image label:@"Photo Library Wallpaper"];
+            [self stageWallpaperImage:image label:@"Photo Library Wallpaper"];
         }
     }];
 }
