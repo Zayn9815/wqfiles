@@ -4351,12 +4351,6 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
 @end
 
-static NSAttributedString *WQPrismButtonTitle(NSString *title)
-{
-    return [[NSAttributedString alloc] initWithString:title
-        attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold]}];
-}
-
 static UIView *WQPrismSectionHeaderView(NSString *title, NSString *detail)
 {
     UILabel *label = [UILabel new];
