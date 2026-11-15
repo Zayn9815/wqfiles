@@ -103,8 +103,9 @@ UIButtonConfiguration *wq_theme_primary_button_configuration(void)
     cfg.baseBackgroundColor = UIColor.whiteColor;
     cfg.baseForegroundColor = cta;
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
     cfg.imagePadding = 7;
-    cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 18, 10, 18);
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy];
         out[NSForegroundColorAttributeName] = cta;
@@ -125,8 +126,11 @@ UIButtonConfiguration *wq_theme_secondary_button_configuration(void)
     cfg.baseBackgroundColor = wq_theme_glass_tint();
     cfg.baseForegroundColor = wq_theme_primary_text();
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
     cfg.imagePadding = 6;
-    cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 14, 10, 14);
+    cfg.background.strokeColor = wq_theme_rim();
+    cfg.background.strokeWidth = 0.75;
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy];
         out[NSForegroundColorAttributeName] = UIColor.whiteColor;
@@ -149,13 +153,19 @@ void wq_theme_style_primary_button(UIButton *button, NSString *title, NSString *
         cfg.image = [[UIImage systemImageNamed:symbolName withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     }
     button.configuration = cfg;
-    button.backgroundColor = UIColor.whiteColor;
+    button.backgroundColor = UIColor.clearColor;
+    button.layer.borderWidth = 0.0;
     button.tintColor = cta;
-    button.layer.cornerCurve = kCACornerCurveContinuous;
     [button setTitleColor:cta forState:UIControlStateNormal];
     [button setTitleColor:cta forState:UIControlStateHighlighted];
     [button setTitleColor:cta forState:UIControlStateSelected];
     [button setTitleColor:[cta colorWithAlphaComponent:0.55] forState:UIControlStateDisabled];
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.78;
+    button.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    button.configurationUpdateHandler = ^(UIButton *b) {
+        b.alpha = b.enabled ? 1.0 : 0.56;
+    };
     wq_theme_add_spring_tap(button);
 }
 
@@ -169,13 +179,18 @@ void wq_theme_style_secondary_button(UIButton *button, NSString *title, NSString
         cfg.image = [[UIImage systemImageNamed:symbolName withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     }
     button.configuration = cfg;
+    button.backgroundColor = UIColor.clearColor;
+    button.layer.borderWidth = 0.0;
     button.tintColor = UIColor.whiteColor;
-    button.layer.borderColor = wq_theme_rim().CGColor;
-    button.layer.borderWidth = 0.75;
-    button.layer.cornerCurve = kCACornerCurveContinuous;
-    button.clipsToBounds = YES;
     [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     [button setTitleColor:wq_theme_secondary_text() forState:UIControlStateHighlighted];
+    [button setTitleColor:[UIColor.whiteColor colorWithAlphaComponent:0.6] forState:UIControlStateDisabled];
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.78;
+    button.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    button.configurationUpdateHandler = ^(UIButton *b) {
+        b.alpha = b.enabled ? 1.0 : 0.48;
+    };
     wq_theme_add_spring_tap(button);
 }
 
@@ -184,9 +199,12 @@ void wq_theme_update_pill_button(UIButton *button, BOOL active)
     if (!button) return;
     UIButtonConfiguration *cfg = [button.configuration copy] ?: [UIButtonConfiguration glassButtonConfiguration];
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
     cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x9B3A36, 0.36);
     cfg.baseForegroundColor = active ? UIColor.whiteColor : wq_theme_secondary_text();
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 14, 7, 14);
+    cfg.background.strokeWidth = active ? 1.0 : 0.75;
+    cfg.background.strokeColor = active ? wq_rgb(0xFFDCDA, 0.55) : wq_theme_rim();
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy];
         out[NSForegroundColorAttributeName] = active ? UIColor.whiteColor : wq_theme_secondary_text();
@@ -194,12 +212,11 @@ void wq_theme_update_pill_button(UIButton *button, BOOL active)
         return out;
     };
     button.configuration = cfg;
+    button.backgroundColor = UIColor.clearColor;
+    button.layer.borderWidth = 0.0;
     button.tintColor = active ? UIColor.whiteColor : wq_theme_secondary_text();
-    button.backgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x9B3A36, 0.36);
-    button.layer.borderWidth = active ? 1.0 : 0.75;
-    button.layer.borderColor = active ? wq_rgb(0xFFDCDA, 0.55).CGColor : wq_theme_rim().CGColor;
-    button.layer.cornerCurve = kCACornerCurveContinuous;
-    button.clipsToBounds = YES;
+    button.titleLabel.adjustsFontSizeToFitWidth = YES;
+    button.titleLabel.minimumScaleFactor = 0.80;
 }
 
 UIButton *wq_theme_pill_button(NSString *title, BOOL active)

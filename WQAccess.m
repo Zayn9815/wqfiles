@@ -215,7 +215,7 @@ static void wq_log_recovery_failure(NSString *libraryPath, int error, NSString *
         last = line;
         repeats = 0;
     }
-    wq_log(@"token cache recovery failed: %@; preserved contents retained. Every folder outside WQ Files is refused until this is repaired: Settings → Reset Access Cache.", line);
+    wq_log(@"token cache recovery failed: %@; preserved contents retained. Every folder outside WQ Glass is refused until this is repaired: Settings → Reset Access Cache.", line);
 }
 
 static int64_t wq_query(NSString *target, BOOL altFlags)
@@ -2320,7 +2320,7 @@ static BOOL wq_fsgetpath_sees_others(fsid_t fsid, int64_t maxInode, double *idsP
             [areas addObject:wq_sample_area(path)];
         }
     }
-    wq_log(@"scan: fsgetpath sample: %lu of %lu ids resolve, %lu outside WQ Files (ids up to %lld, %.1f s)",
+    wq_log(@"scan: fsgetpath sample: %lu of %lu ids resolve, %lu outside WQ Glass (ids up to %lld, %.1f s)",
            (unsigned long)resolved, (unsigned long)sampled, (unsigned long)foreign, (long long)maxInode,
            CFAbsoluteTimeGetCurrent() - started);
     if (areas.count) {
@@ -2657,12 +2657,12 @@ inodeScan:;
     if (cache && ![known[0] count]) {
         wq_log(@"scan: none of the remembered app containers resolve anymore (%lu dropped); checking whether ids still resolve", (unsigned long)dropped);
         if (!wq_fsgetpath_sees_others(fsid, maxInode, &sampleRate)) {
-            wq_log(@"scan: on this iOS version fsgetpath only resolves WQ Files' own files, so containers can't be found by scanning");
+            wq_log(@"scan: on this iOS version fsgetpath only resolves WQ Glass's own files, so containers can't be found by scanning");
             return nil;
         }
     }
     if (!cache && !wq_fsgetpath_sees_others(fsid, maxInode, &sampleRate)) {
-        wq_log(@"scan: on this iOS version fsgetpath only resolves WQ Files' own files, so containers can't be found by scanning");
+        wq_log(@"scan: on this iOS version fsgetpath only resolves WQ Glass's own files, so containers can't be found by scanning");
         return nil;
     }
     WQScanCancellation *stop = nil;

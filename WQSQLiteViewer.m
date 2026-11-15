@@ -575,7 +575,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
     if (_error || !_rows.count) {
         c.text = _error ?: WQLocalized(@"No rows");
-        c.textProperties.color = _error ? UIColor.systemRedColor : UIColor.secondaryLabelColor;
+        c.textProperties.color = _error ? UIColor.systemRedColor : wq_theme_secondary_text();
         c.textProperties.numberOfLines = 0;
         cell.contentConfiguration = c;
         cell.accessoryType = UITableViewCellAccessoryNone;
@@ -591,8 +591,9 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     c.text = parts.firstObject;
     c.secondaryText = parts.count > 1 ? [[parts subarrayWithRange:NSMakeRange(1, parts.count - 1)] componentsJoinedByString:@" · "] : nil;
     c.textProperties.font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
+    c.textProperties.color = wq_theme_primary_text();
     c.secondaryTextProperties.numberOfLines = 2;
-    c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    c.secondaryTextProperties.color = wq_theme_secondary_text();
     cell.contentConfiguration = c;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     if ((NSUInteger)indexPath.row + 20 >= _rows.count) [self loadMore];
@@ -939,7 +940,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
 
 - (UIView *)buildSQLiteHeader
 {
-    CGFloat width = self.view.bounds.size.width ?: 360.0;
+    CGFloat width = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 62)];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UIVisualEffectView *card = wq_theme_make_glass_card(16, NO);
@@ -949,9 +950,11 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     label.textColor = wq_theme_secondary_text();
-    label.numberOfLines = 2;
+    label.numberOfLines = 0;
     label.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    label.text = _path;
+    label.text = [_path stringByReplacingOccurrencesOfString:@"/" withString:@"/\u200B"];
+    label.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    label.textAlignment = NSTextAlignmentLeft;
     [card.contentView addSubview:label];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -959,11 +962,13 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-6],
         [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
         [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-        [label.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:8],
-        [label.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-8],
+        [label.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:10],
+        [label.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-10],
         [label.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:12],
         [label.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-12],
     ]];
+    CGFloat fitH = [label sizeThatFits:CGSizeMake(MAX(120.0, width - 56.0), CGFLOAT_MAX)].height;
+    container.frame = CGRectMake(0, 0, width, MAX(54.0, ceil(fitH) + 32.0));
     return container;
 }
 
@@ -1201,7 +1206,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         c.textProperties.numberOfLines = 0;
     } else if (!_tables.count) {
         c.text = WQLocalizedNullable(@"No tables");
-        c.textProperties.color = UIColor.secondaryLabelColor;
+        c.textProperties.color = wq_theme_secondary_text();
     } else {
         NSDictionary *table = _tables[(NSUInteger)indexPath.row];
         BOOL view = [table[@"type"] isEqualToString:@"view"];

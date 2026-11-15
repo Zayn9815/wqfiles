@@ -277,10 +277,12 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         _nameLabel = [UILabel new];
         _nameLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
         _nameLabel.textColor = wq_theme_primary_text();
-        _nameLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        _nameLabel.numberOfLines = 2;
+        _nameLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         _detailLabel = [UILabel new];
         _detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
         _detailLabel.textColor = wq_theme_secondary_text();
+        _detailLabel.numberOfLines = 0;
         _detailLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
         _sizeLabel = [UILabel new];
         _sizeLabel.font = [UIFont monospacedDigitSystemFontOfSize:15 weight:UIFontWeightSemibold];

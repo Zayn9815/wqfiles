@@ -45,20 +45,20 @@ const CGFloat kWQDeviceStripHeight = 52;
 // Frosted crimson Liquid Glass pill with the WQ Glass version and the device/iOS line.
 UIView *wq_device_header(CGFloat width)
 {
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, kWQDeviceStripHeight + 16)];
+    CGFloat useWidth = width > 0 ? width : 360.0;
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, useWidth, kWQDeviceStripHeight + 16)];
     box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UIVisualEffectView *pill = wq_theme_make_glass_card(18, NO);
     [box addSubview:pill];
 
     UILabel *header = [UILabel new];
     header.translatesAutoresizingMaskIntoConstraints = NO;
-    header.numberOfLines = 2;
+    header.numberOfLines = 0;
+    header.lineBreakMode = NSLineBreakByWordWrapping;
     header.textAlignment = NSTextAlignmentCenter;
     header.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     header.textColor = wq_theme_secondary_text();
     header.backgroundColor = [UIColor clearColor];
-    header.adjustsFontSizeToFitWidth = YES;
-    header.minimumScaleFactor = 0.78;
     header.text = [NSString stringWithFormat:@"%@\n%@", wq_app_version_line(), wq_device_line()];
     [pill.contentView addSubview:header];
 
@@ -66,12 +66,17 @@ UIView *wq_device_header(CGFloat width)
         [pill.topAnchor constraintEqualToAnchor:box.topAnchor constant:2],
         [pill.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
         [pill.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
-        [pill.heightAnchor constraintEqualToConstant:kWQDeviceStripHeight - 2],
-        [header.topAnchor constraintEqualToAnchor:pill.contentView.topAnchor constant:6],
-        [header.bottomAnchor constraintEqualToAnchor:pill.contentView.bottomAnchor constant:-6],
+        [pill.heightAnchor constraintGreaterThanOrEqualToConstant:kWQDeviceStripHeight - 2],
+        [header.topAnchor constraintEqualToAnchor:pill.contentView.topAnchor constant:7],
+        [header.bottomAnchor constraintEqualToAnchor:pill.contentView.bottomAnchor constant:-7],
         [header.leadingAnchor constraintEqualToAnchor:pill.contentView.leadingAnchor constant:12],
         [header.trailingAnchor constraintEqualToAnchor:pill.contentView.trailingAnchor constant:-12],
     ]];
+
+    [box layoutIfNeeded];
+    CGSize labelSize = [header sizeThatFits:CGSizeMake(MAX(120.0, useWidth - 56.0), CGFLOAT_MAX)];
+    CGFloat pillHeight = MAX(kWQDeviceStripHeight - 2, ceil(labelSize.height) + 14.0);
+    box.frame = CGRectMake(0, 0, useWidth, pillHeight + 16.0);
     return box;
 }
 

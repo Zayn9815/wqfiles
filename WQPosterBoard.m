@@ -12,6 +12,7 @@
 #import "WQLaunchServices.h"
 #import "WQDir.h"
 #import "WQLocalization.h"
+#import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <dlfcn.h>
 #import <objc/message.h>
@@ -19,18 +20,125 @@
 
 static NSString *const kPosterBoardBundleID = @"com.apple.PosterBoard";
 static NSString *const kPosterStoreRelPath = @"Library/Application Support/PRBPosterExtensionDataStore";
+static NSString *const kDefaultCollectionsProvider = @"com.apple.WallpaperKit.CollectionsPoster";
 
 typedef NS_ENUM(NSInteger, WQPosterPickerMode) {
     WQPosterPickerTendies = 1,
     WQPosterPickerPhotoFile = 2,
 };
 
-#pragma mark - Container & backup helpers
+#pragma mark - Container, grant & backup helpers
+
+static BOOL wq_pb_is_numeric_name(NSString *name)
+{
+    if (!name.length) return NO;
+    for (NSUInteger i = 0; i < name.length; i++) {
+        unichar c = [name characterAtIndex:i];
+        if (c < '0' || c > '9') return NO;
+    }
+    return YES;
+}
+
+static BOOL wq_pb_looks_like_uuid(NSString *name)
+{
+    if (name.length != 36) return NO;
+    return [[NSUUID alloc] initWithUUIDString:name] != nil;
+}
 
 static NSString *_Nullable wq_pb_docs_backup_root(void)
 {
     NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     return docs.length ? [docs stringByAppendingPathComponent:@"PosterBoardBackups"] : nil;
+}
+
+static void wq_pb_grant_ancestry(NSString *containerPath)
+{
+    if (!containerPath.length) return;
+    wq_grant(containerPath);
+    NSString *lib = [containerPath stringByAppendingPathComponent:@"Library"];
+    wq_grant(lib);
+    NSString *appSupport = [lib stringByAppendingPathComponent:@"Application Support"];
+    wq_grant(appSupport);
+    wq_grant([appSupport stringByAppendingPathComponent:@"PRBPosterExtensionDataStore"]);
+}
+
+static void wq_pb_grant_tree(NSString *dir, NSUInteger depth)
+{
+    if (!dir.length || depth > 8) return;
+    wq_grant(dir);
+    NSArray<NSString *> *entries = wq_list(dir, nil);
+    for (NSString *name in entries) {
+        if ([name hasPrefix:@"."]) continue;
+        NSString *child = [dir stringByAppendingPathComponent:name];
+        struct stat st;
+        if (wq_stat(child, &st) && S_ISDIR(st.st_mode)) {
+            wq_pb_grant_tree(child, depth + 1);
+        }
+    }
+}
+
+static BOOL wq_pb_ensure_dir(NSString *targetDir, NSString *anchorDir, NSString **errorText)
+{
+    struct stat st;
+    if (wq_stat(targetDir, &st)) {
+        if (S_ISDIR(st.st_mode)) {
+            wq_grant(targetDir);
+            return YES;
+        }
+        if (errorText) *errorText = [NSString stringWithFormat:@"%@ exists as a file instead of a folder", targetDir.lastPathComponent];
+        return NO;
+    }
+    NSString *normTarget = targetDir.stringByStandardizingPath;
+    NSString *normAnchor = anchorDir.stringByStandardizingPath;
+    if (![normTarget hasPrefix:normAnchor]) {
+        wq_grant(targetDir.stringByDeletingLastPathComponent);
+        return wq_create_dir(targetDir, errorText);
+    }
+    NSString *rel = [normTarget substringFromIndex:normAnchor.length];
+    NSArray<NSString *> *parts = [rel pathComponents];
+    NSString *cur = normAnchor;
+    wq_grant(cur);
+    for (NSString *part in parts) {
+        if (!part.length || [part isEqualToString:@"/"]) continue;
+        cur = [cur stringByAppendingPathComponent:part];
+        if (wq_stat(cur, &st)) {
+            if (!S_ISDIR(st.st_mode)) {
+                if (errorText) *errorText = [NSString stringWithFormat:@"%@ is not a folder", part];
+                return NO;
+            }
+            wq_grant(cur);
+        } else {
+            wq_grant(cur.stringByDeletingLastPathComponent);
+            if (!wq_create_dir(cur, errorText)) return NO;
+            wq_grant(cur);
+        }
+    }
+    return YES;
+}
+
+static NSString *wq_pb_active_store_version(NSString *storePath)
+{
+    NSArray<NSString *> *entries = wq_list(storePath, nil) ?: @[];
+    NSMutableArray<NSString *> *numericWithExt = [NSMutableArray new];
+    NSMutableArray<NSString *> *numericAny = [NSMutableArray new];
+    for (NSString *entry in entries) {
+        if (!wq_pb_is_numeric_name(entry)) continue;
+        NSString *dir = [storePath stringByAppendingPathComponent:entry];
+        struct stat st;
+        if (!wq_stat(dir, &st) || !S_ISDIR(st.st_mode)) continue;
+        [numericAny addObject:entry];
+        NSString *ext = [dir stringByAppendingPathComponent:@"Extensions"];
+        if (wq_stat(ext, &st) && S_ISDIR(st.st_mode)) {
+            [numericWithExt addObject:entry];
+        }
+    }
+    NSArray<NSString *> *pool = numericWithExt.count ? numericWithExt : numericAny;
+    NSArray<NSString *> *sorted = [pool sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        NSInteger ia = a.integerValue;
+        NSInteger ib = b.integerValue;
+        return ib > ia ? NSOrderedDescending : (ib < ia ? NSOrderedAscending : NSOrderedSame);
+    }];
+    return sorted.firstObject ?: @"61";
 }
 
 static NSString *_Nullable wq_pb_ls_container(void)
@@ -61,13 +169,16 @@ static NSString *_Nullable wq_pb_find_container(void)
     NSArray<NSString *> *paths = wq_ls_container_paths(nil);
     for (NSString *path in paths) {
         NSString *bid = wq_bundle_id_for_container(path) ?: wq_container_label(path);
-        if ([bid isEqualToString:kPosterBoardBundleID]) return path;
+        if ([bid isEqualToString:kPosterBoardBundleID]) {
+            wq_pb_grant_ancestry(path);
+            return path;
+        }
     }
 
     // 2. Live LSApplicationProxy lookup.
     NSString *lsPath = wq_pb_ls_container();
     if (lsPath.length) {
-        wq_grant(lsPath);
+        wq_pb_grant_ancestry(lsPath);
         return lsPath;
     }
 
@@ -75,7 +186,10 @@ static NSString *_Nullable wq_pb_find_container(void)
     NSArray<NSString *> *enumerated = wq_enumerate(@"/private/var/mobile/Containers/Data/Application", 0, nil, nil);
     for (NSString *path in enumerated) {
         NSString *label = wq_container_label(path);
-        if ([label isEqualToString:kPosterBoardBundleID]) return path;
+        if ([label isEqualToString:kPosterBoardBundleID]) {
+            wq_pb_grant_ancestry(path);
+            return path;
+        }
     }
     return nil;
 }
@@ -104,6 +218,7 @@ static NSArray<NSString *> *wq_pb_list_backups(void)
 // Copies a container folder locally to dstLocalDir through WQAccess.
 static BOOL wq_pb_export_dir_to_local(NSString *srcContainerDir, NSString *dstLocalDir, NSUInteger *fileCount, NSString **errorText)
 {
+    wq_grant(srcContainerDir);
     NSString *err = nil;
     NSArray<NSString *> *entries = wq_list(srcContainerDir, &err);
     if (!entries) {
@@ -170,37 +285,221 @@ static NSString *_Nullable wq_pb_create_backup(NSString *storePath, NSUInteger *
     return finalDir;
 }
 
-// Finds the inner PRBPosterExtensionDataStore-equivalent root inside an extracted .tendies folder.
-static NSString *wq_pb_locate_payload_root(NSString *extractedDir)
+static BOOL wq_pb_merge_local_dir(NSString *localDir, NSString *remoteDir, NSString *anchorDir,
+                                  NSUInteger *copiedFiles, NSString **errorText)
 {
+    if (!wq_pb_ensure_dir(remoteDir, anchorDir, errorText)) return NO;
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSArray<NSString *> *candidates = @[
-        [extractedDir stringByAppendingPathComponent:@"Library/Application Support/PRBPosterExtensionDataStore"],
-        [extractedDir stringByAppendingPathComponent:@"PRBPosterExtensionDataStore"],
-        [extractedDir stringByAppendingPathComponent:@"com.apple.PosterBoard/Library/Application Support/PRBPosterExtensionDataStore"],
-    ];
-    for (NSString *cand in candidates) {
-        BOOL isDir = NO;
-        if ([fm fileExistsAtPath:cand isDirectory:&isDir] && isDir) return cand;
+    NSError *listErr = nil;
+    NSArray<NSString *> *items = [fm contentsOfDirectoryAtPath:localDir error:&listErr];
+    if (!items) {
+        if (errorText) *errorText = listErr.localizedDescription ?: @"Unable to read extracted archive folder";
+        return NO;
     }
-    // Check one level deep for numbered store folders or descriptor containers.
-    NSArray<NSString *> *top = [fm contentsOfDirectoryAtPath:extractedDir error:nil] ?: @[];
-    NSMutableArray<NSString *> *nonHidden = [NSMutableArray new];
-    for (NSString *entry in top) {
-        if ([entry hasPrefix:@"."] || [entry isEqualToString:@"__MACOSX"]) continue;
-        [nonHidden addObject:entry];
-    }
-    if (nonHidden.count == 1) {
-        NSString *single = [extractedDir stringByAppendingPathComponent:nonHidden.firstObject];
-        NSString *nested = [single stringByAppendingPathComponent:@"PRBPosterExtensionDataStore"];
-        BOOL isDir = NO;
-        if ([fm fileExistsAtPath:nested isDirectory:&isDir] && isDir) return nested;
-        if ([fm fileExistsAtPath:single isDirectory:&isDir] && isDir &&
-            ([nonHidden.firstObject hasPrefix:@"Container"] || [nonHidden.firstObject isEqualToString:@"Descriptors"] || [nonHidden.firstObject isEqualToString:@"Store"])) {
-            return single;
+    for (NSString *name in items) {
+        if ([name isEqualToString:@".DS_Store"] || [name isEqualToString:@"__MACOSX"]) continue;
+        NSString *localChild = [localDir stringByAppendingPathComponent:name];
+        NSString *remoteChild = [remoteDir stringByAppendingPathComponent:name];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:localChild error:nil];
+        NSString *ftype = attrs[NSFileType];
+        if ([ftype isEqualToString:NSFileTypeSymbolicLink]) continue;
+        if ([ftype isEqualToString:NSFileTypeDirectory]) {
+            if (!wq_pb_merge_local_dir(localChild, remoteChild, anchorDir, copiedFiles, errorText)) return NO;
+        } else if ([ftype isEqualToString:NSFileTypeRegular]) {
+            struct stat st;
+            wq_grant(remoteDir);
+            BOOL ok = NO;
+            if (wq_stat(remoteChild, &st)) {
+                ok = S_ISREG(st.st_mode) ? wq_write_from_file(remoteChild, localChild, errorText) : NO;
+                if (!ok && !S_ISREG(st.st_mode) && errorText && !*errorText) {
+                    *errorText = [NSString stringWithFormat:@"%@ is not a regular file", name];
+                }
+            } else {
+                ok = wq_create_file_from(remoteChild, localChild, errorText);
+            }
+            if (!ok) return NO;
+            if (copiedFiles) (*copiedFiles)++;
         }
     }
-    return extractedDir;
+    return YES;
+}
+
+// Finds a named subdirectory up to maxDepth levels below root (breadth-first), ignoring __MACOSX.
+static NSString *_Nullable wq_pb_find_named_dir(NSString *root, NSString *targetName, NSUInteger maxDepth)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSMutableArray<NSArray *> *queue = [NSMutableArray arrayWithObject:@[root, @0]];
+    while (queue.count) {
+        NSArray *node = queue.firstObject;
+        [queue removeObjectAtIndex:0];
+        NSString *dir = node[0];
+        NSUInteger depth = [node[1] unsignedIntegerValue];
+        if ([dir.lastPathComponent isEqualToString:targetName]) return dir;
+        if (depth >= maxDepth) continue;
+        NSArray<NSString *> *children = [fm contentsOfDirectoryAtPath:dir error:nil] ?: @[];
+        for (NSString *name in children) {
+            if ([name isEqualToString:@"__MACOSX"] || [name hasPrefix:@"."]) continue;
+            NSString *child = [dir stringByAppendingPathComponent:name];
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:child isDirectory:&isDir] && isDir) {
+                [queue addObject:@[child, @(depth + 1)]];
+            }
+        }
+    }
+    return nil;
+}
+
+static BOOL wq_pb_is_descriptor_dir(NSString *dir)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    BOOL isDir = NO;
+    return [fm fileExistsAtPath:[dir stringByAppendingPathComponent:@"versions"] isDirectory:&isDir] && isDir;
+}
+
+// Applies any standard .tendies archive layout (full Container store, versioned Extensions,
+// provider folders, descriptors/configurations buckets, or bare descriptor UUID folders)
+// into the device's active PRBPosterExtensionDataStore version without wiping existing posters.
+static BOOL wq_pb_apply_tendies_from_staging(NSString *staging, NSString *storePath,
+                                             NSUInteger *appliedFiles, NSString **errorText)
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *activeVer = wq_pb_active_store_version(storePath);
+    NSString *activeVerDir = [storePath stringByAppendingPathComponent:activeVer];
+    NSString *activeExtensionsDir = [activeVerDir stringByAppendingPathComponent:@"Extensions"];
+    NSString *defaultDescriptorsDir = [[activeExtensionsDir stringByAppendingPathComponent:kDefaultCollectionsProvider]
+                                       stringByAppendingPathComponent:@"descriptors"];
+
+    if (!wq_pb_ensure_dir(activeExtensionsDir, storePath, errorText)) return NO;
+
+    NSUInteger copied = 0;
+
+    // 1. Container / PRBPosterExtensionDataStore store backup or export.
+    NSString *foundStore = wq_pb_find_named_dir(staging, @"PRBPosterExtensionDataStore", 4);
+    if (foundStore) {
+        NSArray<NSString *> *children = [fm contentsOfDirectoryAtPath:foundStore error:nil] ?: @[];
+        NSString *bestVerDir = nil;
+        NSInteger bestVer = -1;
+        for (NSString *c in children) {
+            if (!wq_pb_is_numeric_name(c)) continue;
+            NSString *cand = [foundStore stringByAppendingPathComponent:c];
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:[cand stringByAppendingPathComponent:@"Extensions"] isDirectory:&isDir] && isDir &&
+                c.integerValue > bestVer) {
+                bestVer = c.integerValue;
+                bestVerDir = cand;
+            }
+        }
+        NSString *extSrc = bestVerDir
+            ? [bestVerDir stringByAppendingPathComponent:@"Extensions"]
+            : ([fm fileExistsAtPath:[foundStore stringByAppendingPathComponent:@"Extensions"] isDirectory:nil]
+               ? [foundStore stringByAppendingPathComponent:@"Extensions"] : nil);
+        if (extSrc) {
+            if (!wq_pb_merge_local_dir(extSrc, activeExtensionsDir, storePath, &copied, errorText)) return NO;
+            if (appliedFiles) *appliedFiles = copied;
+            return copied > 0;
+        }
+    }
+
+    // 2. Unwrap neutral single wrapper directory if present (e.g., MyTheme.tendies -> MyTheme/...).
+    NSString *workRoot = staging;
+    for (int unwrap = 0; unwrap < 3; unwrap++) {
+        NSArray<NSString *> *entries = [fm contentsOfDirectoryAtPath:workRoot error:nil] ?: @[];
+        NSMutableArray<NSString *> *visible = [NSMutableArray new];
+        for (NSString *e in entries) {
+            if ([e hasPrefix:@"."] || [e isEqualToString:@"__MACOSX"]) continue;
+            [visible addObject:e];
+        }
+        if (visible.count != 1) break;
+        NSString *only = visible.firstObject;
+        NSString *onlyPath = [workRoot stringByAppendingPathComponent:only];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:onlyPath isDirectory:&isDir] || !isDir) break;
+        if ([only isEqualToString:@"Extensions"] || [only isEqualToString:@"descriptors"] ||
+            [only isEqualToString:@"configurations"] || [only isEqualToString:@"versions"] ||
+            wq_pb_is_descriptor_dir(onlyPath) || wq_pb_is_numeric_name(only)) {
+            break;
+        }
+        workRoot = onlyPath;
+    }
+
+    // 3. Direct Extensions/ or <ver>/Extensions/ tree.
+    NSString *extRoot = wq_pb_find_named_dir(workRoot, @"Extensions", 2);
+    if (extRoot) {
+        if (!wq_pb_merge_local_dir(extRoot, activeExtensionsDir, storePath, &copied, errorText)) return NO;
+        if (appliedFiles) *appliedFiles = copied;
+        if (copied == 0 && errorText && !*errorText) *errorText = @"Extensions folder in archive contained no files.";
+        return copied > 0;
+    }
+
+    // 4. Direct descriptors/ or configurations/ buckets (standard Nugget / MisakaX .tendies layout).
+    NSArray<NSString *> *topEntries = [fm contentsOfDirectoryAtPath:workRoot error:nil] ?: @[];
+    BOOL handledBucket = NO;
+    for (NSString *name in topEntries) {
+        if ([name hasPrefix:@"."] || [name isEqualToString:@"__MACOSX"]) continue;
+        NSString *src = [workRoot stringByAppendingPathComponent:name];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:src isDirectory:&isDir] || !isDir) continue;
+        NSString *lower = name.lowercaseString;
+        if ([lower isEqualToString:@"descriptors"] || [lower isEqualToString:@"configurations"]) {
+            NSString *dst = [[activeExtensionsDir stringByAppendingPathComponent:kDefaultCollectionsProvider]
+                             stringByAppendingPathComponent:lower];
+            if (!wq_pb_merge_local_dir(src, dst, storePath, &copied, errorText)) return NO;
+            handledBucket = YES;
+        } else if ([name containsString:@"."]) {
+            // Provider bundle ID directory containing descriptors/configurations
+            BOOL hasSubBucket = NO;
+            for (NSString *sub in ([fm contentsOfDirectoryAtPath:src error:nil] ?: @[])) {
+                if ([sub isEqualToString:@"descriptors"] || [sub isEqualToString:@"configurations"]) {
+                    hasSubBucket = YES;
+                    break;
+                }
+            }
+            if (hasSubBucket) {
+                NSString *dst = [activeExtensionsDir stringByAppendingPathComponent:name];
+                if (!wq_pb_merge_local_dir(src, dst, storePath, &copied, errorText)) return NO;
+                handledBucket = YES;
+            }
+        }
+    }
+    if (handledBucket) {
+        if (appliedFiles) *appliedFiles = copied;
+        if (copied == 0 && errorText && !*errorText) *errorText = @"Descriptor folders in archive contained no files.";
+        return copied > 0;
+    }
+
+    // 5. Bare descriptor folder(s): either <UUID>/versions/... or versions/ at top level.
+    if (wq_pb_is_descriptor_dir(workRoot)) {
+        NSString *uuidName = wq_pb_looks_like_uuid(workRoot.lastPathComponent)
+            ? workRoot.lastPathComponent.uppercaseString
+            : NSUUID.UUID.UUIDString;
+        NSString *dst = [defaultDescriptorsDir stringByAppendingPathComponent:uuidName];
+        if (!wq_pb_merge_local_dir(workRoot, dst, storePath, &copied, errorText)) return NO;
+        if (appliedFiles) *appliedFiles = copied;
+        return copied > 0;
+    }
+
+    BOOL mergedDescriptor = NO;
+    for (NSString *name in topEntries) {
+        if ([name hasPrefix:@"."] || [name isEqualToString:@"__MACOSX"]) continue;
+        NSString *src = [workRoot stringByAppendingPathComponent:name];
+        BOOL isDir = NO;
+        if (![fm fileExistsAtPath:src isDirectory:&isDir] || !isDir) continue;
+        if (wq_pb_is_descriptor_dir(src)) {
+            NSString *uuidName = wq_pb_looks_like_uuid(name) ? name.uppercaseString : NSUUID.UUID.UUIDString;
+            NSString *dst = [defaultDescriptorsDir stringByAppendingPathComponent:uuidName];
+            if (!wq_pb_merge_local_dir(src, dst, storePath, &copied, errorText)) return NO;
+            mergedDescriptor = YES;
+        }
+    }
+    if (mergedDescriptor) {
+        if (appliedFiles) *appliedFiles = copied;
+        return copied > 0;
+    }
+
+    if (errorText && !*errorText) {
+        *errorText = @"Unrecognized .tendies layout: expected descriptors/, Extensions/, PRBPosterExtensionDataStore, or a UUID/versions bundle.";
+    }
+    return NO;
 }
 
 static NSUInteger wq_pb_count_regular_files_local(NSString *dir)
@@ -216,57 +515,102 @@ static NSUInteger wq_pb_count_regular_files_local(NSString *dir)
     return count;
 }
 
+static NSData *_Nullable wq_pb_encode_heic(UIImage *image)
+{
+    if (!image.CGImage) return nil;
+    NSMutableData *out = [NSMutableData new];
+    CFStringRef typeID = (__bridge CFStringRef)(UTTypeHEIC.identifier ?: @"public.heic");
+    CGImageDestinationRef dest = CGImageDestinationCreateWithData((__bridge CFMutableDataRef)out, typeID, 1, NULL);
+    if (!dest) return nil;
+    NSDictionary *props = @{ (__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.92) };
+    CGImageDestinationAddImage(dest, image.CGImage, (__bridge CFDictionaryRef)props);
+    BOOL finalized = CGImageDestinationFinalize(dest);
+    CFRelease(dest);
+    return finalized && out.length > 0 ? out : nil;
+}
+
+static void wq_pb_collect_images_in_dir(NSString *dir, NSUInteger depth, NSMutableArray<NSString *> *outPaths)
+{
+    if (depth > 5) return;
+    wq_grant(dir);
+    NSArray<NSString *> *entries = wq_list(dir, nil);
+    for (NSString *name in entries) {
+        if ([name hasPrefix:@"."]) continue;
+        NSString *child = [dir stringByAppendingPathComponent:name];
+        struct stat st;
+        if (!wq_stat(child, &st)) continue;
+        if (S_ISDIR(st.st_mode)) {
+            wq_pb_collect_images_in_dir(child, depth + 1, outPaths);
+        } else if (S_ISREG(st.st_mode)) {
+            NSString *lower = name.lowercaseString;
+            if ([lower hasSuffix:@".jpg"] || [lower hasSuffix:@".jpeg"] ||
+                [lower hasSuffix:@".heic"] || [lower hasSuffix:@".png"]) {
+                [outPaths addObject:child];
+            }
+        }
+    }
+}
+
 // Finds candidate wallpaper / asset folders inside PRBPosterExtensionDataStore where a custom photo
 // wallpaper can be installed without breaking store structure.
 static NSArray<NSString *> *wq_pb_find_wallpaper_targets(NSString *storePath)
 {
-    NSMutableArray<NSString *> *targets = [NSMutableArray new];
+    NSMutableArray<NSString *> *primaryTargets = [NSMutableArray new];
+    NSMutableArray<NSString *> *fallbackTargets = [NSMutableArray new];
+    wq_grant(storePath);
     NSArray<NSString *> *top = wq_list(storePath, nil) ?: @[];
     for (NSString *entry in top) {
         NSString *versionDir = [storePath stringByAppendingPathComponent:entry];
         struct stat st;
         if (!wq_stat(versionDir, &st) || !S_ISDIR(st.st_mode)) continue;
+        wq_grant(versionDir);
         NSString *extensionsDir = [versionDir stringByAppendingPathComponent:@"Extensions"];
         NSArray<NSString *> *exts = wq_list(extensionsDir, nil) ?: @[];
         for (NSString *ext in exts) {
-            if ([ext containsString:@"PhotosPosterProvider"] || [ext containsString:@"CollectionsPoster"] || [ext containsString:@"Wallpaper"]) {
-                NSString *extPath = [extensionsDir stringByAppendingPathComponent:ext];
-                NSArray<NSString *> *sub = wq_list(extPath, nil) ?: @[];
-                for (NSString *item in sub) {
-                    if ([item isEqualToString:@"descriptors"] || [item isEqualToString:@"configurations"]) {
-                        [targets addObject:[extPath stringByAppendingPathComponent:item]];
-                    }
+            NSString *extPath = [extensionsDir stringByAppendingPathComponent:ext];
+            BOOL preferred = [ext containsString:@"PhotosPosterProvider"] ||
+                             [ext containsString:@"CollectionsPoster"] ||
+                             [ext containsString:@"Wallpaper"];
+            BOOL posterLike = preferred || [ext containsString:@"Poster"];
+            if (!posterLike) continue;
+            NSArray<NSString *> *sub = wq_list(extPath, nil) ?: @[];
+            for (NSString *item in sub) {
+                if ([item isEqualToString:@"configurations"] || [item isEqualToString:@"descriptors"]) {
+                    NSString *target = [extPath stringByAppendingPathComponent:item];
+                    [preferred ? primaryTargets : fallbackTargets addObject:target];
                 }
             }
         }
     }
-    return targets;
+    return primaryTargets.count ? primaryTargets : fallbackTargets;
 }
 
-static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, NSData *jpegData, NSData *pngData, NSString **errorText)
+static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, NSData *jpegData, NSData *pngData, NSData *_Nullable heicData, NSString **errorText)
 {
     NSUInteger injected = 0;
+    wq_grant(parentDir);
     NSArray<NSString *> *uuids = wq_list(parentDir, nil) ?: @[];
     for (NSString *uuid in uuids) {
         NSString *descDir = [parentDir stringByAppendingPathComponent:uuid];
+        wq_grant(descDir);
         NSString *versionsDir = [descDir stringByAppendingPathComponent:@"versions"];
         NSArray<NSString *> *versions = wq_list(versionsDir, nil) ?: @[];
         for (NSString *ver in versions) {
-            NSString *contentsDir = [[versionsDir stringByAppendingPathComponent:ver] stringByAppendingPathComponent:@"contents"];
-            NSArray<NSString *> *files = wq_list(contentsDir, nil);
-            if (!files) continue;
-            for (NSString *file in files) {
-                NSString *lower = file.lowercaseString;
-                NSString *dest = [contentsDir stringByAppendingPathComponent:file];
-                if ([lower hasSuffix:@".jpg"] || [lower hasSuffix:@".jpeg"] || [lower hasSuffix:@".heic"]) {
-                    NSString *err = nil;
-                    if (wq_write(dest, jpegData, &err)) injected++;
-                    else if (errorText && !*errorText) *errorText = err;
-                } else if ([lower hasSuffix:@".png"]) {
-                    NSString *err = nil;
-                    if (wq_write(dest, pngData, &err)) injected++;
-                    else if (errorText && !*errorText) *errorText = err;
-                }
+            NSString *verPath = [versionsDir stringByAppendingPathComponent:ver];
+            wq_grant(verPath);
+            NSString *contentsDir = [verPath stringByAppendingPathComponent:@"contents"];
+            NSMutableArray<NSString *> *imageFiles = [NSMutableArray new];
+            wq_pb_collect_images_in_dir(contentsDir, 0, imageFiles);
+            for (NSString *dest in imageFiles) {
+                NSString *lower = dest.lowercaseString;
+                NSData *payload = nil;
+                if ([lower hasSuffix:@".png"]) payload = pngData;
+                else if ([lower hasSuffix:@".heic"]) payload = heicData ?: jpegData;
+                else payload = jpegData;
+                if (!payload.length) continue;
+                NSString *err = nil;
+                if (wq_write(dest, payload, &err)) injected++;
+                else if (errorText && !*errorText) *errorText = err;
             }
         }
     }
@@ -281,6 +625,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 @implementation WQPosterBoardViewController {
     UIScrollView *_scroll;
     UIStackView *_stack;
+    UIStackView *_quickRow;
     UILabel *_containerBadgeLabel;
     UILabel *_storeStatusLabel;
     UILabel *_backupStatusLabel;
@@ -321,6 +666,15 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 
     [self buildInterface];
     [self refreshStoreState];
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    if (_quickRow) {
+        BOOL narrow = self.view.bounds.size.width < 360.0;
+        _quickRow.axis = narrow ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
+    }
 }
 
 - (void)buildInterface
@@ -392,6 +746,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     UILabel *heroTitle = [UILabel new];
     heroTitle.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold];
     heroTitle.textColor = wq_theme_primary_text();
+    heroTitle.numberOfLines = 0;
     heroTitle.text = @"PosterBoard & Wallpaper Studio";
 
     _containerBadgeLabel = [UILabel new];
@@ -416,7 +771,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     wq_theme_style_primary_button(_importTendiesButton, @"Import .tendies Archive", @"archivebox.fill");
     [_importTendiesButton addTarget:self action:@selector(pickTendiesArchive) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [_importTendiesButton.heightAnchor constraintEqualToConstant:48],
+        [_importTendiesButton.heightAnchor constraintGreaterThanOrEqualToConstant:48],
     ]];
     [heroStack addArrangedSubview:_importTendiesButton];
     [_stack addArrangedSubview:heroCard];
@@ -438,6 +793,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     UILabel *wallTitle = [UILabel new];
     wallTitle.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
     wallTitle.textColor = wq_theme_primary_text();
+    wallTitle.numberOfLines = 0;
     wallTitle.text = @"Custom Photo Wallpaper";
 
     UILabel *wallSub = [UILabel new];
@@ -469,7 +825,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     wq_theme_style_secondary_button(_photoWallpaperButton, @"Choose Custom Photo Wallpaper", @"photo.badge.plus.fill");
     [_photoWallpaperButton addTarget:self action:@selector(choosePhotoWallpaper) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [_photoWallpaperButton.heightAnchor constraintEqualToConstant:44],
+        [_photoWallpaperButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
     ]];
 
     [wallStack addArrangedSubview:wallTitle];
@@ -496,12 +852,13 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     UILabel *actionsTitle = [UILabel new];
     actionsTitle.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
     actionsTitle.textColor = wq_theme_primary_text();
+    actionsTitle.numberOfLines = 0;
     actionsTitle.text = @"System Actions";
 
-    UIStackView *quickRow = [UIStackView new];
-    quickRow.axis = UILayoutConstraintAxisHorizontal;
-    quickRow.distribution = UIStackViewDistributionFillEqually;
-    quickRow.spacing = 10;
+    _quickRow = [UIStackView new];
+    _quickRow.axis = UILayoutConstraintAxisHorizontal;
+    _quickRow.distribution = UIStackViewDistributionFillEqually;
+    _quickRow.spacing = 10;
 
     _openPosterBoardButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _openPosterBoardButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -511,26 +868,32 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     _respringButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _respringButton.translatesAutoresizingMaskIntoConstraints = NO;
     wq_theme_style_secondary_button(_respringButton, @"Respring", @"arrow.trianglehead.2.clockwise.rotate.90");
-    _respringButton.backgroundColor = wq_theme_active_pill();
+    UIButtonConfiguration *respringCfg = [_respringButton.configuration copy];
+    if (respringCfg) {
+        respringCfg.baseBackgroundColor = wq_theme_active_pill();
+        respringCfg.background.strokeColor = [UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.55];
+        respringCfg.background.strokeWidth = 1.0;
+        _respringButton.configuration = respringCfg;
+    }
     [_respringButton addTarget:self action:@selector(confirmRespring) forControlEvents:UIControlEventTouchUpInside];
 
     [NSLayoutConstraint activateConstraints:@[
-        [_openPosterBoardButton.heightAnchor constraintEqualToConstant:44],
-        [_respringButton.heightAnchor constraintEqualToConstant:44],
+        [_openPosterBoardButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [_respringButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
     ]];
-    [quickRow addArrangedSubview:_openPosterBoardButton];
-    [quickRow addArrangedSubview:_respringButton];
+    [_quickRow addArrangedSubview:_openPosterBoardButton];
+    [_quickRow addArrangedSubview:_respringButton];
 
     _browseStoreButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _browseStoreButton.translatesAutoresizingMaskIntoConstraints = NO;
     wq_theme_style_secondary_button(_browseStoreButton, @"Browse PRBPosterExtensionDataStore", @"folder.fill");
     [_browseStoreButton addTarget:self action:@selector(browseStore) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [_browseStoreButton.heightAnchor constraintEqualToConstant:42],
+        [_browseStoreButton.heightAnchor constraintGreaterThanOrEqualToConstant:42],
     ]];
 
     [actionsStack addArrangedSubview:actionsTitle];
-    [actionsStack addArrangedSubview:quickRow];
+    [actionsStack addArrangedSubview:_quickRow];
     [actionsStack addArrangedSubview:_browseStoreButton];
     [_stack addArrangedSubview:actionsCard];
 
@@ -551,6 +914,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     UILabel *backupTitle = [UILabel new];
     backupTitle.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
     backupTitle.textColor = wq_theme_primary_text();
+    backupTitle.numberOfLines = 0;
     backupTitle.text = @"Safety Backups";
 
     _backupStatusLabel = [UILabel new];
@@ -563,7 +927,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
     wq_theme_style_secondary_button(_restoreBackupButton, @"Restore Backup", @"arrow.uturn.backward.circle.fill");
     [_restoreBackupButton addTarget:self action:@selector(restoreBackupTapped) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [_restoreBackupButton.heightAnchor constraintEqualToConstant:44],
+        [_restoreBackupButton.heightAnchor constraintGreaterThanOrEqualToConstant:44],
     ]];
 
     [backupStack addArrangedSubview:backupTitle];
@@ -603,14 +967,16 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
         NSString *container = wq_pb_find_container();
         NSString *store = nil;
         NSArray<NSString *> *versions = @[];
+        NSString *activeVersion = nil;
         if (container.length) {
-            wq_grant(container);
+            wq_pb_grant_ancestry(container);
             NSString *candidate = [container stringByAppendingPathComponent:kPosterStoreRelPath];
             struct stat st;
             if (wq_stat(candidate, &st) && S_ISDIR(st.st_mode)) {
                 store = candidate;
                 wq_grant(store);
                 versions = wq_list(store, nil) ?: @[];
+                activeVersion = wq_pb_active_store_version(store);
             }
         }
         NSArray<NSString *> *backups = wq_pb_list_backups();
@@ -621,8 +987,8 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
             self->_backups = backups;
 
             if (store.length) {
-                self->_containerBadgeLabel.text = [NSString stringWithFormat:@"%@ · %lu store folder(s)",
-                    kPosterBoardBundleID, (unsigned long)versions.count];
+                self->_containerBadgeLabel.text = [NSString stringWithFormat:@"%@ · store v%@ · %lu folder(s)",
+                    kPosterBoardBundleID, activeVersion ?: @"?", (unsigned long)versions.count];
                 self->_storeStatusLabel.text = store;
             } else if (container.length) {
                 self->_containerBadgeLabel.text = @"Container found · Data store missing";
@@ -650,7 +1016,10 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 {
     if (_busy || !_storePath.length) return;
     _pickerMode = WQPosterPickerTendies;
-    NSArray<UTType *> *types = @[UTTypeZIP, UTTypeArchive, UTTypeData];
+    UTType *tendiesType = [UTType typeWithFilenameExtension:@"tendies"];
+    NSMutableArray<UTType *> *types = [NSMutableArray array];
+    if (tendiesType) [types addObject:tendiesType];
+    [types addObjectsFromArray:@[UTTypeZIP, UTTypeArchive, UTTypeData]];
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
@@ -659,6 +1028,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 
 - (void)applyTendiesAtLocalURL:(NSURL *)url
 {
+    NSString *containerPath = _containerPath;
     NSString *storePath = _storePath;
     if (!storePath.length) return;
     _busy = YES;
@@ -679,23 +1049,30 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 
         NSString *backupName = nil;
         NSUInteger backedFiles = 0;
+        NSUInteger appliedFiles = 0;
         if (ok) {
-            NSString *payloadRoot = wq_pb_locate_payload_root(staging);
-            NSUInteger payloadFiles = wq_pb_count_regular_files_local(payloadRoot);
-            if (payloadFiles == 0) {
+            NSUInteger stagedFiles = wq_pb_count_regular_files_local(staging);
+            if (stagedFiles == 0) {
                 ok = NO;
                 err = @"Archive contained no importable files.";
             } else {
+                wq_pb_grant_ancestry(containerPath);
+                wq_pb_grant_tree(storePath, 0);
                 NSString *backupDir = wq_pb_create_backup(storePath, &backedFiles, &err);
                 if (!backupDir) {
                     ok = NO;
                 } else {
                     backupName = backupDir.lastPathComponent;
-                    ok = wq_copy_contents(payloadRoot, storePath, &err);
+                    ok = wq_pb_apply_tendies_from_staging(staging, storePath, &appliedFiles, &err);
                 }
             }
         }
         [NSFileManager.defaultManager removeItemAtPath:staging error:nil];
+        if (ok) {
+            typedef uint32_t (*wq_notify_post_fn)(const char *);
+            wq_notify_post_fn notifyPost = (wq_notify_post_fn)dlsym(RTLD_DEFAULT, "notify_post");
+            if (notifyPost) notifyPost("com.apple.PosterBoard.reload");
+        }
         NSArray<NSString *> *backups = wq_pb_list_backups();
 
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -704,10 +1081,11 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
             [self updateControls];
             if (ok) {
                 self->_activityLabel.text = [NSString stringWithFormat:@"Applied %lu file(s) · Backup %@",
-                    (unsigned long)extractedFiles, backupName ?: @"-"];
+                    (unsigned long)appliedFiles, backupName ?: @"-"];
                 wq_alert(self, WQVerbatim(@"PosterBoard Updated"),
-                         WQVerbatim([NSString stringWithFormat:@"Imported %lu file(s) into PRBPosterExtensionDataStore.\n\nSafety backup saved: %@ (%lu files).\n\nTap Open PosterBoard or Respring to see the changes.",
-                                     (unsigned long)extractedFiles, backupName ?: @"-", (unsigned long)backedFiles]));
+                         WQVerbatim([NSString stringWithFormat:@"Imported %lu file(s) into PRBPosterExtensionDataStore (active store v%@).\n\nSafety backup saved: %@ (%lu files).\n\nTap Open PosterBoard or Respring to see the changes.",
+                                     (unsigned long)appliedFiles, wq_pb_active_store_version(storePath),
+                                     backupName ?: @"-", (unsigned long)backedFiles]));
                 [self refreshStoreState];
             } else {
                 self->_activityLabel.text = [NSString stringWithFormat:@"Import failed: %@", err ?: @"unknown error"];
@@ -753,32 +1131,46 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
         label ?: @"Wallpaper", image.size.width * image.scale, image.size.height * image.scale];
     _previewCaptionLabel.hidden = NO;
 
-    NSData *jpegData = UIImageJPEGRepresentation(image, 0.94);
-    NSData *pngData = UIImagePNGRepresentation(image);
-    if (!jpegData || !pngData) {
-        wq_alert(self, WQVerbatim(@"Wallpaper Error"), WQVerbatim(@"Unable to encode the selected image."));
-        return;
-    }
-
+    NSString *containerPath = _containerPath;
     NSString *storePath = _storePath;
     _busy = YES;
     _activityLabel.text = @"Backing up PosterBoard and preparing wallpaper…";
     [self updateControls];
 
     dispatch_async(wq_io(), ^{
+        NSData *jpegData = UIImageJPEGRepresentation(image, 0.94);
+        NSData *pngData = UIImagePNGRepresentation(image);
+        NSData *heicData = wq_pb_encode_heic(image);
+        if (!jpegData || !pngData) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_busy = NO;
+                [self updateControls];
+                self->_activityLabel.text = @"Unable to encode selected image";
+                wq_alert(self, WQVerbatim(@"Wallpaper Error"), WQVerbatim(@"Unable to encode the selected image."));
+            });
+            return;
+        }
+
         NSString *err = nil;
         NSUInteger backedFiles = 0;
+        wq_pb_grant_ancestry(containerPath);
+        wq_pb_grant_tree(storePath, 0);
         NSString *backupDir = wq_pb_create_backup(storePath, &backedFiles, &err);
         NSUInteger updatedSlots = 0;
         if (backupDir) {
             NSArray<NSString *> *targets = wq_pb_find_wallpaper_targets(storePath);
             for (NSString *targetDir in targets) {
-                updatedSlots += wq_pb_inject_image_into_descriptor_dirs(targetDir, jpegData, pngData, &err);
+                updatedSlots += wq_pb_inject_image_into_descriptor_dirs(targetDir, jpegData, pngData, heicData, &err);
             }
             // Also save a clean copy in Documents/PosterBoardBackups/Wallpapers for easy manual inspection/reuse.
             NSString *wallDir = [wq_pb_docs_backup_root() stringByAppendingPathComponent:@"Wallpapers"];
             [NSFileManager.defaultManager createDirectoryAtPath:wallDir withIntermediateDirectories:YES attributes:nil error:nil];
             [jpegData writeToFile:[wallDir stringByAppendingPathComponent:@"CustomWallpaper.jpg"] atomically:YES];
+            if (updatedSlots > 0) {
+                typedef uint32_t (*wq_notify_post_fn)(const char *);
+                wq_notify_post_fn notifyPost = (wq_notify_post_fn)dlsym(RTLD_DEFAULT, "notify_post");
+                if (notifyPost) notifyPost("com.apple.PosterBoard.reload");
+            }
         }
         NSArray<NSString *> *backups = wq_pb_list_backups();
 
@@ -846,6 +1238,7 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 
 - (void)performRestoreBackup:(NSString *)backupName
 {
+    NSString *containerPath = _containerPath;
     NSString *storePath = _storePath;
     NSString *backupDir = [wq_pb_docs_backup_root() stringByAppendingPathComponent:backupName];
     if (!storePath.length || !backupDir.length) return;
@@ -860,7 +1253,19 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
         if (!ok) {
             err = @"Backup folder is empty.";
         } else {
+            wq_pb_grant_ancestry(containerPath);
+            wq_pb_grant_tree(storePath, 0);
             ok = wq_copy_contents(backupDir, storePath, &err);
+            if (!ok) {
+                err = nil;
+                NSUInteger restored = 0;
+                ok = wq_pb_merge_local_dir(backupDir, storePath, storePath, &restored, &err);
+            }
+            if (ok) {
+                typedef uint32_t (*wq_notify_post_fn)(const char *);
+                wq_notify_post_fn notifyPost = (wq_notify_post_fn)dlsym(RTLD_DEFAULT, "notify_post");
+                if (notifyPost) notifyPost("com.apple.PosterBoard.reload");
+            }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_busy = NO;
@@ -964,15 +1369,17 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
 
 #pragma mark - Pickers
 
-- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
+- (void)documentPicker:(UIDocumentPickerViewController *__unused)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 {
-    [controller dismissViewControllerAnimated:YES completion:nil];
+    WQPosterPickerMode mode = _pickerMode;
+    _pickerMode = 0;
     NSURL *url = urls.firstObject;
     if (!url) return;
-    if (_pickerMode == WQPosterPickerTendies) {
+    if (mode == WQPosterPickerTendies) {
         [self applyTendiesAtLocalURL:url];
-    } else if (_pickerMode == WQPosterPickerPhotoFile) {
-        UIImage *image = [UIImage imageWithContentsOfFile:url.path];
+    } else if (mode == WQPosterPickerPhotoFile) {
+        NSData *data = [NSData dataWithContentsOfURL:url];
+        UIImage *image = data ? [UIImage imageWithData:data] : [UIImage imageWithContentsOfFile:url.path];
         NSString *name = url.lastPathComponent;
         [NSFileManager.defaultManager removeItemAtURL:url error:nil];
         if (image) {
@@ -980,7 +1387,14 @@ static NSUInteger wq_pb_inject_image_into_descriptor_dirs(NSString *parentDir, N
         } else {
             wq_alert(self, WQVerbatim(@"Invalid Image"), WQVerbatim(@"The selected file could not be opened as an image."));
         }
+    } else {
+        [NSFileManager.defaultManager removeItemAtURL:url error:nil];
     }
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *__unused)controller
+{
+    _pickerMode = 0;
 }
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info

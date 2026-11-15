@@ -1098,7 +1098,10 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         c.secondaryText = WQLocalizedFormat(@"%@ · %@%@", wq_size_text(app.bytes), app.bundleID, hasBackup ? WQLocalized(@" · backed up") : @"");
     }
     if (app.installState == WQInstallOffloaded) c.secondaryText = [c.secondaryText stringByAppendingString:WQLocalized(@" · offloaded")];
-    c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    c.textProperties.color = wq_theme_primary_text();
+    c.textProperties.numberOfLines = 2;
+    c.secondaryTextProperties.color = wq_theme_secondary_text();
+    c.secondaryTextProperties.numberOfLines = 0;
     c.image = wq_app_icon(app.bundleID) ?: [UIImage systemImageNamed:@"app.dashed"];
     c.imageProperties.maximumSize = CGSizeMake(36, 36);
     cell.contentConfiguration = c;

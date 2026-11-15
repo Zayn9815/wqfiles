@@ -197,6 +197,16 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     _status = nil;
 }
 
+- (void)syncHexHeaderLabel:(UILabel *)label
+{
+    NSUInteger digits = (NSUInteger)MAX(4, _offsetDigits);
+    NSUInteger per = (NSUInteger)MAX(4, _perRow);
+    NSString *off = [@"OFFSET" stringByPaddingToLength:digits withString:@" " startingAtIndex:0];
+    if (_offsetDigits < 6) off = [@"ADDR" stringByPaddingToLength:digits withString:@" " startingAtIndex:0];
+    NSString *hex = [@"HEX BYTES" stringByPaddingToLength:MAX((NSUInteger)9, per * 3) withString:@" " startingAtIndex:0];
+    label.text = [NSString stringWithFormat:@"%@  %@ %@", off, hex, @"ASCII"];
+}
+
 - (UIView *)buildHexHeader
 {
     CGFloat width = self.view.bounds.size.width ?: 360.0;
@@ -206,10 +216,13 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     [container addSubview:card];
 
     UILabel *label = [UILabel new];
+    label.tag = 777;
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightBold];
     label.textColor = wq_theme_secondary_text();
-    label.text = @"OFFSET     HEX BYTES                      ASCII";
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumScaleFactor = 0.72;
+    [self syncHexHeaderLabel:label];
     label.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     [card.contentView addSubview:label];
 
@@ -246,6 +259,8 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     if (per != _perRow || digits != _offsetDigits) {
         _perRow = per;
         _offsetDigits = digits;
+        UILabel *hdr = [self.tableView.tableHeaderView viewWithTag:777];
+        if ([hdr isKindOfClass:UILabel.class]) [self syncHexHeaderLabel:hdr];
         [self.tableView reloadData];
     }
 }

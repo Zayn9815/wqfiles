@@ -192,7 +192,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 
 - (UIView *)buildPlistHeader
 {
-    CGFloat width = self.view.bounds.size.width ?: 360.0;
+    CGFloat width = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 62)];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UIVisualEffectView *card = wq_theme_make_glass_card(16, NO);
@@ -202,9 +202,11 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     label.translatesAutoresizingMaskIntoConstraints = NO;
     label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     label.textColor = wq_theme_secondary_text();
-    label.numberOfLines = 2;
+    label.numberOfLines = 0;
     label.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    label.text = self.doc.path;
+    label.text = [self.doc.path stringByReplacingOccurrencesOfString:@"/" withString:@"/\u200B"];
+    label.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    label.textAlignment = NSTextAlignmentLeft;
     [card.contentView addSubview:label];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -212,11 +214,13 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-6],
         [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
         [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
-        [label.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:8],
-        [label.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-8],
+        [label.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:10],
+        [label.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-10],
         [label.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:12],
         [label.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-12],
     ]];
+    CGFloat fitH = [label sizeThatFits:CGSizeMake(MAX(120.0, width - 56.0), CGFLOAT_MAX)].height;
+    container.frame = CGRectMake(0, 0, width, MAX(54.0, ceil(fitH) + 32.0));
     return container;
 }
 
@@ -525,9 +529,11 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     id value = [self valueAt:indexPath.row];
     WQPType t = wqp_type(value);
     c.text = self.isArray ? WQLocalizedFormat(@"Item %ld", (long)indexPath.row) : [self keyAt:indexPath.row];
+    c.textProperties.color = wq_theme_primary_text();
+    c.textProperties.numberOfLines = 2;
     c.secondaryText = WQLocalizedFormat(@"%@ · %@", wqp_type_name(t), wqp_summary(value));
     c.secondaryTextProperties.numberOfLines = 3;
-    c.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    c.secondaryTextProperties.color = wq_theme_secondary_text();
     if (t == WQPTypeDictionary || t == WQPTypeArray) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else if (t == WQPTypeBoolean) {
