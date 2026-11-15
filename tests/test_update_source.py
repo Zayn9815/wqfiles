@@ -16,7 +16,7 @@ UPDATE_SOURCE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(UPDATE_SOURCE)
 
-BUNDLE_ID = "cz.kolbi.wqfiles"
+BUNDLE_ID = "com.zayn.wqglass"
 
 
 def write_source(path: Path, minimum_os: str = "16.0") -> None:
@@ -45,8 +45,8 @@ def write_ipa(path: Path, *, info=None, malformed=False, missing_app=False) -> N
     if info is None:
         info = {
             "CFBundleIdentifier": BUNDLE_ID,
-            "CFBundleShortVersionString": "0.5",
-            "CFBundleVersion": "5",
+            "CFBundleShortVersionString": "4.0",
+            "CFBundleVersion": "400",
             "CFBundleExecutable": "WQFiles",
             "MinimumOSVersion": "27.0",
         }
@@ -68,11 +68,12 @@ class UpdateSourceTests(unittest.TestCase):
             write_source(source, minimum_os="16.0")
             write_ipa(ipa)
 
-            entry = UPDATE_SOURCE.update_catalog(source, "0.5", "5", ipa, "fixture")
+            entry = UPDATE_SOURCE.update_catalog(source, "4.0", "400", ipa, "fixture")
             result = json.loads(source.read_text(encoding="utf-8"))
-            self.assertEqual(entry["version"], "0.5")
-            self.assertEqual(entry["buildVersion"], "5")
+            self.assertEqual(entry["version"], "4.0")
+            self.assertEqual(entry["buildVersion"], "400")
             self.assertEqual(entry["minOSVersion"], "27.0")
+            self.assertEqual(entry["downloadURL"], "https://github.com/Zayn9815/wqfiles/releases/download/v4.0/WQFiles.ipa")
             self.assertEqual(entry["size"], ipa.stat().st_size)
             self.assertEqual(result["apps"][0]["versions"][0], entry)
             self.assertEqual(len(result["apps"][0]["versions"]), 2)
@@ -92,15 +93,15 @@ class UpdateSourceTests(unittest.TestCase):
                 write_source(source)
                 write_ipa(ipa, info={
                     "CFBundleIdentifier": BUNDLE_ID,
-                    "CFBundleShortVersionString": "0.5",
-                    "CFBundleVersion": "5",
+                    "CFBundleShortVersionString": "4.0",
+                    "CFBundleVersion": "400",
                     "CFBundleExecutable": "WQFiles",
                     "MinimumOSVersion": "27.0",
                     **change,
                 })
                 original = source.read_bytes()
                 with self.assertRaises(ValueError):
-                    UPDATE_SOURCE.update_catalog(source, "0.5", "5", ipa)
+                    UPDATE_SOURCE.update_catalog(source, "4.0", "400", ipa)
                 self.assertEqual(source.read_bytes(), original)
 
     def test_rejects_missing_and_malformed_ipas_without_mutation(self):
@@ -116,7 +117,7 @@ class UpdateSourceTests(unittest.TestCase):
                     write_ipa(ipa, malformed=True)
                 original = source.read_bytes()
                 with self.assertRaises(ValueError):
-                    UPDATE_SOURCE.update_catalog(source, "0.5", "5", ipa)
+                    UPDATE_SOURCE.update_catalog(source, "4.0", "400", ipa)
                 self.assertEqual(source.read_bytes(), original)
 
     def test_existing_description_is_preserved_when_notes_are_omitted(self):
@@ -126,12 +127,12 @@ class UpdateSourceTests(unittest.TestCase):
             ipa = root / "WQFiles.ipa"
             write_source(source)
             catalog = json.loads(source.read_text(encoding="utf-8"))
-            catalog["apps"][0]["versions"][0]["version"] = "0.5"
-            catalog["apps"][0]["versions"][0]["buildVersion"] = "5"
+            catalog["apps"][0]["versions"][0]["version"] = "4.0"
+            catalog["apps"][0]["versions"][0]["buildVersion"] = "400"
             catalog["apps"][0]["versions"][0]["localizedDescription"] = "keep this text"
             source.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
             write_ipa(ipa)
-            entry = UPDATE_SOURCE.update_catalog(source, "0.5", "5", ipa, "")
+            entry = UPDATE_SOURCE.update_catalog(source, "4.0", "400", ipa, "")
             self.assertEqual(entry["localizedDescription"], "keep this text")
 
     def test_malformed_xml_info_plist_is_a_clean_value_error(self):
@@ -151,7 +152,7 @@ class UpdateSourceTests(unittest.TestCase):
             write_source(source)
             original = source.read_bytes()
             with self.assertRaises(ValueError):
-                UPDATE_SOURCE.update_catalog(source, "0.5", "5", root / "missing.ipa")
+                UPDATE_SOURCE.update_catalog(source, "4.0", "400", root / "missing.ipa")
             self.assertEqual(source.read_bytes(), original)
 
     def test_replace_failure_preserves_catalog_and_cleans_temporary_sibling(self):
@@ -164,7 +165,7 @@ class UpdateSourceTests(unittest.TestCase):
             original = source.read_bytes()
             with mock.patch.object(UPDATE_SOURCE.os, "replace", side_effect=OSError("injected replace failure")):
                 with self.assertRaises(OSError):
-                    UPDATE_SOURCE.update_catalog(source, "0.5", "5", ipa)
+                    UPDATE_SOURCE.update_catalog(source, "4.0", "400", ipa)
             self.assertEqual(source.read_bytes(), original)
             self.assertEqual(list(root.glob(".source.json.*.tmp")), [])
 

@@ -35,7 +35,7 @@ require(health_present, "if (![self healthFailureCanPresent])", "startup failure
 forbid(health_present, "while (host.presentedViewController)", "startup failure presented over open actions")
 forbid(main, "wq_backup_root().stringByDeletingLastPathComponent title:@\"Backups\"", "parent-path Backups navigation")
 forbid(main, "item.isDir = S_ISDIR(target.st_mode);", "symlink target directory override")
-require(main, "WQ Files does not follow symbolic links", "symlink UI contract")
+require(main, "WQ Glass does not follow symbolic links", "symlink UI contract")
 require(main, "latest.bundleID ?: latest.label", "copy identifier uses the identifier")
 require(main, "@\"App Backups\"", "App Backups shortcut")
 require(main, "wq_delete_backup", "explicit backup management deletion")
