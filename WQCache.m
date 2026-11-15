@@ -388,6 +388,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     NSTimeInterval _lastScanFinished;
     float _scanProgress;   // 0…1 while scanning
     unsigned long long _scanBytes;   // found so far while scanning
+    NSInteger _filterMode;   // 0 All, 1 Selected, 2 Large (50 MB+)
+    NSMutableArray<UIButton *> *_filterPills;
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -401,7 +403,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         wq_prism_install_background(self);
         self.tableView.backgroundColor = [UIColor clearColor];
     }
-    self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width);
+    self.tableView.tableHeaderView = [self buildGlassCacheHeader];
+    wq_theme_apply_scroll_insets(self.tableView, 116.0);
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
     search.obscuresBackgroundDuringPresentation = NO;
@@ -414,9 +417,74 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     [self scan];
 }
 
+- (UIView *)buildGlassCacheHeader
+{
+    CGFloat width = self.view.bounds.size.width ?: 360.0;
+    UIView *strip = wq_device_header(width);
+    CGFloat stripHeight = strip.frame.size.height;
+
+    UIScrollView *pillScroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, stripHeight, width, 46)];
+    pillScroll.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    pillScroll.showsHorizontalScrollIndicator = NO;
+    pillScroll.alwaysBounceHorizontal = YES;
+    pillScroll.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+
+    UIStackView *pillStack = [UIStackView new];
+    pillStack.translatesAutoresizingMaskIntoConstraints = NO;
+    pillStack.axis = UILayoutConstraintAxisHorizontal;
+    pillStack.spacing = 8;
+    pillStack.alignment = UIStackViewAlignmentCenter;
+    [pillScroll addSubview:pillStack];
+    [NSLayoutConstraint activateConstraints:@[
+        [pillStack.topAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.topAnchor constant:4],
+        [pillStack.bottomAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.bottomAnchor constant:-6],
+        [pillStack.leadingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.leadingAnchor],
+        [pillStack.trailingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.trailingAnchor],
+        [pillStack.heightAnchor constraintEqualToConstant:34],
+    ]];
+
+    _filterPills = [NSMutableArray new];
+    NSArray<NSString *> *titles = @[
+        WQLocalized(@"All"),
+        WQLocalized(@"Selected"),
+        WQLocalized(@"50 MB+"),
+    ];
+    __weak typeof(self) weakSelf = self;
+    [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger idx, BOOL *__unused stop) {
+        UIButton *pill = wq_theme_pill_button(title, (NSInteger)idx == self->_filterMode);
+        pill.tag = (NSInteger)idx;
+        __weak UIButton *weakPill = pill;
+        [pill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            UIButton *sender = weakPill;
+            typeof(self) strongSelf = weakSelf;
+            if (!sender || !strongSelf) return;
+            strongSelf->_filterMode = sender.tag;
+            [strongSelf syncFilterPills];
+            [strongSelf rebuildVisibleItems];
+            [strongSelf.tableView reloadData];
+            [strongSelf updateButtons];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        [self->_filterPills addObject:pill];
+        [pillStack addArrangedSubview:pill];
+    }];
+
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 50)];
+    [header addSubview:strip];
+    [header addSubview:pillScroll];
+    return header;
+}
+
+- (void)syncFilterPills
+{
+    for (UIButton *pill in _filterPills) {
+        wq_theme_update_pill_button(pill, pill.tag == _filterMode);
+    }
+}
+
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    [self syncFilterPills];
     if (_scanning && _scanCancellation.isCancelled) {
         [self scan];
         return;
@@ -444,11 +512,21 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 
 - (void)rebuildVisibleItems
 {
+    NSArray<WQCacheItem *> *filtered = _items ?: @[];
+    if (_filterMode == 1) {
+        filtered = [filtered filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQCacheItem *it, NSDictionary *__unused b) {
+            return it.selected;
+        }]];
+    } else if (_filterMode == 2) {
+        filtered = [filtered filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQCacheItem *it, NSDictionary *__unused b) {
+            return it.bytes >= 50ull * 1000 * 1000;
+        }]];
+    }
     if (!_query.length) {
-        _visibleItems = _items;
+        _visibleItems = filtered;
         return;
     }
-    _visibleItems = [_items filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQCacheItem *it, NSDictionary *__unused b) {
+    _visibleItems = [filtered filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(WQCacheItem *it, NSDictionary *__unused b) {
         return [it.name localizedCaseInsensitiveContainsString:self->_query] ||
                (it.bundleID && [it.bundleID localizedCaseInsensitiveContainsString:self->_query]);
     }]];

@@ -9,6 +9,7 @@
 #import "WQAccess.h"
 #import "WQCore.h"
 #import "WQUI.h"
+#import "WQTheme.h"
 #import "WQPlistEditorSupport.h"
 
 typedef NS_ENUM(NSInteger, WQPType) {
@@ -174,8 +175,10 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 {
     [super viewDidLoad];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
     __weak typeof(self) weakSelf = self;
     if (self.isRoot) {
+        self.tableView.tableHeaderView = [self buildPlistHeader];
         self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) { [weakSelf leave]; }];
         [self load];
     } else {
@@ -185,6 +188,36 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         }];
     }
     [self updateBar];
+}
+
+- (UIView *)buildPlistHeader
+{
+    CGFloat width = self.view.bounds.size.width ?: 360.0;
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 62)];
+    container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIVisualEffectView *card = wq_theme_make_glass_card(16, NO);
+    [container addSubview:card];
+
+    UILabel *label = [UILabel new];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
+    label.textColor = wq_theme_secondary_text();
+    label.numberOfLines = 2;
+    label.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    label.text = self.doc.path;
+    [card.contentView addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:6],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-6],
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [label.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:8],
+        [label.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-8],
+        [label.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:12],
+        [label.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-12],
+    ]];
+    return container;
 }
 
 - (void)viewWillAppear:(BOOL)animated

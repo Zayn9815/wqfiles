@@ -1,9 +1,9 @@
 //
 //  main.m
-//  WQ Files
+//  WQ Glass
 //
-//  Proof-of-concept file browser for iOS 27 that reaches other containers
-//  through the worse_query sandbox escape by Taj C (forcequit),
+//  Standalone flagship Liquid Glass filesystem & PosterBoard studio built
+//  on the worse_query sandbox escape by Taj C (forcequit),
 //  https://github.com/forcequitOS/worse_query, GPL-3.0-or-later.
 //  This app is GPL-3.0-or-later as well (see LICENSE).
 //
@@ -16,6 +16,7 @@
 #import "WQLaunchServices.h"
 #import "WQUI.h"
 #import "WQTheme.h"
+#import "WQPosterBoard.h"
 #import "WQSharing.h"
 #import "WQDir.h"
 #import "WQApps.h"
@@ -229,9 +230,10 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.view.backgroundColor = UIColor.clearColor;
     _textView = [UITextView new];
     _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
+    _textView.textColor = wq_theme_primary_text();
     _textView.translatesAutoresizingMaskIntoConstraints = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     // File contents stay left-to-right in right-to-left languages, like code editors.
@@ -244,6 +246,7 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     _textView.smartDashesType = UITextSmartDashesTypeNo;
     _textView.alwaysBounceVertical = YES;
     _textView.delegate = self;
+    wq_theme_apply_scroll_insets(_textView, 112.0);
     [self.view addSubview:_textView];
     __weak typeof(self) weakSelf = self;
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) { [weakSelf leave]; }];
@@ -723,7 +726,7 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
         struct stat st;
         BOOL link = wq_stat(path, &st) && S_ISLNK(st.st_mode);
         if (host) wq_alert(host, link ? @"Symbolic link" : @"Cannot open this item",
-                           link ? @"WQ Files does not follow symbolic links for viewing, sharing or editing."
+                           link ? @"WQ Glass does not follow symbolic links for viewing, sharing or editing."
                                 : @"Only regular files can be viewed.");
         return;
     }
@@ -2362,7 +2365,7 @@ static NSString *wq_info_date(struct timespec ts)
             [self countChildrenOf:items generation:generation cancellation:cancellation];
             self->_error = (names || childPaths != nil) ? nil
                 : (error.length ? error
-                   : !wq_app_group() ? WQLocalized(@"WQ Files has no App Group, so it can't open other apps' folders. Re-sign it with a tool that keeps the App Group (see Signing in the README).")
+                   : !wq_app_group() ? WQLocalized(@"WQ Glass has no App Group, so it can't open other apps' folders. Re-sign it with a tool that keeps the App Group (see Signing in the README).")
                    : wq_full_scan_was_declined() ? WQLocalized(@"Not listed yet: this needs a scan of all files. Pull down to start it.")
                    : WQLocalized(@"Cannot list this folder. Container enumeration failed; see Log."));
             self->_scanStatus = nil;
@@ -2512,7 +2515,7 @@ static NSString *wq_info_date(struct timespec ts)
     UIViewController *next;
     if (item.isLink) {
         wq_alert(self, @"Symbolic link",
-                 @"WQ Files does not follow symbolic links for viewing, sharing or editing. Use Copy Path to open the target explicitly.");
+                 @"WQ Glass does not follow symbolic links for viewing, sharing or editing. Use Copy Path to open the target explicitly.");
         return;
     }
     if (item.isDir) {
@@ -3291,14 +3294,16 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 {
     [super viewDidLoad];
     self.title = WQLocalizedNullable(@"Log");
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.view.backgroundColor = UIColor.clearColor;
     _textView = [[UITextView alloc] initWithFrame:self.view.bounds];
     _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
+    _textView.textColor = wq_theme_primary_text();
     _textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _textView.editable = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     _textView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     _textView.textAlignment = NSTextAlignmentLeft;   // log lines stay left to right
+    wq_theme_apply_scroll_insets(_textView, 112.0);
     [self.view addSubview:_textView];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                                                                                            target:self action:@selector(share:)];
@@ -3309,7 +3314,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (NSString *)fullLog
 {
     NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    return WQLocalizedFormat(@"WQ Files %@ (%@)\n%@\n\n%@",
+    return WQLocalizedFormat(@"WQ Glass %@ (%@)\n%@\n\n%@",
             info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?", wq_device_line(), wq_log_text());
 }
 
@@ -3738,7 +3743,7 @@ static UIImage *wq_language_flag(NSString *code)
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return section == 1 ? WQLocalized(@"The new language is used the next time WQ Files starts.") : nil;
+    return section == 1 ? WQLocalized(@"The new language is used the next time WQ Glass starts.") : nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -3783,8 +3788,8 @@ static UIImage *wq_language_flag(NSString *code)
         [defaults removeObjectForKey:@"AppleLanguages"];
     }
     [tableView reloadData];
-    UIAlertController *restart = wq_alert_controller(@"Restart WQ Files",
-        @"The new language is used the next time WQ Files starts.", UIAlertControllerStyleAlert);
+    UIAlertController *restart = wq_alert_controller(@"Restart WQ Glass",
+        @"The new language is used the next time WQ Glass starts.", UIAlertControllerStyleAlert);
     [restart addAction:wq_alert_action(@"Later", UIAlertActionStyleCancel, nil)];
     [restart addAction:wq_alert_action(@"Quit Now", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         [NSUserDefaults.standardUserDefaults synchronize];
@@ -3895,7 +3900,8 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     if ([tone isEqualToString:@"sky"])    return @[[UIColor colorWithRed:0.54 green:0.85 blue:1.00 alpha:1], [UIColor colorWithRed:0.17 green:0.58 blue:0.91 alpha:1]];
     if ([tone isEqualToString:@"orange"]) return @[[UIColor colorWithRed:1.00 green:0.73 blue:0.49 alpha:1], [UIColor colorWithRed:0.89 green:0.42 blue:0.12 alpha:1]];
     if ([tone isEqualToString:@"indigo"]) return @[[UIColor colorWithRed:0.55 green:0.55 blue:1.00 alpha:1], [UIColor colorWithRed:0.26 green:0.25 blue:0.79 alpha:1]];
-    if ([tone isEqualToString:@"gray"])   return @[[UIColor colorWithRed:0.67 green:0.71 blue:0.80 alpha:1], [UIColor colorWithRed:0.35 green:0.40 blue:0.49 alpha:1]];
+    if ([tone isEqualToString:@"gray"])    return @[[UIColor colorWithRed:0.67 green:0.71 blue:0.80 alpha:1], [UIColor colorWithRed:0.35 green:0.40 blue:0.49 alpha:1]];
+    if ([tone isEqualToString:@"crimson"]) return @[[UIColor colorWithRed:0.94 green:0.39 blue:0.37 alpha:1], [UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:1]];
     // Default tone: crimson-rose, matching the Liquid Glass canvas.
     return @[[UIColor colorWithRed:0.95 green:0.52 blue:0.48 alpha:1], [UIColor colorWithRed:0.62 green:0.17 blue:0.16 alpha:1]];
 }
@@ -4171,10 +4177,184 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
 @end
 
+// Geometric crimson Liquid Glass "Z" monogram badge for header & about cards.
+@interface WQZMonogramBadge : UIView
+- (instancetype)initWithSize:(CGFloat)size;
+@end
+
+@implementation WQZMonogramBadge {
+    CAGradientLayer *_grad;
+    CAShapeLayer *_zLayer;
+}
+
+- (instancetype)initWithSize:(CGFloat)size
+{
+    if ((self = [super initWithFrame:CGRectMake(0, 0, size, size)])) {
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        self.userInteractionEnabled = NO;
+        self.layer.cornerRadius = size * 0.27;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+        self.layer.borderWidth = 1.0;
+        self.layer.borderColor = [UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.45].CGColor;
+        self.clipsToBounds = YES;
+
+        _grad = [CAGradientLayer layer];
+        _grad.startPoint = CGPointMake(0, 0);
+        _grad.endPoint = CGPointMake(1, 1);
+        _grad.colors = @[
+            (id)[UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.36 green:0.11 blue:0.11 alpha:1].CGColor,
+        ];
+        [self.layer addSublayer:_grad];
+
+        _zLayer = [CAShapeLayer layer];
+        _zLayer.fillColor = UIColor.whiteColor.CGColor;
+        [self.layer addSublayer:_zLayer];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [self.widthAnchor constraintEqualToConstant:size],
+            [self.heightAnchor constraintEqualToConstant:size],
+        ]];
+    }
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    _grad.frame = self.bounds;
+    CGFloat w = self.bounds.size.width;
+    CGFloat h = self.bounds.size.height;
+    CGFloat pad = w * 0.25;
+    CGFloat bar = w * 0.145;
+    CGFloat r = w - pad;
+    CGFloat b = h - pad;
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    [p moveToPoint:CGPointMake(pad, pad)];
+    [p addLineToPoint:CGPointMake(r, pad)];
+    [p addLineToPoint:CGPointMake(r, pad + bar)];
+    [p addLineToPoint:CGPointMake(pad + bar * 1.35, b - bar)];
+    [p addLineToPoint:CGPointMake(r, b - bar)];
+    [p addLineToPoint:CGPointMake(r, b)];
+    [p addLineToPoint:CGPointMake(pad, b)];
+    [p addLineToPoint:CGPointMake(pad, b - bar)];
+    [p addLineToPoint:CGPointMake(r - bar * 1.35, pad + bar)];
+    [p addLineToPoint:CGPointMake(pad, pad + bar)];
+    [p closePath];
+    _zLayer.path = p.CGPath;
+}
+
+@end
+
+// Full-width interactive glass list tile for Tools.
+@interface WQPrismToolRow : UIControl
+- (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle symbol:(NSString *)symbol tone:(NSString *)tone badge:(NSString *_Nullable)badge;
+@end
+
+@implementation WQPrismToolRow {
+    WQPrismGlassView *_glass;
+}
+
+- (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle symbol:(NSString *)symbol tone:(NSString *)tone badge:(NSString *_Nullable)badge
+{
+    if ((self = [super initWithFrame:CGRectZero])) {
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        self.layer.cornerRadius = 22;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+
+        _glass = [[WQPrismGlassView alloc] initWithRadius:22];
+        _glass.userInteractionEnabled = NO;
+        [self addSubview:_glass];
+
+        WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:symbol tone:tone size:40];
+
+        UILabel *titleLabel = [UILabel new];
+        titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        titleLabel.text = title;
+        titleLabel.font = [UIFont systemFontOfSize:15.5 weight:UIFontWeightSemibold];
+        titleLabel.textColor = UIColor.whiteColor;
+
+        UILabel *subLabel = [UILabel new];
+        subLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        subLabel.text = subtitle;
+        subLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        subLabel.textColor = wq_theme_secondary_text();
+        subLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+
+        UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subLabel]];
+        textStack.axis = UILayoutConstraintAxisVertical;
+        textStack.spacing = 2;
+        textStack.userInteractionEnabled = NO;
+
+        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, textStack]];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        row.axis = UILayoutConstraintAxisHorizontal;
+        row.alignment = UIStackViewAlignmentCenter;
+        row.spacing = 12;
+        row.userInteractionEnabled = NO;
+
+        if (badge.length) {
+            UILabel *pill = [UILabel new];
+            pill.text = badge;
+            pill.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightBold];
+            pill.textColor = UIColor.whiteColor;
+            pill.backgroundColor = wq_theme_active_pill();
+            pill.textAlignment = NSTextAlignmentCenter;
+            pill.layer.cornerRadius = 9;
+            pill.layer.cornerCurve = kCACornerCurveContinuous;
+            pill.clipsToBounds = YES;
+            pill.translatesAutoresizingMaskIntoConstraints = NO;
+            [NSLayoutConstraint activateConstraints:@[
+                [pill.widthAnchor constraintGreaterThanOrEqualToConstant:46],
+                [pill.heightAnchor constraintEqualToConstant:20],
+            ]];
+            [row addArrangedSubview:pill];
+        }
+
+        UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+        chevron.tintColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.7];
+        chevron.contentMode = UIViewContentModeScaleAspectFit;
+        chevron.image = [chevron.image imageFlippedForRightToLeftLayoutDirection];
+        [NSLayoutConstraint activateConstraints:@[
+            [chevron.widthAnchor constraintEqualToConstant:11],
+            [chevron.heightAnchor constraintEqualToConstant:12],
+        ]];
+        [row addArrangedSubview:chevron];
+
+        [_glass.contentView addSubview:row];
+        [NSLayoutConstraint activateConstraints:@[
+            [_glass.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_glass.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_glass.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_glass.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [row.topAnchor constraintEqualToAnchor:_glass.contentView.topAnchor constant:12],
+            [row.bottomAnchor constraintEqualToAnchor:_glass.contentView.bottomAnchor constant:-12],
+            [row.leadingAnchor constraintEqualToAnchor:_glass.contentView.leadingAnchor constant:14],
+            [row.trailingAnchor constraintEqualToAnchor:_glass.contentView.trailingAnchor constant:-14],
+            [self.heightAnchor constraintGreaterThanOrEqualToConstant:66],
+        ]];
+        self.isAccessibilityElement = YES;
+        self.accessibilityTraits = UIAccessibilityTraitButton;
+        self.accessibilityLabel = subtitle.length ? [NSString stringWithFormat:@"%@, %@", title, subtitle] : title;
+    }
+    return self;
+}
+
+- (void)setHighlighted:(BOOL)highlighted
+{
+    [super setHighlighted:highlighted];
+    [UIView animateWithDuration:0.16 delay:0 usingSpringWithDamping:0.8 initialSpringVelocity:0.5 options:0 animations:^{
+        self.alpha = highlighted ? 0.85 : 1.0;
+        self.transform = highlighted ? CGAffineTransformMakeScale(0.985, 0.985) : CGAffineTransformIdentity;
+    } completion:nil];
+}
+
+@end
+
 static NSAttributedString *WQPrismButtonTitle(NSString *title)
 {
     return [[NSAttributedString alloc] initWithString:title
-        attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:12.0 weight:UIFontWeightSemibold]}];
+        attributes:@{NSFontAttributeName: [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold]}];
 }
 
 static UIView *WQPrismSectionHeaderView(NSString *title, NSString *detail)
@@ -4195,7 +4375,7 @@ static UIView *WQPrismSectionHeaderView(NSString *title, NSString *detail)
     if (detail.length) {
         UILabel *right = [UILabel new];
         right.text = detail;
-        right.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+        right.font = [UIFont monospacedSystemFontOfSize:10.5 weight:UIFontWeightMedium];
         right.textColor = wq_theme_secondary_text();
         right.textAlignment = NSTextAlignmentNatural;
         [row addArrangedSubview:right];
@@ -4221,7 +4401,9 @@ static void wq_apply_design(void);
     NSArray<NSArray<NSString *> *> *_locations;
     UIScrollView *_scroll;
     UIStackView *_contentStack;
+    UIView *_topHeader;
     UIStackView *_containersStack;
+    UILabel *_containersNoteLabel;
     UIStackView *_favoritesStack;
     UIStackView *_systemRows;
     UIView *_systemSection;
@@ -4242,7 +4424,7 @@ static void wq_apply_design(void);
 - (instancetype)init
 {
     if ((self = [super initWithNibName:nil bundle:nil])) {
-        self.title = WQLocalizedNullable(@"WQ Files");
+        self.title = WQLocalizedNullable(@"WQ Glass");
     }
     return self;
 }
@@ -4251,15 +4433,7 @@ static void wq_apply_design(void);
 {
     [super viewDidLoad];
     wq_prism_install_background(self);
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
-    self.navigationController.navigationBar.prefersLargeTitles = YES;
-
-    UIBarButtonItem *gear = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"]
-                                                            style:UIBarButtonItemStylePlain
-                                                           target:self
-                                                           action:@selector(openSettings)];
-    gear.accessibilityLabel = WQLocalizedNullable(@"Settings");
-    self.navigationItem.rightBarButtonItem = gear;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
     [self buildInterface];
     [self rebuildLocations];
@@ -4289,7 +4463,16 @@ static void wq_apply_design(void);
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    [self.navigationController setNavigationBarHidden:YES animated:animated];
     [self rebuildFavorites];
+}
+
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    if (self.navigationController && self.navigationController.topViewController != self) {
+        [self.navigationController setNavigationBarHidden:NO animated:animated];
+    }
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -4309,16 +4492,42 @@ static void wq_apply_design(void);
     [self runHealthCheck];
 }
 
+- (UIButton *)headerIconButton:(NSString *)symbol label:(NSString *)label selector:(SEL)sel
+{
+    UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    btn.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
+    cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.baseBackgroundColor = [UIColor colorWithRed:0.61 green:0.23 blue:0.21 alpha:0.42];
+    cfg.baseForegroundColor = UIColor.whiteColor;
+    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+    cfg.image = [[UIImage systemImageNamed:symbol withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(0, 0, 0, 0);
+    btn.configuration = cfg;
+    btn.tintColor = UIColor.whiteColor;
+    btn.accessibilityLabel = label;
+    btn.layer.borderWidth = 0.75;
+    btn.layer.borderColor = wq_theme_rim().CGColor;
+    btn.layer.cornerRadius = 18;
+    btn.clipsToBounds = YES;
+    [btn addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
+    wq_theme_add_spring_tap(btn);
+    [NSLayoutConstraint activateConstraints:@[
+        [btn.widthAnchor constraintEqualToConstant:36],
+        [btn.heightAnchor constraintEqualToConstant:36],
+    ]];
+    return btn;
+}
+
 - (void)buildInterface
 {
     _scroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
     _scroll.translatesAutoresizingMaskIntoConstraints = NO;
     _scroll.alwaysBounceVertical = YES;
     _scroll.showsVerticalScrollIndicator = NO;
-    _scroll.contentInset = UIEdgeInsetsMake(0, 0, 104, 0);
-    _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(0, 0, 104, 0);
+    _scroll.contentInset = UIEdgeInsetsMake(74, 0, 116, 0);
+    _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(74, 0, 116, 0);
     [self.view addSubview:_scroll];
-    [self setContentScrollView:_scroll forEdge:NSDirectionalRectEdgeTop];
 
     _contentStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _contentStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4332,50 +4541,37 @@ static void wq_apply_design(void);
         [_scroll.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
         [_scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [_scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [_contentStack.topAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.topAnchor constant:10],
-        [_contentStack.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor constant:-20],
-        [_contentStack.leadingAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.leadingAnchor constant:16],
-        [_contentStack.trailingAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.trailingAnchor constant:-16],
-        [_contentStack.widthAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.widthAnchor constant:-32],
+        [_contentStack.topAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.topAnchor constant:8],
+        [_contentStack.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor constant:-24],
+        [_contentStack.leadingAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.leadingAnchor],
+        [_contentStack.trailingAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.trailingAnchor],
+        [_contentStack.widthAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.widthAnchor],
     ]];
 
-    [self buildHero];
-    [_contentStack setCustomSpacing:20 afterView:_heroView];
+    // Floating Sleek Top Glass Header Bar
+    WQPrismGlassView *headerGlass = [[WQPrismGlassView alloc] initWithRadius:24];
+    _topHeader = headerGlass;
+    [self.view addSubview:headerGlass];
 
-    UIView *containersHeader = WQPrismSectionHeaderView(WQLocalizedNullable(@"Containers"), nil);
-    [_contentStack addArrangedSubview:containersHeader];
-    [_contentStack setCustomSpacing:10 afterView:containersHeader];
+    WQZMonogramBadge *monogram = [[WQZMonogramBadge alloc] initWithSize:36];
 
-    _containersStack = [[UIStackView alloc] initWithFrame:CGRectZero];
-    _containersStack.axis = UILayoutConstraintAxisVertical;
-    _containersStack.spacing = 10;
-    [_contentStack addArrangedSubview:_containersStack];
+    UILabel *brandTitle = [UILabel new];
+    brandTitle.text = @"WQ Glass";
+    brandTitle.font = [UIFont systemFontOfSize:17.5 weight:UIFontWeightBold];
+    brandTitle.textColor = UIColor.whiteColor;
 
-    UIView *toolsHeader = WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), nil);
-    [_contentStack addArrangedSubview:toolsHeader];
-    [_contentStack setCustomSpacing:16 afterView:toolsHeader];
-    [_contentStack addArrangedSubview:[self buildToolsRail]];
+    UILabel *verPill = [UILabel new];
+    verPill.text = [NSString stringWithFormat:@"v%@", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"4.0"];
+    verPill.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightBold];
+    verPill.textColor = wq_theme_secondary_text();
 
-    UIView *favoritesHeader = WQPrismSectionHeaderView(WQLocalizedNullable(@"Favorites"), nil);
-    [_contentStack addArrangedSubview:favoritesHeader];
-    [_contentStack setCustomSpacing:16 afterView:favoritesHeader];
-    [_contentStack addArrangedSubview:[self buildFavoritesRail]];
-
-    [self buildSystemSection];
-    [_contentStack addArrangedSubview:[self buildFooter]];
-
-    _contentStack.spacing = 12;
-    [_contentStack setCustomSpacing:22 afterView:[_contentStack.arrangedSubviews lastObject]];
-}
-
-- (void)buildHero
-{
-    WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:26];
-    _heroView = glass;
+    UIStackView *brandText = [[UIStackView alloc] initWithArrangedSubviews:@[brandTitle, verPill]];
+    brandText.axis = UILayoutConstraintAxisVertical;
+    brandText.spacing = 0;
 
     _statusPill = [UIView new];
     _statusPill.translatesAutoresizingMaskIntoConstraints = NO;
-    _statusPill.layer.cornerRadius = 9;
+    _statusPill.layer.cornerRadius = 11;
     _statusPill.layer.cornerCurve = kCACornerCurveContinuous;
 
     _statusLabel = [UILabel new];
@@ -4391,13 +4587,113 @@ static void wq_apply_design(void);
         [_statusLabel.trailingAnchor constraintEqualToAnchor:_statusPill.trailingAnchor constant:-9],
     ]];
 
+    UIButton *logIconBtn = [self headerIconButton:@"doc.plaintext" label:WQLocalizedNullable(@"Log") selector:@selector(openLog)];
+    UIButton *gearIconBtn = [self headerIconButton:@"gearshape.fill" label:WQLocalizedNullable(@"Settings") selector:@selector(openSettings)];
+
+    UIView *spacer = [UIView new];
+    [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIStackView *headerRow = [[UIStackView alloc] initWithArrangedSubviews:@[monogram, brandText, _statusPill, spacer, logIconBtn, gearIconBtn]];
+    headerRow.translatesAutoresizingMaskIntoConstraints = NO;
+    headerRow.axis = UILayoutConstraintAxisHorizontal;
+    headerRow.alignment = UIStackViewAlignmentCenter;
+    headerRow.spacing = 8;
+    [headerGlass.contentView addSubview:headerRow];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [headerGlass.topAnchor constraintEqualToAnchor:safe.topAnchor constant:4],
+        [headerGlass.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:14],
+        [headerGlass.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-14],
+        [headerRow.topAnchor constraintEqualToAnchor:headerGlass.contentView.topAnchor constant:8],
+        [headerRow.bottomAnchor constraintEqualToAnchor:headerGlass.contentView.bottomAnchor constant:-8],
+        [headerRow.leadingAnchor constraintEqualToAnchor:headerGlass.contentView.leadingAnchor constant:10],
+        [headerRow.trailingAnchor constraintEqualToAnchor:headerGlass.contentView.trailingAnchor constant:-10],
+    ]];
+
+    // Helper for 16pt horizontal margin containers inside full-bleed _contentStack
+    UIView *(^insetSection)(UIView *) = ^UIView *(UIView *child) {
+        UIView *wrap = [UIView new];
+        wrap.translatesAutoresizingMaskIntoConstraints = NO;
+        child.translatesAutoresizingMaskIntoConstraints = NO;
+        [wrap addSubview:child];
+        [NSLayoutConstraint activateConstraints:@[
+            [child.topAnchor constraintEqualToAnchor:wrap.topAnchor],
+            [child.bottomAnchor constraintEqualToAnchor:wrap.bottomAnchor],
+            [child.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor constant:16],
+            [child.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor constant:-16],
+        ]];
+        return wrap;
+    };
+
+    [self buildHeroWithWrapper:insetSection];
+    [_contentStack setCustomSpacing:18 afterView:_heroView.superview ?: _heroView];
+
+    UIView *containersHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Containers"), @"Swipe deck"));
+    [_contentStack addArrangedSubview:containersHeader];
+    [_contentStack setCustomSpacing:10 afterView:containersHeader];
+
+    // Horizontal swipeable frosted-glass container card deck
+    UIScrollView *deckScroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    deckScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    deckScroll.showsHorizontalScrollIndicator = NO;
+    deckScroll.clipsToBounds = NO;
+    deckScroll.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+
+    _containersStack = [[UIStackView alloc] initWithFrame:CGRectZero];
+    _containersStack.translatesAutoresizingMaskIntoConstraints = NO;
+    _containersStack.axis = UILayoutConstraintAxisHorizontal;
+    _containersStack.spacing = 12;
+    [deckScroll addSubview:_containersStack];
+    [NSLayoutConstraint activateConstraints:@[
+        [deckScroll.heightAnchor constraintEqualToConstant:150],
+        [_containersStack.topAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.topAnchor],
+        [_containersStack.bottomAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.bottomAnchor],
+        [_containersStack.leadingAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.leadingAnchor],
+        [_containersStack.trailingAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.trailingAnchor],
+        [_containersStack.heightAnchor constraintEqualToAnchor:deckScroll.frameLayoutGuide.heightAnchor],
+    ]];
+    [_contentStack addArrangedSubview:deckScroll];
+
+    _containersNoteLabel = [UILabel new];
+    _containersNoteLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    _containersNoteLabel.adjustsFontForContentSizeCategory = YES;
+    _containersNoteLabel.textColor = wq_theme_secondary_text();
+    _containersNoteLabel.numberOfLines = 0;
+    UIView *noteWrap = insetSection(_containersNoteLabel);
+    [_contentStack addArrangedSubview:noteWrap];
+
+    UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), nil));
+    [_contentStack addArrangedSubview:toolsHeader];
+    [_contentStack setCustomSpacing:10 afterView:toolsHeader];
+    [_contentStack addArrangedSubview:insetSection([self buildToolsRail])];
+
+    UIView *favoritesHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Favorites"), nil));
+    [_contentStack addArrangedSubview:favoritesHeader];
+    [_contentStack setCustomSpacing:10 afterView:favoritesHeader];
+    [_contentStack addArrangedSubview:[self buildFavoritesRail]];
+
+    [self buildSystemSectionWithWrapper:insetSection];
+    [_contentStack addArrangedSubview:insetSection([self buildFooter])];
+    [_contentStack setCustomSpacing:24 afterView:[_contentStack.arrangedSubviews lastObject]];
+}
+
+- (void)buildHeroWithWrapper:(UIView *(^)(UIView *))wrap
+{
+    WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:26];
+    _heroView = glass;
+
+    UILabel *eyebrow = [UILabel new];
+    eyebrow.text = @"CRIMSON LIQUID GLASS STUDIO";
+    eyebrow.font = [UIFont monospacedSystemFontOfSize:10.5 weight:UIFontWeightBold];
+    eyebrow.textColor = wq_theme_secondary_text();
+
     UILabel *title = [UILabel new];
-    title.text = WQLocalizedNullable(@"All your containers, in one place.");
-    title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+    title.text = WQLocalizedNullable(@"Containers & Lock Screen Studio");
+    title.font = [UIFont systemFontOfSize:21 weight:UIFontWeightBold];
     title.adjustsFontForContentSizeCategory = YES;
-    title.textColor = UIColor.labelColor;
+    title.textColor = UIColor.whiteColor;
     title.numberOfLines = 0;
-    title.maximumContentSizeCategory = UIContentSizeCategoryAccessibilityLarge;
 
     _heroSubtitle = [UILabel new];
     _heroSubtitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
@@ -4406,91 +4702,70 @@ static void wq_apply_design(void);
     _heroSubtitle.numberOfLines = 2;
     _heroSubtitle.text = wq_device_line();
 
-    // Primary call to action: white Liquid Glass capsule, deep crimson label.
-    UIButtonConfiguration *quickCfg = wq_theme_primary_button_configuration();
-    quickCfg.attributedTitle = WQPrismButtonTitle(WQLocalizedNullable(@"Quick Check"));
-    quickCfg.image = [UIImage systemImageNamed:@"arrow.clockwise"];
-    quickCfg.imagePadding = 5;
-    quickCfg.buttonSize = UIButtonConfigurationSizeSmall;
+    // Primary CTA: white capsule with guaranteed #6B211E dark crimson foreground across all states
     __weak typeof(self) weakSelf = self;
-    _quickButton = [UIButton buttonWithConfiguration:quickCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    _quickButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    wq_theme_style_primary_button(_quickButton, WQLocalizedNullable(@"Quick Check"), @"checkmark.shield.fill");
+    [_quickButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [weakSelf runHealthCheck];
-    }]];
-    _quickButton.tintColor = UIColor.whiteColor;
+    }] forControlEvents:UIControlEventTouchUpInside];
 
-    // Secondary action: translucent crimson glass pill.
-    UIButtonConfiguration *logCfg = wq_theme_secondary_button_configuration();
-    logCfg.attributedTitle = WQPrismButtonTitle(WQLocalizedNullable(@"Log"));
-    logCfg.image = [UIImage systemImageNamed:@"doc.plaintext"];
-    logCfg.imagePadding = 5;
-    logCfg.buttonSize = UIButtonConfigurationSizeSmall;
-    UIButton *logButton = [UIButton buttonWithConfiguration:logCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [weakSelf openLog];
-    }]];
+    // Secondary CTA: direct launch into PosterBoard Studio
+    UIButton *posterButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    wq_theme_style_secondary_button(posterButton, @"PosterBoard", @"photo.on.rectangle.angled");
+    [posterButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        [weakSelf openPosterBoard];
+    }] forControlEvents:UIControlEventTouchUpInside];
 
-    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, logButton]];
+    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, posterButton]];
     buttons.axis = UILayoutConstraintAxisHorizontal;
     buttons.spacing = 8;
     buttons.alignment = UIStackViewAlignmentCenter;
-    // One Liquid Glass container, so the two glass buttons blend and morph.
     UIView *buttonGroup = wq_theme_glass_container(buttons, 8);
 
-    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[_statusPill, title, _heroSubtitle, buttonGroup]];
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[eyebrow, title, _heroSubtitle, buttonGroup]];
     text.axis = UILayoutConstraintAxisVertical;
     text.alignment = UIStackViewAlignmentLeading;
     text.spacing = 8;
+    text.translatesAutoresizingMaskIntoConstraints = NO;
 
-    WQPrismIconTile *shield = [[WQPrismIconTile alloc] initWithSymbol:@"checkmark.shield.fill" tone:@"mint" size:58];
-    [shield setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-
-    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[text, shield]];
-    row.axis = UILayoutConstraintAxisHorizontal;
-    row.alignment = UIStackViewAlignmentCenter;
-    row.spacing = 12;
-    row.translatesAutoresizingMaskIntoConstraints = NO;
-    [glass.contentView addSubview:row];
+    [glass.contentView addSubview:text];
     [NSLayoutConstraint activateConstraints:@[
-        [row.topAnchor constraintEqualToAnchor:glass.contentView.topAnchor constant:16],
-        [row.bottomAnchor constraintEqualToAnchor:glass.contentView.bottomAnchor constant:-16],
-        [row.leadingAnchor constraintEqualToAnchor:glass.contentView.leadingAnchor constant:16],
-        [row.trailingAnchor constraintEqualToAnchor:glass.contentView.trailingAnchor constant:-16],
+        [text.topAnchor constraintEqualToAnchor:glass.contentView.topAnchor constant:18],
+        [text.bottomAnchor constraintEqualToAnchor:glass.contentView.bottomAnchor constant:-18],
+        [text.leadingAnchor constraintEqualToAnchor:glass.contentView.leadingAnchor constant:18],
+        [text.trailingAnchor constraintEqualToAnchor:glass.contentView.trailingAnchor constant:-18],
     ]];
 
-    [_contentStack addArrangedSubview:glass];
+    [_contentStack addArrangedSubview:wrap(glass)];
     [self updateHealthUI];
 }
 
 - (UIView *)buildToolsRail
 {
-    UIStackView *grid = [[UIStackView alloc] initWithFrame:CGRectZero];
-    grid.axis = UILayoutConstraintAxisVertical;
-    grid.spacing = 10;
-    UIStackView *row = nil;
+    UIStackView *list = [[UIStackView alloc] initWithFrame:CGRectZero];
+    list.axis = UILayoutConstraintAxisVertical;
+    list.spacing = 10;
+
     NSArray<NSArray<NSString *> *> *tools = @[
-        @[@"Apps", @"square.grid.3x3.fill", @"sky", @"App Data"],
-        @[@"Cache Cleaner", @"sparkles", @"mint", @"Library/Caches"],
-        @[@"Go to Path…", @"arrow.right.circle.fill", @"violet", @"Path"],
-        @[@"Backups", @"clock.arrow.circlepath", @"amber", @"App Backups"],
+        @[@"PosterBoard Studio", @"Import .tendies, wallpapers & respring", @"photo.on.rectangle.angled", @"crimson", @"NEW"],
+        @[@"Apps", @"App data backups, restores & info", @"square.grid.3x3.fill", @"sky", @""],
+        @[@"Cache Cleaner", @"Clean Library/Caches, tmp & crash logs", @"sparkles", @"mint", @""],
+        @[@"Go to Path…", @"Jump directly to any file or container", @"arrow.right.circle.fill", @"violet", @""],
+        @[@"Backups", @"App backups, File backups & deleted", @"clock.arrow.circlepath", @"amber", @""],
     ];
     for (NSUInteger i = 0; i < tools.count; i++) {
-        NSArray *t = tools[i];
-        WQPrismCardView *card = [[WQPrismCardView alloc] initWithTitle:WQLocalizedNullable(t[0])
-                                                                  meta:WQLocalizedNullable(t[3])
-                                                                symbol:t[1]
-                                                                  tone:t[2]
-                                                               compact:YES];
-        card.tag = (NSInteger)i;
-        [card addTarget:self action:@selector(openToolCard:) forControlEvents:UIControlEventTouchUpInside];
-        if (i % 2 == 0) {
-            row = [[UIStackView alloc] initWithFrame:CGRectZero];
-            row.axis = UILayoutConstraintAxisHorizontal;
-            row.spacing = 10;
-            row.distribution = UIStackViewDistributionFillEqually;
-            [grid addArrangedSubview:row];
-        }
-        [row addArrangedSubview:card];
+        NSArray<NSString *> *t = tools[i];
+        WQPrismToolRow *row = [[WQPrismToolRow alloc] initWithTitle:WQLocalizedNullable(t[0])
+                                                           subtitle:t[1]
+                                                             symbol:t[2]
+                                                               tone:t[3]
+                                                              badge:t[4]];
+        row.tag = (NSInteger)i;
+        [row addTarget:self action:@selector(openToolCard:) forControlEvents:UIControlEventTouchUpInside];
+        [list addArrangedSubview:row];
     }
-    return grid;
+    return list;
 }
 
 - (UIView *)buildFavoritesRail
@@ -4498,13 +4773,14 @@ static void wq_apply_design(void);
     UIScrollView *rail = [[UIScrollView alloc] initWithFrame:CGRectZero];
     rail.translatesAutoresizingMaskIntoConstraints = NO;
     rail.showsHorizontalScrollIndicator = NO;
+    rail.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
     _favoritesStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _favoritesStack.translatesAutoresizingMaskIntoConstraints = NO;
     _favoritesStack.axis = UILayoutConstraintAxisHorizontal;
-    _favoritesStack.spacing = 7;
+    _favoritesStack.spacing = 8;
     [rail addSubview:_favoritesStack];
     [NSLayoutConstraint activateConstraints:@[
-        [rail.heightAnchor constraintEqualToConstant:38],
+        [rail.heightAnchor constraintEqualToConstant:40],
         [_favoritesStack.topAnchor constraintEqualToAnchor:rail.contentLayoutGuide.topAnchor],
         [_favoritesStack.bottomAnchor constraintEqualToAnchor:rail.contentLayoutGuide.bottomAnchor],
         [_favoritesStack.leadingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.leadingAnchor],
@@ -4514,10 +4790,9 @@ static void wq_apply_design(void);
     return rail;
 }
 
-- (void)buildSystemSection
+- (void)buildSystemSectionWithWrapper:(UIView *(^)(UIView *))wrap
 {
-    _systemSection = [[UIStackView alloc] initWithFrame:CGRectZero];
-    UIStackView *stack = (UIStackView *)_systemSection;
+    UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectZero];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 10;
     [stack addArrangedSubview:WQPrismSectionHeaderView(WQLocalizedNullable(@"System"), nil)];
@@ -4536,42 +4811,29 @@ static void wq_apply_design(void);
     ]];
     _systemRows = rows;
     [stack addArrangedSubview:glass];
-    [_contentStack addArrangedSubview:stack];
-    [_contentStack setCustomSpacing:16 afterView:stack];
+    UIView *wrapped = wrap(stack);
+    _systemSection = wrapped;
+    [_contentStack addArrangedSubview:wrapped];
+    [_contentStack setCustomSpacing:16 afterView:wrapped];
 }
 
 - (UIView *)buildFooter
 {
     UILabel *version = [UILabel new];
     version.text = wq_app_version_line();
-    version.font = [UIFont monospacedSystemFontOfSize:9 weight:UIFontWeightRegular];
+    version.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightMedium];
     version.textColor = wq_theme_secondary_text();
     version.textAlignment = NSTextAlignmentCenter;
 
     UIButtonConfiguration *linkCfg = [UIButtonConfiguration plainButtonConfiguration];
-    linkCfg.title = @"GitHub";
+    linkCfg.title = @"Zayn9815/wqfiles";
     linkCfg.image = [UIImage systemImageNamed:@"chevron.left.forwardslash.chevron.right"];
-    linkCfg.imagePadding = 4;
+    linkCfg.imagePadding = 5;
     linkCfg.buttonSize = UIButtonConfigurationSizeSmall;
     linkCfg.baseForegroundColor = wq_theme_secondary_text();
     UIButton *github = [UIButton buttonWithConfiguration:linkCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz"] options:@{} completionHandler:nil];
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/Zayn9815/wqfiles"] options:@{} completionHandler:nil];
     }]];
-
-    UIButtonConfiguration *xcfg = [UIButtonConfiguration plainButtonConfiguration];
-    xcfg.title = @"@_kolbicz";
-    xcfg.image = [UIImage systemImageNamed:@"at"];
-    xcfg.imagePadding = 4;
-    xcfg.buttonSize = UIButtonConfigurationSizeSmall;
-    xcfg.baseForegroundColor = wq_theme_secondary_text();
-    UIButton *x = [UIButton buttonWithConfiguration:xcfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://x.com/_kolbicz"] options:@{} completionHandler:nil];
-    }]];
-
-    UIStackView *links = [[UIStackView alloc] initWithArrangedSubviews:@[github, x]];
-    links.axis = UILayoutConstraintAxisHorizontal;
-    links.spacing = 12;
-    links.alignment = UIStackViewAlignmentCenter;
 
     UIButtonConfiguration *creditCfg = [UIButtonConfiguration plainButtonConfiguration];
     creditCfg.attributedTitle = [[NSAttributedString alloc] initWithString:WQLocalized(@"Sandbox escape: worse_query by @forcequitOS")
@@ -4582,10 +4844,10 @@ static void wq_apply_design(void);
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://x.com/forcequitOS"] options:@{} completionHandler:nil];
     }]];
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[version, links, credit]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[version, github, credit]];
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentCenter;
-    stack.spacing = 7;
+    stack.spacing = 6;
     return stack;
 }
 
@@ -4618,7 +4880,7 @@ static void wq_apply_design(void);
 
 - (NSString *)toneForContainer:(NSString *)title
 {
-    if ([title isEqualToString:@"App Data"]) return @"blue";
+    if ([title isEqualToString:@"App Data"]) return @"crimson";
     if ([title isEqualToString:@"App Groups"]) return @"violet";
     if ([title isEqualToString:@"Extension Data"]) return @"orange";
     if ([title isEqualToString:@"Internal Daemons"]) return @"mint";
@@ -4670,7 +4932,6 @@ static void wq_apply_design(void);
         [_containersStack removeArrangedSubview:view];
         [view removeFromSuperview];
     }
-    NSMutableArray<WQPrismCardView *> *cards = [NSMutableArray new];
     for (NSUInteger i = 0; i < _locations.count; i++) {
         NSArray<NSString *> *location = _locations[i];
         if ([location[0] isEqualToString:@"System Data"]) continue;
@@ -4685,26 +4946,14 @@ static void wq_apply_design(void);
         card.moreButton.menu = [self containerMenuForIndex:i];
         card.metaLabel.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
         card.metaLabel.textAlignment = NSTextAlignmentLeft;
-        [cards addObject:card];
+        [card.widthAnchor constraintEqualToConstant:176].active = YES;
+        [_containersStack addArrangedSubview:card];
     }
-    for (NSUInteger i = 0; i < cards.count; i += 2) {
-        WQPrismCardView *left = cards[i];
-        UIView *right = (i + 1 < cards.count) ? cards[i + 1] : [UIView new];
-        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[left, right]];
-        row.axis = UILayoutConstraintAxisHorizontal;
-        row.spacing = 10;
-        row.distribution = UIStackViewDistributionFillEqually;
-        [_containersStack addArrangedSubview:row];
-    }
-    if (!wq_system_areas_reachable()) {
-        UILabel *note = [UILabel new];
-        note.text = WQLocalized(@"On iOS 26, System Data and System Groups can't be reached (worse_query covers them on iOS 27 only), and Internal Daemons need a scan of every file id: the first one can take most of an hour on a well-used device, later ones only check new files.");
-        note.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-        note.adjustsFontForContentSizeCategory = YES;
-        note.textColor = wq_theme_secondary_text();
-        note.numberOfLines = 0;
-        [_containersStack addArrangedSubview:note];
-    }
+    BOOL showNote = !wq_system_areas_reachable();
+    _containersNoteLabel.superview.hidden = !showNote;
+    _containersNoteLabel.text = showNote
+        ? WQLocalized(@"On iOS 26, System Data and System Groups can't be reached (worse_query covers them on iOS 27 only), and Internal Daemons need a scan of every file id: the first one can take most of an hour on a well-used device, later ones only check new files.")
+        : @"";
 }
 
 - (void)rebuildFavorites
@@ -4736,6 +4985,7 @@ static void wq_apply_design(void);
             [weakSelf openPath:path title:entry[@"title"] ?: path.lastPathComponent];
         }]];
         button.tintColor = UIColor.systemOrangeColor;
+        wq_theme_add_spring_tap(button);
         [_favoritesStack addArrangedSubview:button];
     }
 }
@@ -4814,6 +5064,7 @@ static void wq_apply_design(void);
         [chevron.heightAnchor constraintEqualToConstant:11],
     ]];
     [row addTarget:self action:selector forControlEvents:UIControlEventTouchUpInside];
+    wq_theme_add_spring_tap(row);
     return row;
 }
 
@@ -4828,15 +5079,21 @@ static void wq_apply_design(void);
     [self openPath:location[1] title:WQLocalizedNullable(location[0])];
 }
 
-- (void)openToolCard:(WQPrismCardView *)sender
+- (void)openToolCard:(UIControl *)sender
 {
     switch (sender.tag) {
-        case 0: [self openTab:1]; break;
-        case 1: [self openTab:2]; break;
-        case 2: [self goToPath]; break;
-        case 3: [self openTab:3]; break;
+        case 0: [self openPosterBoard]; break;
+        case 1: [self openTab:1]; break;
+        case 2: [self openTab:2]; break;
+        case 3: [self goToPath]; break;
+        case 4: [self openTab:3]; break;
         default: break;
     }
+}
+
+- (void)openPosterBoard
+{
+    [self.navigationController pushViewController:[WQPosterBoardViewController new] animated:YES];
 }
 
 - (void)openTab:(NSInteger)index
@@ -4956,26 +5213,26 @@ static void wq_apply_design(void);
     UIColor *tint = UIColor.systemGreenColor;
     if (_checkingAccess) {
         tint = UIColor.systemOrangeColor;
-        _statusLabel.text = WQLocalizedNullable(@"Checking access…");
+        _statusLabel.text = WQLocalizedNullable(@"Checking…");
     } else if (!_appGroupName.length) {
         tint = UIColor.systemOrangeColor;
         _statusLabel.text = WQLocalizedNullable(@"No App Group");
     } else if (_pendingHealthFailure.count) {
         tint = UIColor.systemRedColor;
-        _statusLabel.text = WQLocalizedNullable(@"Access check failed.");
+        _statusLabel.text = WQLocalizedNullable(@"Failed");
     } else {
         tint = UIColor.systemGreenColor;
-        _statusLabel.text = WQLocalizedNullable(@"Access check passed.");
+        _statusLabel.text = WQLocalizedNullable(@"Active");
     }
     _statusLabel.textColor = tint;
-    _statusPill.backgroundColor = [tint colorWithAlphaComponent:0.13];
+    _statusPill.backgroundColor = [tint colorWithAlphaComponent:0.16];
     _heroSubtitle.text = _appGroupName.length
         ? [NSString stringWithFormat:@"%@\n%@", wq_device_line(), _appGroupName]
         : [NSString stringWithFormat:@"%@\n%@", wq_device_line(), WQLocalizedNullable(@"No App Group")];
     _quickButton.enabled = !_checkingAccess;
-    UIButtonConfiguration *cfg = _quickButton.configuration;
-    cfg.attributedTitle = WQPrismButtonTitle(_checkingAccess ? WQLocalizedNullable(@"Checking access…") : WQLocalizedNullable(@"Quick Check"));
-    _quickButton.configuration = cfg;
+    wq_theme_style_primary_button(_quickButton,
+        _checkingAccess ? WQLocalizedNullable(@"Checking access…") : WQLocalizedNullable(@"Quick Check"),
+        @"checkmark.shield.fill");
 }
 
 - (BOOL)healthFailureCanPresent
@@ -5074,7 +5331,7 @@ static void wq_apply_design(void);
     NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     config.timeoutIntervalForRequest = 15;
     config.HTTPCookieStorage = nil;
-    NSURL *url = [NSURL URLWithString:@"https://raw.githubusercontent.com/kolbicz/WQFiles/main/source.json"];
+    NSURL *url = [NSURL URLWithString:@"https://raw.githubusercontent.com/Zayn9815/wqfiles/main/source.json"];
     __weak typeof(self) weakSelf = self;
     [[[NSURLSession sessionWithConfiguration:config] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
@@ -5106,20 +5363,28 @@ static void wq_apply_design(void);
         [_updateBanner removeFromSuperview];
         _updateBanner = nil;
     }
-    UIButtonConfiguration *cfg = wq_theme_primary_button_configuration();
-    cfg.title = WQLocalizedFormat(@"WQ Files %@ is available", version);
-    cfg.image = [UIImage systemImageNamed:@"arrow.down.circle"];
-    cfg.imagePadding = 8;
-    cfg.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-    UIButton *button = [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz/WQFiles/releases/latest"] options:@{} completionHandler:nil];
-    }]];
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    wq_theme_style_primary_button(button, WQLocalizedFormat(@"WQ Glass %@ is available", version), @"arrow.down.circle.fill");
+    [button addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/Zayn9815/wqfiles/releases/latest"] options:@{} completionHandler:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
     button.translatesAutoresizingMaskIntoConstraints = NO;
     [button.heightAnchor constraintEqualToConstant:46].active = YES;
-    _updateBanner = button;
-    NSUInteger index = [_contentStack.arrangedSubviews indexOfObject:_heroView];
+
+    UIView *wrap = [UIView new];
+    wrap.translatesAutoresizingMaskIntoConstraints = NO;
+    [wrap addSubview:button];
+    [NSLayoutConstraint activateConstraints:@[
+        [button.topAnchor constraintEqualToAnchor:wrap.topAnchor],
+        [button.bottomAnchor constraintEqualToAnchor:wrap.bottomAnchor],
+        [button.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor constant:16],
+        [button.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor constant:-16],
+    ]];
+    _updateBanner = wrap;
+    UIView *heroWrap = _heroView.superview;
+    NSUInteger index = heroWrap ? [_contentStack.arrangedSubviews indexOfObject:heroWrap] : 0;
     if (index == NSNotFound) index = 0;
-    [_contentStack insertArrangedSubview:button atIndex:index + 1];
+    [_contentStack insertArrangedSubview:wrap atIndex:index + 1];
 }
 
 @end
@@ -5131,7 +5396,7 @@ static void wq_apply_design(void);
 static void wq_confirm_reset_access_cache(UIViewController *host, void (^done)(void))
 {
     UIAlertController *alert = wq_alert_controller(@"Reset Access Cache?",
-        @"Another app that shares WQ Files' App Group (for example one signed with the same tool) can leave its cache folder in a state that blocks sandbox access. This puts it back; nothing is deleted.",
+        @"Another app that shares WQ Glass's App Group (for example one signed with the same tool) can leave its cache folder in a state that blocks sandbox access. This puts it back; nothing is deleted.",
         UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     __weak UIViewController *weakHost = host;
@@ -5149,7 +5414,7 @@ static void wq_confirm_reset_access_cache(UIViewController *host, void (^done)(v
 }
 
 static NSString *const kWQTroubleshootingFooter =
-    @"Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted.";
+    @"Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Glass's own cache folder in its App Group; nothing is deleted.";
 
 #pragma mark - WQ Prism settings
 
@@ -5168,6 +5433,50 @@ static NSString *const kWQTroubleshootingFooter =
                                                                                style:UIBarButtonItemStylePlain
                                                                               target:self
                                                                               action:@selector(done)];
+    [self installBrandHeader];
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+}
+
+- (void)installBrandHeader
+{
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width ?: 360, 108)];
+    UIVisualEffectView *card = wq_theme_make_glass_card(24, NO);
+    [container addSubview:card];
+
+    WQZMonogramBadge *badge = [[WQZMonogramBadge alloc] initWithSize:48];
+    UILabel *title = [UILabel new];
+    title.text = wq_app_version_line();
+    title.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
+    title.textColor = UIColor.whiteColor;
+
+    UILabel *sub = [UILabel new];
+    sub.text = [NSString stringWithFormat:@"%@\n%@", NSBundle.mainBundle.bundleIdentifier ?: @"com.zayn.wqglass", wq_device_line()];
+    sub.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
+    sub.textColor = wq_theme_secondary_text();
+    sub.numberOfLines = 2;
+
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[title, sub]];
+    text.axis = UILayoutConstraintAxisVertical;
+    text.spacing = 3;
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[badge, text]];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 14;
+    [card.contentView addSubview:row];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:8],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8],
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [row.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:14],
+        [row.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-14],
+        [row.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:16],
+        [row.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-16],
+    ]];
+    self.tableView.tableHeaderView = container;
 }
 
 - (void)done
@@ -5200,7 +5509,7 @@ static NSString *const kWQTroubleshootingFooter =
     return [NSString stringWithFormat:@"%@\n\n%@\n\n%@",
             WQLocalized(@"Allow Deleting: when off, nothing can be deleted: no Delete or swipe to delete in folders and backups, no Clear Data in Apps and no cleaning in the Cache Cleaner. Saving, moving and restoring still work.\n\nShow Item Counts: shows how many items each folder holds. Every subfolder has to be listed for this, which slows down folders with many subfolders, especially in other apps' data."),
             WQLocalized(@"Keep Data Before Restore: restoring an app or file backup first backs up what's there now, so a failed restore can be undone. When off, that backup is deleted once the restore succeeded."),
-            WQLocalized(@"Reopen Last Folder: WQ Files starts in the folder you were in. Check for Updates: twice a day WQ Files reads the public release list on GitHub and shows a note when a new version is out; nothing about your device is sent.")];
+            WQLocalized(@"Reopen Last Folder: WQ Glass starts in the folder you were in. Check for Updates: twice a day WQ Glass reads the public release list on GitHub and shows a note when a new version is out; nothing about your device is sent.")];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -5273,9 +5582,9 @@ static NSString *const kWQTroubleshootingFooter =
         [self.navigationController pushViewController:[WQLogViewController new] animated:YES];
     } else {
         NSString *version = [NSString stringWithFormat:@"%@\n\n%@", wq_app_version_line(), WQLocalizedNullable(@"Sandbox escape: worse_query by @forcequitOS")];
-        UIAlertController *alert = wq_alert_controller(@"WQ Files", version, UIAlertControllerStyleAlert);
+        UIAlertController *alert = wq_alert_controller(@"WQ Glass", version, UIAlertControllerStyleAlert);
         [alert addAction:wq_alert_action(@"GitHub", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-            [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz/WQFiles"] options:@{} completionHandler:nil];
+            [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/Zayn9815/wqfiles"] options:@{} completionHandler:nil];
         })];
         [alert addAction:wq_alert_action(@"OK", UIAlertActionStyleCancel, nil)];
         [self presentViewController:alert animated:YES completion:nil];
@@ -5299,7 +5608,8 @@ static NSString *const kWQTroubleshootingFooter =
     [super viewDidLoad];
     wq_prism_install_background(self);
     self.tableView.backgroundColor = [UIColor clearColor];
-    self.tableView.contentInset = UIEdgeInsetsMake(0, 0, 90, 0);
+    wq_theme_apply_scroll_insets(self.tableView, 116.0);
+    self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width ?: 360);
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
@@ -5383,7 +5693,7 @@ static NSString *const kWQTroubleshootingFooter =
     // tabs; shrinks while scrolling down so crimson content refracts beneath.
     UITabBarAppearance *tabAppearance = [UITabBarAppearance new];
     [tabAppearance configureWithDefaultBackground];
-    tabAppearance.selectionIndicatorTintColor = [UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:0.85];
+    tabAppearance.selectionIndicatorTintColor = [UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:0.90];
     for (UITabBarItemAppearance *item in @[
         tabAppearance.stackedLayoutAppearance,
         tabAppearance.inlineLayoutAppearance,
@@ -5443,7 +5753,7 @@ static NSString *const kWQTroubleshootingFooter =
 - (instancetype)init
 {
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
-        self.title = WQLocalizedNullable(@"WQ Files");
+        self.title = WQLocalizedNullable(@"WQ Glass");
         [self rebuildLocations];
     }
     return self;
@@ -5472,6 +5782,7 @@ static NSString *const kWQTroubleshootingFooter =
     [super viewDidLoad];
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     self.tableView.tableFooterView = [self authorFooter];
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
     dispatch_async(wq_io(), ^{
         NSString *recovery = wq_recover_interrupted_restore();
         if (recovery) {
@@ -5540,7 +5851,7 @@ static NSString *const kWQTroubleshootingFooter =
     [self presentPendingHealthFailure];
 }
 
-// Reopens the folder that was in front when WQ Files was last used, but only
+// Reopens the folder that was in front when WQ Glass was last used, but only
 // after the startup check passed and while the start screen is still idle
 // (if the user already went somewhere, they're not interrupted).
 - (void)reopenLastFolder
@@ -5578,7 +5889,7 @@ static NSString *const kWQTroubleshootingFooter =
     NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
     config.timeoutIntervalForRequest = 15;
     config.HTTPCookieStorage = nil;
-    NSURL *url = [NSURL URLWithString:@"https://raw.githubusercontent.com/kolbicz/WQFiles/main/source.json"];
+    NSURL *url = [NSURL URLWithString:@"https://raw.githubusercontent.com/Zayn9815/wqfiles/main/source.json"];
     __weak typeof(self) weakSelf = self;
     [[[NSURLSession sessionWithConfiguration:config] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
@@ -5605,15 +5916,12 @@ static NSString *const kWQTroubleshootingFooter =
 {
     if ([_availableVersion isEqualToString:version]) return;
     _availableVersion = version;
-    UIButtonConfiguration *config = wq_theme_primary_button_configuration();
-    config.title = WQLocalizedFormat(@"WQ Files %@ is available", version);
-    config.image = [UIImage systemImageNamed:@"arrow.down.circle"];
-    config.imagePadding = 8;
-    config.cornerStyle = UIButtonConfigurationCornerStyleLarge;
-    UIButton *button = [UIButton buttonWithConfiguration:config primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz/WQFiles/releases/latest"]
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    wq_theme_style_primary_button(button, WQLocalizedFormat(@"WQ Glass %@ is available", version), @"arrow.down.circle");
+    [button addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/Zayn9815/wqfiles/releases/latest"]
                                          options:@{} completionHandler:nil];
-    }]];
+    }] forControlEvents:UIControlEventTouchUpInside];
     CGFloat width = self.tableView.bounds.size.width ?: self.view.bounds.size.width;
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 60)];
     button.frame = CGRectMake(16, 8, width - 32, 44);
@@ -5686,31 +5994,25 @@ static NSString *const kWQTroubleshootingFooter =
     [host presentViewController:alert animated:YES completion:nil];
 }
 
-// "by kolbicz" with GitHub and X links, under the last section.
+// WQ Glass footer with GitHub link, under the last section.
 - (UIView *)authorFooter
 {
     UIView *footer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 128)];
     UILabel *by = [UILabel new];
-    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    by.text = WQLocalizedFormat(@"WQ Files %@ (%@) by kolbicz",
-               info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?");
+    by.text = wq_app_version_line();
     by.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     by.textColor = wq_theme_secondary_text();
 
     UIButton *(^link)(NSString *, NSString *, NSString *) = ^UIButton *(NSString *title, NSString *symbol, NSString *url) {
-        UIButtonConfiguration *cfg = wq_theme_secondary_button_configuration();
-        cfg.title = title;
-        cfg.image = [UIImage systemImageNamed:symbol];
-        cfg.imagePadding = 6;
-        cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-        cfg.buttonSize = UIButtonConfigurationSizeSmall;
-        return [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        wq_theme_style_secondary_button(btn, title, symbol);
+        [btn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
             [UIApplication.sharedApplication openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
-        }]];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        return btn;
     };
     UIStackView *links = [[UIStackView alloc] initWithArrangedSubviews:@[
-        link(@"GitHub", @"chevron.left.forwardslash.chevron.right", @"https://github.com/kolbicz"),
-        link(@"@_kolbicz", @"at", @"https://x.com/_kolbicz"),
+        link(@"GitHub · Zayn9815/wqfiles", @"chevron.left.forwardslash.chevron.right", @"https://github.com/Zayn9815/wqfiles"),
     ]];
     links.spacing = 12;
 
@@ -5761,7 +6063,7 @@ static NSString *const kWQTroubleshootingFooter =
         return [NSString stringWithFormat:@"%@\n\n%@",
                 WQLocalized(@"Allow Deleting: when off, nothing can be deleted: no Delete or swipe to delete in folders and backups, no Clear Data in Apps and no cleaning in the Cache Cleaner. Saving, moving and restoring still work.\n\nShow Item Counts: shows how many items each folder holds. Every subfolder has to be listed for this, which slows down folders with many subfolders, especially in other apps' data."),
                 [NSString stringWithFormat:@"%@\n\n%@", WQLocalized(@"Keep Data Before Restore: restoring an app or file backup first backs up what's there now, so a failed restore can be undone. When off, that backup is deleted once the restore succeeded."),
-                 WQLocalized(@"Reopen Last Folder: WQ Files starts in the folder you were in. Check for Updates: twice a day WQ Files reads the public release list on GitHub and shows a note when a new version is out; nothing about your device is sent.")]];
+                 WQLocalized(@"Reopen Last Folder: WQ Glass starts in the folder you were in. Check for Updates: twice a day WQ Glass reads the public release list on GitHub and shows a note when a new version is out; nothing about your device is sent.")]];
     return section == 1
         ? WQLocalized(@"Overwritten and deleted files are copied to Backups first (also visible in the Files app). Long-press a backup to restore it.")
         : nil;
@@ -5940,9 +6242,10 @@ static NSString *const kWQTroubleshootingFooter =
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = WQLocalizedNullable(@"WQ Files");
+    self.title = WQLocalizedNullable(@"WQ Glass");
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width);
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
 }
 
 - (void)retry
@@ -5999,15 +6302,15 @@ static NSString *const kWQTroubleshootingFooter =
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return !_running && section == 0 ? WQLocalized(@"WQ Files can't work properly here") : nil;
+    return !_running && section == 0 ? WQLocalized(@"WQ Glass can't work properly here") : nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
     if (_running) return nil;
     if (section == 0)
-        return WQLocalized(@"WQ Files stopped here instead of showing empty or wrong lists. A new iOS version can block its sandbox access; please send the Log with your device and iOS version.");
-    return WQLocalized(@"Continue Anyway opens WQ Files as it is: lists may be empty or wrong, and nothing should be restored or deleted based on them.");
+        return WQLocalized(@"WQ Glass stopped here instead of showing empty or wrong lists. A new iOS version can block its sandbox access; please send the Log with your device and iOS version.");
+    return WQLocalized(@"Continue Anyway opens WQ Glass as it is: lists may be empty or wrong, and nothing should be restored or deleted based on them.");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -6057,7 +6360,7 @@ static NSString *const kWQTroubleshootingFooter =
             [self.navigationController pushViewController:[WQLogViewController new] animated:YES];
             break;
         case 3:
-            [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/kolbicz/WQFiles#signing-the-app-group"]
+            [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://github.com/Zayn9815/wqfiles#signing-the-app-group"]
                                              options:@{} completionHandler:nil];
             break;
         case 4:
@@ -6178,7 +6481,7 @@ static NSString *wq_count_text(int64_t n)
     text.textAlignment = NSTextAlignmentCenter;
     text.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     text.textColor = wq_theme_secondary_text();
-    text.text = WQLocalizedNullable(@"iOS doesn't let WQ Files list these folders directly, so it checks every file on this device once. This is only slow the first time: later scans only check new files.\n\nKeep WQ Files open. Switching to another app or locking the screen pauses the scan.");
+    text.text = WQLocalizedNullable(@"iOS doesn't let WQ Glass list these folders directly, so it checks every file on this device once. This is only slow the first time: later scans only check new files.\n\nKeep WQ Glass open. Switching to another app or locking the screen pauses the scan.");
     _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
     _bar.progressTintColor = wq_theme_accent();
     _status = [UILabel new];
@@ -6187,10 +6490,11 @@ static NSString *wq_count_text(int64_t n)
     _status.textColor = wq_theme_primary_text();
     _status.textAlignment = NSTextAlignmentCenter;
     _status.text = WQLocalizedNullable(@"Starting…");
-    UIButton *hide = [UIButton buttonWithConfiguration:wq_theme_primary_button_configuration() primaryAction:
-        [UIAction actionWithTitle:WQLocalizedNullable(@"Hide") image:nil identifier:nil handler:^(UIAction *__unused a) {
-            [self dismissViewControllerAnimated:YES completion:nil];
-        }]];
+    UIButton *hide = [UIButton buttonWithType:UIButtonTypeSystem];
+    wq_theme_style_primary_button(hide, WQLocalizedNullable(@"Hide"), @"chevron.down");
+    [hide addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
     UIButtonConfiguration *stopConfig = wq_theme_secondary_button_configuration();
     stopConfig.baseForegroundColor = UIColor.systemRedColor;
     UIButton *stop = [UIButton buttonWithConfiguration:stopConfig primaryAction:
@@ -6258,7 +6562,7 @@ static BOOL wq_confirm_full_scan(NSString *what, int64_t ids, double seconds)
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *top = wq_top_view_controller();
         if (!top) { dispatch_semaphore_signal(answered); return; }   // not in front: don't scan unasked
-        NSString *message = WQLocalizedFormat(@"To list %@, WQ Files has to check every file on this device once: %@ files, %@.\n\nThis is only needed the first time; later scans only check new files and take seconds.\n\nKeep WQ Files open while it scans.", what, wq_count_text(ids), wq_duration_text(seconds));
+        NSString *message = WQLocalizedFormat(@"To list %@, WQ Glass has to check every file on this device once: %@ files, %@.\n\nThis is only needed the first time; later scans only check new files and take seconds.\n\nKeep WQ Glass open while it scans.", what, wq_count_text(ids), wq_duration_text(seconds));
         UIAlertController *alert = wq_alert_controller(@"Scan all files?", message, UIAlertControllerStyleAlert);
         [alert addAction:wq_alert_action(@"Not Now", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) {
             dispatch_semaphore_signal(answered);

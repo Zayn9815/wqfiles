@@ -219,19 +219,19 @@ and only change what you understand.
 ## Install with AltStore or SideStore
 
 <h3 align="center">
-<a href="https://altdirect.app/?url=https://raw.githubusercontent.com/kolbicz/WQFiles/main/source.json"><img src="https://altdirect.app/assets/png/AltSource_Blue.png" width="200"></a>
+<a href="https://altdirect.app/?url=https://raw.githubusercontent.com/Zayn9815/wqfiles/main/source.json"><img src="https://altdirect.app/assets/png/AltSource_Blue.png" width="200"></a>
 &nbsp;
-<a href="https://github.com/kolbicz/WQFiles/releases/latest/download/WQFiles.ipa"><img src="https://altdirect.app/assets/png/Download_Blue.png" width="200"></a>
+<a href="https://github.com/Zayn9815/wqfiles/releases/latest/download/WQFiles.ipa"><img src="https://altdirect.app/assets/png/Download_Blue.png" width="200"></a>
 </h3>
 
 Tap **Add AltSource** on your iPhone to add the source in AltStore, SideStore,
 LiveContainer and others (via [AltDirect](https://altdirect.app)), or add it by hand:
 
 ```
-https://raw.githubusercontent.com/kolbicz/WQFiles/main/source.json
+https://raw.githubusercontent.com/Zayn9815/wqfiles/main/source.json
 ```
 
-Or download `WQFiles.ipa` from [Releases](https://github.com/kolbicz/WQFiles/releases) and sign it yourself.
+Or download `WQFiles.ipa` from [Releases](https://github.com/Zayn9815/wqfiles/releases) and sign it yourself.
 
 ## Signing: the App Group
 

@@ -7,6 +7,7 @@
 #import "WQApps.h"
 #import "WQDir.h"
 #import "WQUI.h"
+#import "WQTheme.h"
 #import "WQSharing.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
@@ -54,6 +55,7 @@
     NSString *_restoreBundleID;
     WQAppItem *_importApp;
     NSTimeInterval _lastScanFinished;
+    NSMutableArray<UIButton *> *_filterPills;
 }
 
 - (instancetype)initRestoringBundleID:(NSString *)bundleID
@@ -438,7 +440,7 @@ static NSString *wq_make_backup_from(NSString *bundleID, NSString *container, NS
     NSArray<NSString *> *top = wq_list(container, &listError);
     if (!top) {
         [fm removeItemAtPath:staging error:nil];
-        if (error) *error = WQLocalizedFormat(@"WQ Files has no access to the app's data right now (%@). Nothing was backed up; try again.",
+        if (error) *error = WQLocalizedFormat(@"WQ Glass has no access to the app's data right now (%@). Nothing was backed up; try again.",
                                               listError ?: @"no token");
         return nil;
     }
@@ -579,10 +581,77 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
-    self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width);
+    wq_theme_apply_scroll_insets(self.tableView, 116.0);
+    self.tableView.tableHeaderView = [self buildGlassAppsHeader];
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     [self scan];
+}
+
+- (UIView *)buildGlassAppsHeader
+{
+    CGFloat width = self.view.bounds.size.width ?: 360.0;
+    UIView *strip = wq_device_header(width);
+    CGFloat stripHeight = strip.frame.size.height;
+
+    UIScrollView *pillScroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, stripHeight, width, 46)];
+    pillScroll.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    pillScroll.showsHorizontalScrollIndicator = NO;
+    pillScroll.alwaysBounceHorizontal = YES;
+    pillScroll.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+
+    UIStackView *pillStack = [UIStackView new];
+    pillStack.translatesAutoresizingMaskIntoConstraints = NO;
+    pillStack.axis = UILayoutConstraintAxisHorizontal;
+    pillStack.spacing = 8;
+    pillStack.alignment = UIStackViewAlignmentCenter;
+    [pillScroll addSubview:pillStack];
+    [NSLayoutConstraint activateConstraints:@[
+        [pillStack.topAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.topAnchor constant:4],
+        [pillStack.bottomAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.bottomAnchor constant:-6],
+        [pillStack.leadingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.leadingAnchor],
+        [pillStack.trailingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.trailingAnchor],
+        [pillStack.heightAnchor constraintEqualToConstant:34],
+    ]];
+
+    _filterPills = [NSMutableArray new];
+    NSInteger current = [NSUserDefaults.standardUserDefaults integerForKey:kWQAppsFilterPref];
+    NSArray<NSString *> *titles = @[
+        WQLocalized(@"All Apps"),
+        WQLocalized(@"Apple Apps"),
+        WQLocalized(@"Other Apps"),
+        WQLocalized(@"Backed Up"),
+    ];
+    __weak typeof(self) weakSelf = self;
+    [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger idx, BOOL *__unused stop) {
+        UIButton *pill = wq_theme_pill_button(title, (NSInteger)idx == current);
+        pill.tag = (NSInteger)idx;
+        __weak UIButton *weakPill = pill;
+        [pill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            UIButton *sender = weakPill;
+            typeof(self) strongSelf = weakSelf;
+            if (!sender || !strongSelf) return;
+            [NSUserDefaults.standardUserDefaults setInteger:sender.tag forKey:kWQAppsFilterPref];
+            [strongSelf syncFilterPills];
+            [strongSelf resortApps];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        [self->_filterPills addObject:pill];
+        [pillStack addArrangedSubview:pill];
+    }];
+
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 50)];
+    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [header addSubview:strip];
+    [header addSubview:pillScroll];
+    return header;
+}
+
+- (void)syncFilterPills
+{
+    NSInteger current = [NSUserDefaults.standardUserDefaults integerForKey:kWQAppsFilterPref];
+    for (UIButton *pill in _filterPills) {
+        wq_theme_update_pill_button(pill, pill.tag == current);
+    }
 }
 
 // Pull to refresh: rescan the containers instead of reusing the shared scan,
@@ -597,6 +666,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    [self syncFilterPills];
     if (_scanning && _scanCancellation.isCancelled) { [self scan]; return; }
     if (_scanning || !_apps) return;
     // The start screen keeps this screen between visits: rescan on its own
@@ -808,7 +878,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
             return a.bytes > b.bytes ? NSOrderedAscending : (a.bytes < b.bytes ? NSOrderedDescending : NSOrderedSame);
         }];
         NSString *note = nil;
-        if (!wq_app_group()) note = WQLocalized(@"WQ Files has no App Group, so it can't open other apps' folders. Re-sign it with a tool that keeps the App Group (see Signing in the README).");
+        if (!wq_app_group()) note = WQLocalized(@"WQ Glass has no App Group, so it can't open other apps' folders. Re-sign it with a tool that keeps the App Group (see Signing in the README).");
         else if (!containers && wq_full_scan_was_declined()) note = WQLocalized(@"Apps aren't listed yet: this needs a scan of all files. Pull down to start it.");
         else if (!containers) note = WQLocalized(@"Container enumeration failed. See Log for the statfs/inode reason.");
         else if (!containers.count) note = WQLocalized(@"No app containers were found. Refresh, and check Log for the enumeration reason.");
@@ -917,6 +987,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
             if (i >= 4 && !installKnown && i != current) continue;
             UIAction *f = [UIAction actionWithTitle:WQLocalizedNullable(titles[(NSUInteger)i]) image:nil identifier:nil handler:^(UIAction *__unused a) {
                 [NSUserDefaults.standardUserDefaults setInteger:i forKey:kWQAppsFilterPref];
+                [weakSelf syncFilterPills];
                 [weakSelf resortApps];
             }];
             f.state = i == current ? UIMenuElementStateOn : UIMenuElementStateOff;
@@ -997,7 +1068,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return WQLocalized(@"Tap an app to back up, restore or clear its Documents and Library. Close the app first (swipe it away in the app switcher); operations are not snapshot-consistent while it runs. Backups are stored in WQFiles/AppBackups and are visible in the Files app. tmp is cleared when requested but is not backed up or restored.");
+    return WQLocalized(@"Tap an app to back up, restore or clear its Documents and Library. Close the app first (swipe it away in the app switcher); operations are not snapshot-consistent while it runs. Backups are stored in WQ Glass/AppBackups and are visible in the Files app. tmp is cleared when requested but is not backed up or restored.");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -1302,7 +1373,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     WQAppItem *app = nil;
     for (WQAppItem *candidate in _apps) if ([candidate.bundleID isEqualToString:bid]) { app = candidate; break; }
     if (!app) {
-        wq_alert(self, @"App not found", WQLocalizedFormat(@"%@ isn't installed, or WQ Files can't reach its data. "
+        wq_alert(self, @"App not found", WQLocalizedFormat(@"%@ isn't installed, or WQ Glass can't reach its data. "
                  "A backup can only be restored into the installed app: install it, open it once, then try again.", bid));
     } else if (!app.backups.count) {
         wq_alert(self, @"No backup", WQLocalizedFormat(@"There is no complete backup of %@ to restore.", app.name));
@@ -1329,7 +1400,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
 {
     NSString *path = backup[@"path"];
     NSString *warning = [backup[@"verified"] boolValue] ? @""
-        : WQLocalizedFormat(@"\n\nThis backup is unverified (%@). WQ Files will re-check its parts before changing anything.", backup[@"reason"] ?: WQLocalized(@"no typed manifest"));
+        : WQLocalizedFormat(@"\n\nThis backup is unverified (%@). WQ Glass will re-check its parts before changing anything.", backup[@"reason"] ?: WQLocalized(@"no typed manifest"));
     NSString *body = wq_keep_before_restore()
         ? WQLocalizedFormat(@"Replaces the app's current Documents and Library with the backup from %@; tmp is left untouched. The current data is backed up first, and put back if anything fails. Close the app first: a running app can make the operation non-snapshot-consistent.%@", wq_backup_label(backup), warning)
         : WQLocalizedFormat(@"Replaces the app's current Documents and Library with the backup from %@; tmp is left untouched. The current data is backed up first, and put back if anything fails; after a successful restore that backup is deleted (Keep Data Before Restore is off). Close the app first: a running app can make the operation non-snapshot-consistent.%@", wq_backup_label(backup), warning);
@@ -1370,7 +1441,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     NSString *parts = [[edited.allKeys sortedArrayUsingSelector:@selector(compare:)] componentsJoinedByString:@", "];
     wq_log(@"restore %@: backup %@ was edited after it was made (%@)", app.bundleID, path.lastPathComponent, parts);
     UIAlertController *alert = wq_alert_controller(@"Backup was edited",
-        WQLocalizedFormat(@"The files in %@ of this backup changed after WQ Files made it, for example because files from another backup were put in. Restore the backup as it is now? The app's current data is still backed up first.", parts),
+        WQLocalizedFormat(@"The files in %@ of this backup changed after WQ Glass made it, for example because files from another backup were put in. Restore the backup as it is now? The app's current data is still backed up first.", parts),
         UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
     [alert addAction:wq_alert_action(WQLocalized(@"Restore Anyway"), UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
@@ -1693,7 +1764,7 @@ NSString *wq_recover_interrupted_restore(void)
         // Restoring nothing would empty the app's Documents and Library.
         // Older versions could save such an empty backup when access failed.
         *title = WQLocalized(@"Not restored");
-        *message = verified ? WQLocalized(@"This backup is empty (it was made while WQ Files had no access to the app). Restoring it would delete the app's data, so nothing was changed.")
+        *message = verified ? WQLocalized(@"This backup is empty (it was made while WQ Glass had no access to the app). Restoring it would delete the app's data, so nothing was changed.")
                             : WQLocalized(@"The legacy backup is empty. Nothing was changed.");
         return;
     }

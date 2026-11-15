@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>WQ Files</string>
+	<string>WQ Glass</string>
 	<key>CFBundleExecutable</key>
 	<string>WQFiles</string>
 	<key>CFBundleIcons</key>
@@ -16,6 +16,7 @@
 			<array>
 				<string>AppIcon40x40</string>
 				<string>AppIcon60x60</string>
+				<string>AppIcon1024</string>
 			</array>
 		</dict>
 	</dict>
@@ -29,11 +30,12 @@
 				<string>AppIcon60x60</string>
 				<string>AppIcon76x76</string>
 				<string>AppIcon83.5x83.5</string>
+				<string>AppIcon1024</string>
 			</array>
 		</dict>
 	</dict>
 	<key>CFBundleIdentifier</key>
-	<string>cz.kolbi.wqfiles</string>
+	<string>com.zayn.wqglass</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleLocalizations</key>
@@ -52,17 +54,17 @@
 		<string>th</string>
 	</array>
 	<key>CFBundleName</key>
-	<string>WQFiles</string>
+	<string>WQ Glass</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.9.8</string>
+	<string>4.0</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iPhoneOS</string>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>88</string>
+	<string>400</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>

@@ -1,6 +1,6 @@
 //
 //  WQUI.m
-//  WQ Files shared UI helpers
+//  WQ Glass shared UI helpers
 //  GPL-3.0-or-later.
 //
 
@@ -33,32 +33,45 @@ NSString *wq_device_line(void)
                     : [NSString stringWithFormat:@"%@ · iOS %@", model, ver];
 }
 
-// "WQ Files 0.9.4 (66)": in the strip, so screenshots show the version.
+// "WQ Glass 4.0 (400)": in the strip, so screenshots show the version.
 NSString *wq_app_version_line(void)
 {
     NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    return [NSString stringWithFormat:@"WQ Files %@ (%@)", info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?"];
+    return [NSString stringWithFormat:@"WQ Glass %@ (%@)", info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?"];
 }
 
-const CGFloat kWQDeviceStripHeight = 46;
+const CGFloat kWQDeviceStripHeight = 52;
 
-// A small centered strip with the WQ Files version and the device/iOS line,
-// for a table header.
+// Frosted crimson Liquid Glass pill with the WQ Glass version and the device/iOS line.
 UIView *wq_device_header(CGFloat width)
 {
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, kWQDeviceStripHeight + 16)];
+    box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIVisualEffectView *pill = wq_theme_make_glass_card(18, NO);
+    [box addSubview:pill];
+
     UILabel *header = [UILabel new];
+    header.translatesAutoresizingMaskIntoConstraints = NO;
     header.numberOfLines = 2;
     header.textAlignment = NSTextAlignmentCenter;
     header.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     header.textColor = wq_theme_secondary_text();
     header.backgroundColor = [UIColor clearColor];
-    header.adjustsFontSizeToFitWidth = YES;   // keeps both lines on narrow screens
-    header.minimumScaleFactor = 0.8;
+    header.adjustsFontSizeToFitWidth = YES;
+    header.minimumScaleFactor = 0.78;
     header.text = [NSString stringWithFormat:@"%@\n%@", wq_app_version_line(), wq_device_line()];
-    header.frame = CGRectMake(0, 0, width, kWQDeviceStripHeight);
-    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [box addSubview:header];  // 16 pt of clear space below the strip
+    [pill.contentView addSubview:header];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [pill.topAnchor constraintEqualToAnchor:box.topAnchor constant:2],
+        [pill.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
+        [pill.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
+        [pill.heightAnchor constraintEqualToConstant:kWQDeviceStripHeight - 2],
+        [header.topAnchor constraintEqualToAnchor:pill.contentView.topAnchor constant:6],
+        [header.bottomAnchor constraintEqualToAnchor:pill.contentView.bottomAnchor constant:-6],
+        [header.leadingAnchor constraintEqualToAnchor:pill.contentView.leadingAnchor constant:12],
+        [header.trailingAnchor constraintEqualToAnchor:pill.contentView.trailingAnchor constant:-12],
+    ]];
     return box;
 }
 
@@ -101,7 +114,7 @@ static UIImage *wq_real_icon(NSString *bundleID)
 {
     static NSData *placeholder;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ placeholder = wq_icon_fingerprint(wq_raw_icon(@"cz.kolbi.wqfiles.no-such-app")); });
+    dispatch_once(&once, ^{ placeholder = wq_icon_fingerprint(wq_raw_icon(@"com.zayn.wqglass.no-such-app")); });
     UIImage *raw = wq_raw_icon(bundleID);
     if (!raw || !raw.CGImage) return nil;
     NSData *fp = wq_icon_fingerprint(raw);
@@ -329,7 +342,7 @@ BOOL wq_refuse_if_deleting_off(UIViewController *host)
 {
     if (wq_deleting_allowed()) return NO;
     UIAlertController *alert = wq_alert_controller(@"Deleting is turned off",
-        @"Turn on Allow Deleting on the start screen of WQ Files to delete, clear or clean.", UIAlertControllerStyleAlert);
+        @"Turn on Allow Deleting on the start screen of WQ Glass to delete, clear or clean.", UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(@"OK", UIAlertActionStyleDefault, nil)];
     [host presentViewController:alert animated:YES completion:nil];
     return YES;

@@ -1121,7 +1121,7 @@ NSString *wq_permission_hint(NSString *path, BOOL forWriting)
                  : (st.st_gid == getgid() ? (st.st_mode >> 3 & need) != 0 : (st.st_mode & need) != 0);
     if (allowed) return nil;
     NSString *owner = st.st_uid == 0 ? @"root" : [NSString stringWithFormat:@"uid %d", (int)st.st_uid];
-    return WQLocalizedFormat(@"This file belongs to %@ (mode %o) and only its owner may %@ it. WQ Files reaches the folder, but runs as mobile (uid %d), so no app can %@ this file.",
+    return WQLocalizedFormat(@"This file belongs to %@ (mode %o) and only its owner may %@ it. WQ Glass reaches the folder, but runs as mobile (uid %d), so no app can %@ this file.",
             owner, st.st_mode & 07777, forWriting ? WQLocalized(@"change") : WQLocalized(@"read"), (int)me, forWriting ? WQLocalized(@"change") : WQLocalized(@"open"));
 }
 

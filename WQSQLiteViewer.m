@@ -236,6 +236,12 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     return self;
 }
 
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+}
+
 - (BOOL)editable { return _snapshot.editing && _table && _alias && !_updating; }
 
 - (BOOL)wq_needsLeaveConfirmation { return NO; }
@@ -471,6 +477,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
     if (_exportName) {
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"CSV") style:UIBarButtonItemStylePlain
                                                                                  target:self action:@selector(exportCSV:)];
@@ -721,11 +728,17 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.view.backgroundColor = UIColor.clearColor;
+    UIVisualEffectView *card = wq_theme_make_glass_card(20, NO);
+    [self.view addSubview:card];
+
     _textView = [UITextView new];
-    _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
+    _textView.backgroundColor = UIColor.clearColor;
     _textView.translatesAutoresizingMaskIntoConstraints = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:15 weight:UIFontWeightRegular];
+    _textView.textColor = wq_theme_primary_text();
+    _textView.tintColor = wq_theme_primary_text();
+    _textView.keyboardAppearance = UIKeyboardAppearanceDark;
     _textView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;   // SQL stays left to right
     _textView.textAlignment = NSTextAlignmentLeft;
     _textView.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -733,13 +746,18 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     _textView.smartQuotesType = UITextSmartQuotesTypeNo;
     _textView.smartDashesType = UITextSmartDashesTypeNo;
     _textView.text = @"SELECT name, type FROM sqlite_master";
-    [self.view addSubview:_textView];
+    [card.contentView addSubview:_textView];
+
     UILayoutGuide *g = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [_textView.topAnchor constraintEqualToAnchor:g.topAnchor],
-        [_textView.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor],
-        [_textView.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:8],
-        [_textView.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-8],
+        [card.topAnchor constraintEqualToAnchor:g.topAnchor constant:8],
+        [card.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor constant:-10],
+        [card.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:14],
+        [card.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-14],
+        [_textView.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:10],
+        [_textView.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-10],
+        [_textView.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:10],
+        [_textView.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-10],
     ]];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Run") style:UIBarButtonItemStyleProminent
                                                                              target:self action:@selector(run)];
@@ -909,12 +927,44 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    self.tableView.tableHeaderView = [self buildSQLiteHeader];
     __weak typeof(self) weakSelf = self;
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) {
         [weakSelf confirmLeaveThen:^{ [weakSelf.navigationController popViewControllerAnimated:YES]; }];
     }];
     [self updateButtons];
     [self openSnapshot];
+}
+
+- (UIView *)buildSQLiteHeader
+{
+    CGFloat width = self.view.bounds.size.width ?: 360.0;
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 62)];
+    container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIVisualEffectView *card = wq_theme_make_glass_card(16, NO);
+    [container addSubview:card];
+
+    UILabel *label = [UILabel new];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
+    label.textColor = wq_theme_secondary_text();
+    label.numberOfLines = 2;
+    label.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    label.text = _path;
+    [card.contentView addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:6],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-6],
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [label.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:8],
+        [label.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-8],
+        [label.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:12],
+        [label.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-12],
+    ]];
+    return container;
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -1007,7 +1057,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         return;
     }
     UIAlertController *alert = wq_alert_controller(@"Edit database",
-        @"You change WQ Files' copy: edit a value by tapping it in a row, delete rows by swiping, or run SQL. Nothing reaches the app until you tap Save.\n\nBefore saving, force-quit the app (swipe it away in the app switcher): saving while it runs can corrupt its data. The previous database is kept in Backups.",
+        @"You change WQ Glass's copy: edit a value by tapping it in a row, delete rows by swiping, or run SQL. Nothing reaches the app until you tap Save.\n\nBefore saving, force-quit the app (swipe it away in the app switcher): saving while it runs can corrupt its data. The previous database is kept in Backups.",
         UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     [alert addAction:wq_alert_action(@"Edit", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
@@ -1132,7 +1182,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
 {
     if (!_snapshot) return nil;
     if (_snapshot.editing)
-        return WQLocalized(@"Editing WQ Files' copy: tap a value in a row to change it, swipe a row to delete it, or use SQL. Save writes the copy to the app; force-quit the app first.");
+        return WQLocalized(@"Editing WQ Glass's copy: tap a value in a row to change it, swipe a row to delete it, or use SQL. Save writes the copy to the app; force-quit the app first.");
     NSString *wal = _snapshot.copiedWAL ? WQLocalized(@" and its -wal file") : @"";
     return WQLocalizedFormat(@"Read-only. This is a copy of the database%@ made when it was opened; the app's own file is not changed. Close the app first for an up-to-date copy.", wal);
 }

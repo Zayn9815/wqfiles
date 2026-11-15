@@ -1,6 +1,6 @@
 //
 //  WQTheme.m
-//  WQ Files crimson Liquid Glass theme (iOS 26)
+//  WQ Glass crimson Liquid Glass theme (iOS 26)
 //
 
 #import "WQTheme.h"
@@ -8,6 +8,7 @@
 #import <objc/runtime.h>
 
 static const NSInteger kWQThemeBackdropTag = 0x57515042;   // same tag wq_prism_install_background uses
+static const void *kWQThemeSpringKey = &kWQThemeSpringKey;
 
 static UIColor *wq_rgb(uint32_t rgb, CGFloat alpha)
 {
@@ -28,10 +29,47 @@ UIColor *wq_theme_primary_text(void)   { return UIColor.whiteColor; }
 UIColor *wq_theme_secondary_text(void) { return wq_rgb(0xE6B8B5, 1.0); }
 UIColor *wq_theme_hairline(void)       { return [UIColor colorWithWhite:1.0 alpha:0.14]; }
 UIColor *wq_theme_cta_text(void)       { return wq_rgb(0x6B211E, 1.0); }
+UIColor *wq_theme_active_pill(void)    { return wq_rgb(0x9B2627, 1.0); }
 UIColor *wq_theme_accent(void)         { return wq_rgb(0xE0645A, 1.0); }
 UIColor *wq_theme_solid_surface(void)  { return wq_rgb(0x8A302C, 1.0); }
 
 static UIColor *wq_theme_pressed(void) { return wq_rgb(0xFFDCDA, 0.20); }
+
+#pragma mark - Spring interaction
+
+@interface WQThemeSpringTarget : NSObject
+@end
+
+@implementation WQThemeSpringTarget
+- (void)down:(UIControl *)sender
+{
+    [UIView animateWithDuration:0.14 delay:0 usingSpringWithDamping:0.85 initialSpringVelocity:0.6
+                        options:UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        sender.transform = CGAffineTransformMakeScale(0.965, 0.965);
+        sender.alpha = 0.92;
+    } completion:nil];
+}
+- (void)up:(UIControl *)sender
+{
+    [UIView animateWithDuration:0.32 delay:0 usingSpringWithDamping:0.62 initialSpringVelocity:0.8
+                        options:UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        sender.transform = CGAffineTransformIdentity;
+        sender.alpha = 1.0;
+    } completion:nil];
+}
+@end
+
+void wq_theme_add_spring_tap(UIControl *control)
+{
+    if (!control || objc_getAssociatedObject(control, kWQThemeSpringKey)) return;
+    WQThemeSpringTarget *target = [WQThemeSpringTarget new];
+    objc_setAssociatedObject(control, kWQThemeSpringKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [control addTarget:target action:@selector(down:) forControlEvents:UIControlEventTouchDown | UIControlEventTouchDragEnter];
+    [control addTarget:target action:@selector(up:)
+      forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel | UIControlEventTouchDragExit];
+}
 
 #pragma mark - Liquid Glass
 
@@ -44,21 +82,151 @@ UIVisualEffect *wq_theme_glass_effect(BOOL interactive)
     return glass;
 }
 
+UIVisualEffectView *wq_theme_make_glass_card(CGFloat cornerRadius, BOOL interactive)
+{
+    UIVisualEffect *effect = wq_theme_glass_effect(interactive);
+    UIVisualEffectView *card = [[UIVisualEffectView alloc] initWithEffect:effect];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.layer.cornerRadius = cornerRadius;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderWidth = 0.75;
+    card.layer.borderColor = wq_theme_rim().CGColor;
+    card.clipsToBounds = YES;
+    if (!effect) card.backgroundColor = wq_theme_solid_surface();
+    return card;
+}
+
 UIButtonConfiguration *wq_theme_primary_button_configuration(void)
 {
     UIButtonConfiguration *cfg = [UIButtonConfiguration prominentGlassButtonConfiguration];
+    UIColor *cta = wq_theme_cta_text();
     cfg.baseBackgroundColor = UIColor.whiteColor;
-    cfg.baseForegroundColor = wq_theme_cta_text();
+    cfg.baseForegroundColor = cta;
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.imagePadding = 7;
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 18, 10, 18);
+    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
+        NSMutableDictionary *out = [incoming mutableCopy];
+        out[NSForegroundColorAttributeName] = cta;
+        if (!out[NSFontAttributeName]) {
+            out[NSFontAttributeName] = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        }
+        return out;
+    };
+    cfg.imageColorTransformer = ^UIColor *(UIColor *__unused color) {
+        return cta;
+    };
     return cfg;
 }
 
 UIButtonConfiguration *wq_theme_secondary_button_configuration(void)
 {
     UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
+    cfg.baseBackgroundColor = wq_theme_glass_tint();
     cfg.baseForegroundColor = wq_theme_primary_text();
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.imagePadding = 6;
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 16, 10, 16);
+    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
+        NSMutableDictionary *out = [incoming mutableCopy];
+        out[NSForegroundColorAttributeName] = UIColor.whiteColor;
+        return out;
+    };
+    cfg.imageColorTransformer = ^UIColor *(UIColor *__unused color) {
+        return UIColor.whiteColor;
+    };
     return cfg;
+}
+
+void wq_theme_style_primary_button(UIButton *button, NSString *title, NSString *symbolName)
+{
+    if (!button) return;
+    UIColor *cta = wq_theme_cta_text();
+    UIButtonConfiguration *cfg = wq_theme_primary_button_configuration();
+    if (title) cfg.title = title;
+    if (symbolName.length) {
+        UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightBold];
+        cfg.image = [[UIImage systemImageNamed:symbolName withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    }
+    button.configuration = cfg;
+    button.backgroundColor = UIColor.whiteColor;
+    button.tintColor = cta;
+    button.layer.cornerCurve = kCACornerCurveContinuous;
+    [button setTitleColor:cta forState:UIControlStateNormal];
+    [button setTitleColor:cta forState:UIControlStateHighlighted];
+    [button setTitleColor:cta forState:UIControlStateSelected];
+    [button setTitleColor:[cta colorWithAlphaComponent:0.55] forState:UIControlStateDisabled];
+    wq_theme_add_spring_tap(button);
+}
+
+void wq_theme_style_secondary_button(UIButton *button, NSString *title, NSString *symbolName)
+{
+    if (!button) return;
+    UIButtonConfiguration *cfg = wq_theme_secondary_button_configuration();
+    if (title) cfg.title = title;
+    if (symbolName.length) {
+        UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+        cfg.image = [[UIImage systemImageNamed:symbolName withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    }
+    button.configuration = cfg;
+    button.tintColor = UIColor.whiteColor;
+    button.layer.borderColor = wq_theme_rim().CGColor;
+    button.layer.borderWidth = 0.75;
+    button.layer.cornerCurve = kCACornerCurveContinuous;
+    button.clipsToBounds = YES;
+    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    [button setTitleColor:wq_theme_secondary_text() forState:UIControlStateHighlighted];
+    wq_theme_add_spring_tap(button);
+}
+
+void wq_theme_update_pill_button(UIButton *button, BOOL active)
+{
+    if (!button) return;
+    UIButtonConfiguration *cfg = [button.configuration copy] ?: [UIButtonConfiguration glassButtonConfiguration];
+    cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x9B3A36, 0.36);
+    cfg.baseForegroundColor = active ? UIColor.whiteColor : wq_theme_secondary_text();
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 14, 7, 14);
+    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
+        NSMutableDictionary *out = [incoming mutableCopy];
+        out[NSForegroundColorAttributeName] = active ? UIColor.whiteColor : wq_theme_secondary_text();
+        out[NSFontAttributeName] = [UIFont systemFontOfSize:13 weight:active ? UIFontWeightBold : UIFontWeightSemibold];
+        return out;
+    };
+    button.configuration = cfg;
+    button.tintColor = active ? UIColor.whiteColor : wq_theme_secondary_text();
+    button.backgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x9B3A36, 0.36);
+    button.layer.borderWidth = active ? 1.0 : 0.75;
+    button.layer.borderColor = active ? wq_rgb(0xFFDCDA, 0.55).CGColor : wq_theme_rim().CGColor;
+    button.layer.cornerCurve = kCACornerCurveContinuous;
+    button.clipsToBounds = YES;
+}
+
+UIButton *wq_theme_pill_button(NSString *title, BOOL active)
+{
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
+    cfg.title = title;
+    button.configuration = cfg;
+    wq_theme_update_pill_button(button, active);
+    wq_theme_add_spring_tap(button);
+    return button;
+}
+
+void wq_theme_apply_scroll_insets(UIScrollView *scrollView, CGFloat bottomPadding)
+{
+    if (!scrollView) return;
+    UIEdgeInsets insets = scrollView.contentInset;
+    if (insets.bottom < bottomPadding) {
+        insets.bottom = bottomPadding;
+        scrollView.contentInset = insets;
+    }
+    UIEdgeInsets indicators = scrollView.verticalScrollIndicatorInsets;
+    if (indicators.bottom < bottomPadding) {
+        indicators.bottom = bottomPadding;
+        scrollView.verticalScrollIndicatorInsets = indicators;
+    }
 }
 
 UIView *wq_theme_glass_container(UIView *content, CGFloat spacing)
@@ -97,17 +265,19 @@ void wq_theme_install_backdrop(UIViewController *vc)
         if (!wq_theme_is_backdrop(table.backgroundView)) table.backgroundView = wq_prism_background_view();
         table.backgroundColor = UIColor.clearColor;
         table.separatorColor = wq_theme_hairline();
+        wq_theme_apply_scroll_insets(table, 112.0);
         return;
     }
     if ([view isKindOfClass:UICollectionView.class]) {
         UICollectionView *collection = (UICollectionView *)view;
         if (!wq_theme_is_backdrop(collection.backgroundView)) collection.backgroundView = wq_prism_background_view();
         collection.backgroundColor = UIColor.clearColor;
+        wq_theme_apply_scroll_insets(collection, 112.0);
         return;
     }
     if ([view isKindOfClass:UIScrollView.class]) {
-        // A subview would scroll with the content; a solid canvas color doesn't.
         view.backgroundColor = wq_theme_canvas_mid();
+        wq_theme_apply_scroll_insets((UIScrollView *)view, 112.0);
         return;
     }
     if ([view viewWithTag:kWQThemeBackdropTag]) return;
@@ -133,12 +303,13 @@ static void wq_theme_hook(Class cls, SEL sel, IMP replacement, IMP *original)
         method_setImplementation(method, replacement);
 }
 
-// Every WQ Files screen gets the crimson canvas, whichever design it belongs to.
+// Every WQ Glass screen gets the crimson canvas, whichever design it belongs to.
 static void wq_theme_view_did_load(UIViewController *vc, SEL cmd)
 {
     if (wq_orig_view_did_load) ((void (*)(id, SEL))wq_orig_view_did_load)(vc, cmd);
     if ([vc isKindOfClass:UINavigationController.class] || [vc isKindOfClass:UITabBarController.class]) return;
     if (![NSStringFromClass(vc.class) hasPrefix:@"WQ"]) return;
+    vc.navigationItem.backButtonDisplayMode = UINavigationItemBackButtonDisplayModeMinimal;
     wq_theme_install_backdrop(vc);
 }
 
@@ -163,12 +334,13 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
         ? wq_theme_solid_surface()
         : wq_theme_glass_tint();
     background.strokeColor = table.style == UITableViewStylePlain ? UIColor.clearColor : wq_theme_rim();
-    background.strokeWidth = table.style == UITableViewStylePlain ? 0.0 : 0.5;
+    background.strokeWidth = table.style == UITableViewStylePlain ? 0.0 : 0.6;
     background.visualEffect = nil;
     cell.backgroundConfiguration = background;
 
     if ([cell.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
         UIListContentConfiguration *content = [(UIListContentConfiguration *)cell.contentConfiguration copy];
+        if (!content.textProperties.color) content.textProperties.color = wq_theme_primary_text();
         if (content.secondaryText.length || content.secondaryAttributedText.length)
             content.secondaryTextProperties.color = wq_theme_secondary_text();
         cell.contentConfiguration = content;
@@ -192,6 +364,16 @@ void wq_theme_install(void)
         [UITableView appearance].separatorColor = wq_theme_hairline();
         [UISearchBar appearance].tintColor = wq_theme_primary_text();
         [UITextField appearanceWhenContainedInInstancesOfClasses:@[UISearchBar.class]].textColor = wq_theme_primary_text();
+        [UILabel appearanceWhenContainedInInstancesOfClasses:@[UITableViewHeaderFooterView.class]].textColor = wq_theme_secondary_text();
+
+        UINavigationBarAppearance *navApp = [UINavigationBarAppearance new];
+        [navApp configureWithTransparentBackground];
+        navApp.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+        navApp.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+        [UINavigationBar appearance].standardAppearance = navApp;
+        [UINavigationBar appearance].compactAppearance = navApp;
+        [UINavigationBar appearance].scrollEdgeAppearance = navApp;
+        [UINavigationBar appearance].tintColor = wq_theme_primary_text();
     });
 }
 

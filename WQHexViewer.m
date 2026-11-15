@@ -151,6 +151,8 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     self.tableView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.rowHeight = 20;
+    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    self.tableView.tableHeaderView = [self buildHexHeader];
     __weak typeof(self) weakSelf = self;
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) { [weakSelf leave]; }];
     NSString *path = _path;
@@ -193,6 +195,34 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     _lastSearchNeedle = nil;
     _matchLength = 0;
     _status = nil;
+}
+
+- (UIView *)buildHexHeader
+{
+    CGFloat width = self.view.bounds.size.width ?: 360.0;
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 44)];
+    container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIVisualEffectView *card = wq_theme_make_glass_card(14, NO);
+    [container addSubview:card];
+
+    UILabel *label = [UILabel new];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightBold];
+    label.textColor = wq_theme_secondary_text();
+    label.text = @"OFFSET     HEX BYTES                      ASCII";
+    label.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    [card.contentView addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:4],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-6],
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:12],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-12],
+        [label.centerYAnchor constraintEqualToAnchor:card.contentView.centerYAnchor],
+        [label.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:12],
+        [label.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-12],
+    ]];
+    return container;
 }
 
 - (UIFont *)rowFont
