@@ -10,19 +10,19 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Palette (Obsidian Ruby & Crystal Prism Liquid Glass)
-UIColor *wq_theme_canvas_top(void);        // #150409
-UIColor *wq_theme_canvas_mid(void);        // #2A0913
-UIColor *wq_theme_canvas_edge(void);       // #0D0205
-UIColor *wq_theme_glass_tint(void);        // rgba(218, 86, 108, 0.16) crystal glass
-UIColor *wq_theme_rim(void);               // rgba(255, 232, 236, 0.46) specular rim
+// Palette
+UIColor *wq_theme_canvas_top(void);        // #5C1D1B
+UIColor *wq_theme_canvas_mid(void);        // #782623
+UIColor *wq_theme_canvas_edge(void);       // #4A1412
+UIColor *wq_theme_glass_tint(void);        // rgba(155, 58, 54, 0.45)
+UIColor *wq_theme_rim(void);               // rgba(255, 220, 218, 0.28)
 UIColor *wq_theme_primary_text(void);      // #FFFFFF
-UIColor *wq_theme_secondary_text(void);    // #F2C6CC
-UIColor *wq_theme_hairline(void);          // rgba(255, 255, 255, 0.16)
-UIColor *wq_theme_cta_text(void);          // #5A0D1B
-UIColor *wq_theme_active_pill(void);       // #B81D3A
-UIColor *wq_theme_accent(void);            // #FF5A78 luminous coral-rose
-UIColor *wq_theme_solid_surface(void);     // #3A111A opaque glass stand-in (Reduce Transparency)
+UIColor *wq_theme_secondary_text(void);    // #E6B8B5
+UIColor *wq_theme_hairline(void);          // rgba(255, 255, 255, 0.14)
+UIColor *wq_theme_cta_text(void);          // #6B211E
+UIColor *wq_theme_active_pill(void);       // #9B2627
+UIColor *wq_theme_accent(void);            // warm coral for progress, checks, switches
+UIColor *wq_theme_solid_surface(void);     // opaque glass stand-in (Reduce Transparency)
 
 // Tinted crimson Liquid Glass (UIGlassEffect). nil when Reduce Transparency is
 // on; callers then use wq_theme_solid_surface() as an opaque background.

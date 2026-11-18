@@ -8,6 +8,7 @@
 #import "WQDir.h"
 #import "WQUI.h"
 #import "WQTheme.h"
+#import "WQMotion.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import "WQCacheSafety.h"
@@ -326,7 +327,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 // Summary card: reclaimable total, a bar for the selected share, status.
 @interface WQSummaryCell : UITableViewCell
 @property (nonatomic, strong) UILabel *captionLabel, *totalLabel, *statusLabel;
-@property (nonatomic, strong) UIProgressView *bar;
+@property (nonatomic, strong) WQProgressBarView *bar;
+@property (nonatomic, strong) WQProgressRingView *ring;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @end
 
@@ -344,8 +346,18 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                             scaledFontForFont:[UIFont systemFontOfSize:34 weight:UIFontWeightBold]];
         _totalLabel.textColor = wq_theme_primary_text();
         _totalLabel.adjustsFontForContentSizeCategory = YES;
-        _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-        _bar.progressTintColor = wq_theme_accent();
+        _bar = [[WQProgressBarView alloc] initWithFrame:CGRectZero];
+        _ring = [[WQProgressRingView alloc] initWithFrame:CGRectMake(0, 0, 52, 52)];
+        _ring.lineWidth = 5;
+        _ring.translatesAutoresizingMaskIntoConstraints = NO;
+        [NSLayoutConstraint activateConstraints:@[
+            [_ring.widthAnchor constraintEqualToConstant:52],
+            [_ring.heightAnchor constraintEqualToConstant:52],
+        ]];
+        UIView *ringSpacer = [UIView new];
+        [ringSpacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+        UIStackView *totalRow = [[UIStackView alloc] initWithArrangedSubviews:@[_totalLabel, ringSpacer, _ring]];
+        totalRow.alignment = UIStackViewAlignmentCenter;
         _statusLabel = [UILabel new];
         _statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
         _statusLabel.textColor = wq_theme_secondary_text();
@@ -355,10 +367,10 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         UIStackView *captionRow = [[UIStackView alloc] initWithArrangedSubviews:@[_captionLabel, _spinner]];
         captionRow.spacing = 8;
         captionRow.alignment = UIStackViewAlignmentCenter;
-        UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[captionRow, _totalLabel, _bar, _statusLabel]];
+        UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[captionRow, totalRow, _bar, _statusLabel]];
         stack.axis = UILayoutConstraintAxisVertical;
         stack.spacing = 6;
-        [stack setCustomSpacing:10 afterView:_totalLabel];
+        [stack setCustomSpacing:10 afterView:totalRow];
         stack.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentView addSubview:stack];
         UILayoutGuide *m = self.contentView.layoutMarginsGuide;
@@ -392,6 +404,9 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     unsigned long long _scanBytes;   // found so far while scanning
     NSInteger _filterMode;   // 0 All, 1 Selected, 2 Large (50 MB+)
     NSMutableArray<UIButton *> *_filterPills;
+    UIButton *_cleanPillButton;
+    UIButton *_selectPillButton;
+    BOOL _didCascade;
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -461,6 +476,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             UIButton *sender = weakPill;
             typeof(self) strongSelf = weakSelf;
             if (!sender || !strongSelf) return;
+            wq_haptic_selection();
             strongSelf->_filterMode = sender.tag;
             [strongSelf syncFilterPills];
             [strongSelf rebuildVisibleItems];
@@ -471,16 +487,45 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         [pillStack addArrangedSubview:pill];
     }];
 
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 50)];
+    // Grouped glass action toolbar directly below the filter pills (thumb-accessible without colliding with the floating tab bar).
+    _cleanPillButton = wq_motion_dock_pill(WQLocalized(@"Clean"), @"sparkles", YES);
+    [_cleanPillButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        typeof(self) me = weakSelf;
+        if (!me) return;
+        wq_haptic_impact(UIImpactFeedbackStyleMedium);
+        if (me->_cleaning) [me stopClean]; else [me confirmClean];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    _selectPillButton = wq_motion_dock_pill(WQLocalized(@"Select"), @"checklist", NO);
+    _selectPillButton.showsMenuAsPrimaryAction = YES;
+    UIButton *rescanPill = wq_motion_dock_pill(WQLocalized(@"Rescan"), @"arrow.clockwise", NO);
+    [rescanPill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [weakSelf userRefresh];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    UIStackView *actionRow = [[UIStackView alloc] initWithArrangedSubviews:@[_cleanPillButton, _selectPillButton, rescanPill]];
+    actionRow.axis = UILayoutConstraintAxisHorizontal;
+    actionRow.spacing = 8;
+    actionRow.alignment = UIStackViewAlignmentCenter;
+    UIView *actionGroup = wq_theme_glass_container(actionRow, 8);
+
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 96)];
+    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:strip];
     [header addSubview:pillScroll];
+    [header addSubview:actionGroup];
+    [NSLayoutConstraint activateConstraints:@[
+        [actionGroup.topAnchor constraintEqualToAnchor:pillScroll.bottomAnchor constant:2],
+        [actionGroup.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16],
+        [actionGroup.trailingAnchor constraintLessThanOrEqualToAnchor:header.trailingAnchor constant:-16],
+        [actionGroup.heightAnchor constraintEqualToConstant:40],
+    ]];
     return header;
 }
 
 - (void)syncFilterPills
 {
     for (UIButton *pill in _filterPills) {
-        wq_theme_update_pill_button(pill, pill.tag == _filterMode);
+        wq_motion_set_pill_active(pill, pill.tag == _filterMode);
     }
 }
 
@@ -564,10 +609,20 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         UIBarButtonItem *stop = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Stop") style:UIBarButtonItemStylePlain
                                                                  target:self action:@selector(stopClean)];
         self.navigationItem.rightBarButtonItems = @[stop];
+        if (_cleanPillButton) {
+            wq_theme_style_primary_button(_cleanPillButton, WQLocalizedNullable(@"Stop"), @"stop.fill");
+            _cleanPillButton.enabled = YES;
+        }
+        _selectPillButton.enabled = NO;
         return;
     }
     if (_scanning) {
         self.navigationItem.rightBarButtonItems = nil;
+        if (_cleanPillButton) {
+            wq_theme_style_primary_button(_cleanPillButton, WQLocalizedNullable(@"Clean"), @"sparkles");
+            _cleanPillButton.enabled = NO;
+        }
+        _selectPillButton.enabled = NO;
         return;
     }
     NSUInteger n = 0;
@@ -588,10 +643,19 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         [weakSelf selectWhere:^BOOL(WQCacheItem *__unused it) { return it.bytes >= 50ull * 1000 * 1000; }];
     }];
     all.state = allVisible ? UIMenuElementStateOn : UIMenuElementStateOff;
+    UIMenu *selectMenu = [UIMenu menuWithChildren:@[all, none, large]];
     UIBarButtonItem *select = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Select")
-                                                                menu:[UIMenu menuWithChildren:@[all, none, large]]];
+                                                                menu:selectMenu];
     select.enabled = visible.count > 0;
     self.navigationItem.rightBarButtonItems = @[clean, select];
+    if (_cleanPillButton) {
+        wq_theme_style_primary_button(_cleanPillButton, WQLocalizedNullable(@"Clean"), @"sparkles");
+        _cleanPillButton.enabled = clean.enabled;
+    }
+    if (_selectPillButton) {
+        _selectPillButton.menu = selectMenu;
+        _selectPillButton.enabled = select.enabled;
+    }
 }
 
 // Pull to refresh: rescan the containers instead of reusing the shared scan,
@@ -840,6 +904,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             self->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
             [self.refreshControl endRefreshing];
             [self.tableView reloadData];
+            if (!self->_didCascade && self.visibleItems.count) {
+                self->_didCascade = YES;
+                [self.tableView layoutIfNeeded];
+                wq_motion_cascade_visible(self.tableView);
+            }
             [self updateButtons];
         });
     });
@@ -886,8 +955,12 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         if (busy) [cell.spinner startAnimating]; else [cell.spinner stopAnimating];
         // While the first scan runs, the total found so far counts up.
         cell.totalLabel.text = wq_size_text((_scanning && !_items.count) ? _scanBytes : total);
-        cell.bar.progress = _scanning ? _scanProgress : total ? (float)((double)selected / (double)total) : 0;
+        float shown = _scanning ? _scanProgress : total ? (float)((double)selected / (double)total) : 0;
+        [cell.bar setProgress:shown animated:YES];
         cell.bar.hidden = NO;
+        // The ring follows the same value; after a clean it closes with a check.
+        [cell.ring setProgress:shown animated:YES];
+        if (!busy && _result.length && !_cleanRequiresRescan) [cell.ring showCheckmarkAnimated:YES]; else [cell.ring hideCheckmark];
         cell.statusLabel.text = _status ?: _result
             ?: WQLocalizedFormat(n == 1 ? @"%@ selected in %lu item" : @"%@ selected in %lu items",
                                  wq_size_text(selected), (unsigned long)n);

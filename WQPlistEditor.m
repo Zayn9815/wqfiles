@@ -10,6 +10,7 @@
 #import "WQCore.h"
 #import "WQUI.h"
 #import "WQTheme.h"
+#import "WQMotion.h"
 #import "WQPlistEditorSupport.h"
 
 typedef NS_ENUM(NSInteger, WQPType) {
@@ -145,6 +146,11 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 @implementation WQPlistEditorViewController {
     NSArray *_sortedKeyCache;
     BOOL _keysDirty;
+    UIVisualEffectView *_plistDock;
+    UIButton *_dockSaveButton;
+    UIButton *_dockAddButton;
+    UIButton *_dockMoreButton;
+    BOOL _didCascade;
 }
 
 - (instancetype)initWithPath:(NSString *)path readOnly:(BOOL)readOnly
@@ -157,6 +163,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         _isRoot = YES;
         _status = WQLocalized(@"Loading…");
         self.title = path.lastPathComponent;
+        self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
 }
@@ -167,6 +174,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         _doc = doc;
         _container = container;
         self.title = title;
+        self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
 }
@@ -187,7 +195,30 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
             [weakSelf.navigationController popViewControllerAnimated:YES];
         }];
     }
+    [self buildPlistDock];
     [self updateBar];
+}
+
+- (void)buildPlistDock
+{
+    __weak typeof(self) weakSelf = self;
+    _dockAddButton = wq_motion_dock_button(nil, @"plus", WQLocalized(@"Add"));
+    [_dockAddButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [weakSelf add];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _dockSaveButton = wq_motion_dock_pill(WQLocalized(@"Save"), @"checkmark.circle.fill", YES);
+    [_dockSaveButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleMedium);
+        [weakSelf save];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _dockMoreButton = wq_motion_dock_button(nil, @"ellipsis.circle", WQLocalized(@"More"));
+    _dockMoreButton.showsMenuAsPrimaryAction = YES;
+
+    _plistDock = wq_motion_make_dock(@[_dockAddButton, _dockSaveButton, _dockMoreButton], 8);
+    wq_motion_install_dock(_plistDock, self, self.tableView);
 }
 
 - (UIView *)buildPlistHeader
@@ -268,6 +299,11 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
                 self.status = nil;
             }
             [self refresh];
+            if (!self->_didCascade) {
+                self->_didCascade = YES;
+                [self.tableView layoutIfNeeded];
+                wq_motion_cascade_visible(self.tableView);
+            }
         });
     });
 }
@@ -321,10 +357,20 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
                                                          identifier:nil handler:^(UIAction *__unused a) { [weakSelf leaveThen:weakSelf.openAsText]; }]];
     if (self.openAsHex) [menu addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Open in Hex Viewer") image:[UIImage systemImageNamed:@"number"]
                                                         identifier:nil handler:^(UIAction *__unused a) { [weakSelf leaveThen:weakSelf.openAsHex]; }]];
-    if (menu.count)
-        [items addObject:[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
-                                                           menu:[UIMenu menuWithChildren:menu]]];
+    UIMenu *moreMenu = menu.count ? [UIMenu menuWithChildren:menu] : nil;
+    if (moreMenu)
+        [items addObject:[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:moreMenu]];
     self.navigationItem.rightBarButtonItems = items;
+    if (_plistDock) {
+        BOOL editable = !self.doc.readOnly && self.container != nil;
+        _dockAddButton.hidden = !editable;
+        _dockAddButton.enabled = !self.doc.edit.saving;
+        _dockSaveButton.hidden = !editable;
+        _dockSaveButton.enabled = self.doc.edit.dirty && !self.doc.edit.saving;
+        _dockMoreButton.hidden = (moreMenu == nil);
+        _dockMoreButton.menu = moreMenu;
+        wq_motion_set_visible(_plistDock, editable || moreMenu != nil, self.view.window != nil);
+    }
 }
 
 #pragma mark Leaving and saving

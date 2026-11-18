@@ -11,6 +11,7 @@
 #import "WQCore.h"
 #import "WQUI.h"
 #import "WQTheme.h"
+#import "WQMotion.h"
 #import <sys/stat.h>
 #import <errno.h>
 #import <string.h>
@@ -115,6 +116,9 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     NSString *_status;
     dispatch_queue_t _queue;         // initial snapshot, page reads, saves
     dispatch_queue_t _searchQueue;   // searches, so a long scan never blocks pages or saves
+    UIVisualEffectView *_hexDock;
+    UIButton *_dockSaveButton;
+    BOOL _didCascade;
 }
 
 - (instancetype)initWithPath:(NSString *)path readOnly:(BOOL)readOnly
@@ -133,6 +137,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         _searchQueue = dispatch_queue_create("wqfiles.hex.search",
             dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0));
         self.title = path.lastPathComponent;
+        self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
 }
@@ -181,9 +186,55 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
                           : WQLocalized(@"Cannot open this file.");
             [self updateBar];
             [self.tableView reloadData];
+            if (!self->_didCascade) {
+                self->_didCascade = YES;
+                [self.tableView layoutIfNeeded];
+                wq_motion_cascade_visible(self.tableView);
+            }
         });
     });
+    [self buildHexDock];
+    wq_theme_apply_scroll_insets(self.tableView, 96.0);
     [self updateBar];
+}
+
+- (void)buildHexDock
+{
+    __weak typeof(self) weakSelf = self;
+    UIButton *offsetBtn = wq_motion_dock_button(nil, @"arrow.right.to.line", WQLocalized(@"Offset"));
+    [offsetBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        [weakSelf goToOffset];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    UIMenu *findMenu = [UIMenu menuWithTitle:WQLocalized(@"Find") children:@[
+        [UIAction actionWithTitle:WQLocalizedNullable(@"Find Hex Bytes…") image:[UIImage systemImageNamed:@"magnifyingglass"] identifier:nil
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf promptFindHex:YES]; }],
+        [UIAction actionWithTitle:WQLocalizedNullable(@"Find Text…") image:[UIImage systemImageNamed:@"text.magnifyingglass"] identifier:nil
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf promptFindHex:NO]; }],
+    ]];
+    UIButton *findBtn = wq_motion_dock_button(nil, @"magnifyingglass", WQLocalized(@"Find"));
+    findBtn.menu = findMenu;
+    findBtn.showsMenuAsPrimaryAction = YES;
+
+    _dockSaveButton = wq_motion_dock_pill(WQLocalized(@"Save"), @"checkmark.circle.fill", YES);
+    [_dockSaveButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleMedium);
+        [weakSelf save];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *discardBtn = wq_motion_dock_button(nil, @"arrow.uturn.backward", WQLocalized(@"Discard Changes"));
+    [discardBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        [weakSelf discard];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    for (UIView *b in @[offsetBtn, findBtn, discardBtn]) {
+        [NSLayoutConstraint activateConstraints:@[[b.heightAnchor constraintEqualToConstant:44],
+                                                  [b.widthAnchor constraintGreaterThanOrEqualToConstant:44]]];
+    }
+    _hexDock = wq_motion_make_dock(@[offsetBtn, findBtn, _dockSaveButton, discardBtn], 6);
+    wq_motion_install_dock(_hexDock, self, self.tableView);
 }
 
 - (void)viewDidDisappear:(BOOL)animated
@@ -300,6 +351,10 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     ]];
     [items addObject:[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:menu]];
     self.navigationItem.rightBarButtonItems = items;
+    if (_dockSaveButton) {
+        _dockSaveButton.hidden = _readOnly;
+        _dockSaveButton.enabled = _edits.count > 0 && !_editState.saving;
+    }
 }
 
 #pragma mark Data

@@ -20,20 +20,20 @@ static UIColor *wq_rgb(uint32_t rgb, CGFloat alpha)
 
 #pragma mark - Palette
 
-UIColor *wq_theme_canvas_top(void)     { return wq_rgb(0x150409, 1.0); }
-UIColor *wq_theme_canvas_mid(void)     { return wq_rgb(0x2A0913, 1.0); }
-UIColor *wq_theme_canvas_edge(void)    { return wq_rgb(0x0D0205, 1.0); }
-UIColor *wq_theme_glass_tint(void)     { return wq_rgb(0xDA566C, 0.16); }
-UIColor *wq_theme_rim(void)            { return wq_rgb(0xFFE8EC, 0.46); }
+UIColor *wq_theme_canvas_top(void)     { return wq_rgb(0x5C1D1B, 1.0); }
+UIColor *wq_theme_canvas_mid(void)     { return wq_rgb(0x782623, 1.0); }
+UIColor *wq_theme_canvas_edge(void)    { return wq_rgb(0x4A1412, 1.0); }
+UIColor *wq_theme_glass_tint(void)     { return wq_rgb(0x9B3A36, 0.45); }
+UIColor *wq_theme_rim(void)            { return wq_rgb(0xFFDCDA, 0.28); }
 UIColor *wq_theme_primary_text(void)   { return UIColor.whiteColor; }
-UIColor *wq_theme_secondary_text(void) { return wq_rgb(0xF2C6CC, 1.0); }
-UIColor *wq_theme_hairline(void)       { return [UIColor colorWithWhite:1.0 alpha:0.16]; }
-UIColor *wq_theme_cta_text(void)       { return wq_rgb(0x5A0D1B, 1.0); }
-UIColor *wq_theme_active_pill(void)    { return wq_rgb(0xB81D3A, 1.0); }
-UIColor *wq_theme_accent(void)         { return wq_rgb(0xFF5A78, 1.0); }
-UIColor *wq_theme_solid_surface(void)  { return wq_rgb(0x3A111A, 1.0); }
+UIColor *wq_theme_secondary_text(void) { return wq_rgb(0xE6B8B5, 1.0); }
+UIColor *wq_theme_hairline(void)       { return [UIColor colorWithWhite:1.0 alpha:0.14]; }
+UIColor *wq_theme_cta_text(void)       { return wq_rgb(0x6B211E, 1.0); }
+UIColor *wq_theme_active_pill(void)    { return wq_rgb(0x9B2627, 1.0); }
+UIColor *wq_theme_accent(void)         { return wq_rgb(0xE0645A, 1.0); }
+UIColor *wq_theme_solid_surface(void)  { return wq_rgb(0x8A302C, 1.0); }
 
-static UIColor *wq_theme_pressed(void) { return wq_rgb(0xFFE8EC, 0.24); }
+static UIColor *wq_theme_pressed(void) { return wq_rgb(0xFFDCDA, 0.20); }
 
 #pragma mark - Spring interaction
 
@@ -73,37 +73,6 @@ void wq_theme_add_spring_tap(UIControl *control)
 
 #pragma mark - Liquid Glass
 
-@interface WQThemeSpecularSheenView : UIView
-@end
-
-@implementation WQThemeSpecularSheenView {
-    CAGradientLayer *_sheen;
-}
-- (instancetype)initWithFrame:(CGRect)frame
-{
-    if ((self = [super initWithFrame:frame])) {
-        self.userInteractionEnabled = NO;
-        self.backgroundColor = UIColor.clearColor;
-        _sheen = [CAGradientLayer layer];
-        _sheen.startPoint = CGPointMake(0.0, 0.0);
-        _sheen.endPoint = CGPointMake(0.9, 0.85);
-        _sheen.colors = @[
-            (id)[UIColor colorWithRed:1.0 green:0.93 blue:0.95 alpha:0.24].CGColor,
-            (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.89 alpha:0.06].CGColor,
-            (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.89 alpha:0.0].CGColor,
-        ];
-        _sheen.locations = @[@0.0, @0.32, @0.72];
-        [self.layer addSublayer:_sheen];
-    }
-    return self;
-}
-- (void)layoutSubviews
-{
-    [super layoutSubviews];
-    _sheen.frame = self.bounds;
-}
-@end
-
 UIVisualEffect *wq_theme_glass_effect(BOOL interactive)
 {
     if (UIAccessibilityIsReduceTransparencyEnabled()) return nil;
@@ -120,32 +89,26 @@ UIVisualEffectView *wq_theme_make_glass_card(CGFloat cornerRadius, BOOL interact
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.layer.cornerRadius = cornerRadius;
     card.layer.cornerCurve = kCACornerCurveContinuous;
-    card.layer.borderWidth = 0.85;
+    card.layer.borderWidth = 0.75;
     card.layer.borderColor = wq_theme_rim().CGColor;
     card.clipsToBounds = YES;
-    if (!effect) {
-        card.backgroundColor = wq_theme_solid_surface();
-    } else {
-        WQThemeSpecularSheenView *sheen = [[WQThemeSpecularSheenView alloc] initWithFrame:card.contentView.bounds];
-        sheen.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [card.contentView addSubview:sheen];
-    }
+    if (!effect) card.backgroundColor = wq_theme_solid_surface();
     return card;
 }
 
 UIButtonConfiguration *wq_theme_primary_button_configuration(void)
 {
     // filledButtonConfiguration renders an opaque pure-white pill with crisp
-    // #5A0D1B text & SF Symbol across iOS 26/27 Liquid Glass UI (unlike
+    // #6B211E text & SF Symbol across iOS 26/27 Liquid Glass UI (unlike
     // prominentGlassButtonConfiguration, whose vibrant monochrome layer turns
     // white text/icons invisible against a white platter).
     UIButtonConfiguration *cfg = [UIButtonConfiguration filledButtonConfiguration];
     UIColor *cta = wq_theme_cta_text();
-    cfg.baseBackgroundColor = [UIColor colorWithRed:1.0 green:0.97 blue:0.98 alpha:0.96];
+    cfg.baseBackgroundColor = UIColor.whiteColor;
     cfg.baseForegroundColor = cta;
-    cfg.background.backgroundColor = [UIColor colorWithRed:1.0 green:0.97 blue:0.98 alpha:0.96];
-    cfg.background.strokeColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.75];
-    cfg.background.strokeWidth = 0.85;
+    cfg.background.backgroundColor = UIColor.whiteColor;
+    cfg.background.strokeColor = [UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.55];
+    cfg.background.strokeWidth = 0.75;
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
     cfg.imagePadding = 7;
@@ -167,14 +130,14 @@ UIButtonConfiguration *wq_theme_primary_button_configuration(void)
 UIButtonConfiguration *wq_theme_secondary_button_configuration(void)
 {
     UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
-    cfg.baseBackgroundColor = wq_rgb(0xFF8FA3, 0.16);
+    cfg.baseBackgroundColor = wq_theme_glass_tint();
     cfg.baseForegroundColor = wq_theme_primary_text();
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
     cfg.imagePadding = 6;
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(10, 14, 10, 14);
     cfg.background.strokeColor = wq_theme_rim();
-    cfg.background.strokeWidth = 0.85;
+    cfg.background.strokeWidth = 0.75;
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy];
         out[NSForegroundColorAttributeName] = UIColor.whiteColor;
@@ -250,11 +213,11 @@ void wq_theme_update_pill_button(UIButton *button, BOOL active)
     UIButtonConfiguration *cfg = [button.configuration copy] ?: [UIButtonConfiguration glassButtonConfiguration];
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
-    cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_rgb(0xFF8FA3, 0.14);
+    cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x9B3A36, 0.36);
     cfg.baseForegroundColor = active ? UIColor.whiteColor : wq_theme_secondary_text();
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 14, 7, 14);
-    cfg.background.strokeWidth = active ? 1.1 : 0.8;
-    cfg.background.strokeColor = active ? wq_rgb(0xFFE8EC, 0.72) : wq_theme_rim();
+    cfg.background.strokeWidth = active ? 1.0 : 0.75;
+    cfg.background.strokeColor = active ? wq_rgb(0xFFDCDA, 0.55) : wq_theme_rim();
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy];
         out[NSForegroundColorAttributeName] = active ? UIColor.whiteColor : wq_theme_secondary_text();
@@ -370,7 +333,7 @@ static void wq_theme_hook(Class cls, SEL sel, IMP replacement, IMP *original)
         method_setImplementation(method, replacement);
 }
 
-// Every WQ Glass screen gets the obsidian-ruby glass canvas, whichever design it belongs to.
+// Every WQ Glass screen gets the crimson canvas, whichever design it belongs to.
 static void wq_theme_view_did_load(UIViewController *vc, SEL cmd)
 {
     if (wq_orig_view_did_load) ((void (*)(id, SEL))wq_orig_view_did_load)(vc, cmd);
@@ -380,8 +343,8 @@ static void wq_theme_view_did_load(UIViewController *vc, SEL cmd)
     wq_theme_install_backdrop(vc);
 }
 
-// Rows of themed tables: grouped sections render real UIGlassEffect cards with
-// specular rims over the glowing aurora canvas; plain lists stay clear with glass highlights.
+// Rows of themed tables: grouped sections become crimson glass cards, plain
+// lists stay clear over the canvas. System screens are left alone.
 static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigurationState *state)
 {
     if (wq_orig_cell_update) ((void (*)(id, SEL, id))wq_orig_cell_update)(cell, cmd, state);
@@ -395,26 +358,15 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
         ? [cell.backgroundConfiguration copy]
         : [UIBackgroundConfiguration clearConfiguration];
     BOOL pressed = state.isHighlighted || (state.isSelected && !state.isEditing);
-    BOOL plain = table.style == UITableViewStylePlain;
-    BOOL reduceTransparency = UIAccessibilityIsReduceTransparencyEnabled();
-    if (plain) {
-        background.visualEffect = nil;
-        background.backgroundColor = pressed ? wq_theme_pressed() : UIColor.clearColor;
-        background.strokeColor = UIColor.clearColor;
-        background.strokeWidth = 0.0;
-    } else if (reduceTransparency) {
-        background.visualEffect = nil;
-        background.backgroundColor = pressed ? wq_theme_pressed() : wq_theme_solid_surface();
-        background.strokeColor = wq_theme_rim();
-        background.strokeWidth = 0.7;
-    } else {
-        background.visualEffect = wq_theme_glass_effect(NO);
-        background.backgroundColor = pressed ? wq_theme_pressed() : UIColor.clearColor;
-        background.strokeColor = wq_theme_rim();
-        background.strokeWidth = 0.7;
-    }
+    if (pressed) background.backgroundColor = wq_theme_pressed();
+    else if (table.style == UITableViewStylePlain) background.backgroundColor = UIColor.clearColor;
+    else background.backgroundColor = UIAccessibilityIsReduceTransparencyEnabled()
+        ? wq_theme_solid_surface()
+        : wq_theme_glass_tint();
+    background.strokeColor = table.style == UITableViewStylePlain ? UIColor.clearColor : wq_theme_rim();
+    background.strokeWidth = table.style == UITableViewStylePlain ? 0.0 : 0.6;
+    background.visualEffect = nil;
     cell.backgroundConfiguration = background;
-    cell.backgroundColor = UIColor.clearColor;
 
     if ([cell.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
         UIListContentConfiguration *content = [(UIListContentConfiguration *)cell.contentConfiguration copy];
@@ -442,7 +394,6 @@ void wq_theme_install(void)
         [UITableView appearance].separatorColor = wq_theme_hairline();
         [UISearchBar appearance].tintColor = wq_theme_primary_text();
         [UITextField appearanceWhenContainedInInstancesOfClasses:@[UISearchBar.class]].textColor = wq_theme_primary_text();
-        [UITextField appearanceWhenContainedInInstancesOfClasses:@[UISearchBar.class]].backgroundColor = wq_rgb(0xFFE0E6, 0.12);
         [UILabel appearanceWhenContainedInInstancesOfClasses:@[UITableViewHeaderFooterView.class]].textColor = wq_theme_secondary_text();
 
         UINavigationBarAppearance *navApp = [UINavigationBarAppearance new];

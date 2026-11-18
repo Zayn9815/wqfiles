@@ -42,7 +42,7 @@ NSString *wq_app_version_line(void)
 
 const CGFloat kWQDeviceStripHeight = 52;
 
-// Frosted Obsidian-Ruby Liquid Glass telemetry pill with status dot, version and device/iOS line.
+// Frosted crimson Liquid Glass telemetry pill with status dot, version and device/iOS line.
 UIView *wq_device_header(CGFloat width)
 {
     CGFloat useWidth = width > 0 ? width : 360.0;
@@ -398,16 +398,13 @@ NSString *wq_size_text(unsigned long long size)
     return [NSByteCountFormatter stringFromByteCount:(long long)size countStyle:NSByteCountFormatterCountStyleFile];
 }
 
-// WQ Prism: luminous Obsidian-Ruby aurora & prism caustic canvas that drives
-// dramatic iOS 26/27 Liquid Glass refraction behind every floating card and pill.
+// WQ Prism: a soft layered backdrop shared by the redesigned screens.
 @interface WQPrismBackgroundView : UIView
 @end
 
 @implementation WQPrismBackgroundView {
     CAGradientLayer *_base;
-    CAGradientLayer *_prismBeam;
     NSArray<CAGradientLayer *> *_glows;
-    BOOL _animated;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
@@ -416,17 +413,11 @@ NSString *wq_size_text(unsigned long long size)
         self.userInteractionEnabled = NO;
         self.clipsToBounds = YES;
         _base = [CAGradientLayer layer];
-        _base.startPoint = CGPointMake(0.2, 0.0);
-        _base.endPoint = CGPointMake(0.8, 1.0);
+        _base.startPoint = CGPointMake(0.5, 0.0);
+        _base.endPoint = CGPointMake(0.5, 1.0);
         [self.layer addSublayer:_base];
-
-        _prismBeam = [CAGradientLayer layer];
-        _prismBeam.startPoint = CGPointMake(0.0, 0.15);
-        _prismBeam.endPoint = CGPointMake(1.0, 0.85);
-        [self.layer addSublayer:_prismBeam];
-
         NSMutableArray *glows = [NSMutableArray new];
-        for (NSInteger i = 0; i < 6; i++) {
+        for (NSInteger i = 0; i < 4; i++) {
             CAGradientLayer *g = [CAGradientLayer layer];
             g.type = kCAGradientLayerRadial;
             g.startPoint = CGPointMake(0.5, 0.5);
@@ -443,58 +434,28 @@ NSString *wq_size_text(unsigned long long size)
 
 - (void)updateColors
 {
+    // Crimson Liquid Glass canvas (same in light and dark: the window is dark).
+    // #5C1D1B at the top, #782623 through the middle, deepening to #4A1412.
     _base.colors = @[(id)wq_theme_canvas_top().CGColor,
                      (id)wq_theme_canvas_mid().CGColor,
                      (id)wq_theme_canvas_edge().CGColor];
-    _base.locations = @[@0.0, @0.48, @1.0];
-
-    _prismBeam.colors = @[
-        (id)[UIColor clearColor].CGColor,
-        (id)[UIColor colorWithRed:1.0 green:0.42 blue:0.54 alpha:0.14].CGColor,
-        (id)[UIColor colorWithRed:1.0 green:0.78 blue:0.84 alpha:0.09].CGColor,
-        (id)[UIColor clearColor].CGColor,
-    ];
-    _prismBeam.locations = @[@0.0, @0.38, @0.55, @1.0];
-
-    // High-contrast glowing caustics so Liquid Glass bends vibrant light along every edge.
-    _glows[0].colors = @[(id)[UIColor colorWithRed:0.90 green:0.15 blue:0.31 alpha:0.52].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[1].colors = @[(id)[UIColor colorWithRed:1.00 green:0.42 blue:0.44 alpha:0.42].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[2].colors = @[(id)[UIColor colorWithRed:0.78 green:0.12 blue:0.36 alpha:0.46].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[3].colors = @[(id)[UIColor colorWithRed:1.00 green:0.30 blue:0.42 alpha:0.34].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[4].colors = @[(id)[UIColor colorWithRed:1.00 green:0.84 blue:0.88 alpha:0.20].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[5].colors = @[(id)[UIColor colorWithRed:0.05 green:0.01 blue:0.02 alpha:0.55].CGColor, (id)[UIColor clearColor].CGColor];
-}
-
-- (void)startAmbientDrift
-{
-    if (_animated || UIAccessibilityIsReduceMotionEnabled()) return;
-    _animated = YES;
-    NSArray<NSNumber *> *durations = @[@11.0, @14.0, @13.0, @16.0, @12.0];
-    for (NSUInteger i = 0; i < durations.count; i++) {
-        CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
-        pulse.fromValue = @0.94;
-        pulse.toValue = @1.10;
-        pulse.duration = durations[i].doubleValue;
-        pulse.autoreverses = YES;
-        pulse.repeatCount = HUGE_VALF;
-        pulse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [_glows[i] addAnimation:pulse forKey:@"wq.aurora"];
-    }
+    _base.locations = @[@0.0, @0.45, @1.0];
+    // Warm terracotta and blush light pools; the last one darkens the lower edge.
+    _glows[0].colors = @[(id)[UIColor colorWithRed:0.80 green:0.33 blue:0.29 alpha:0.42].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[1].colors = @[(id)[UIColor colorWithRed:0.91 green:0.52 blue:0.47 alpha:0.26].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[2].colors = @[(id)[UIColor colorWithRed:0.62 green:0.20 blue:0.18 alpha:0.36].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[3].colors = @[(id)[UIColor colorWithRed:0.20 green:0.05 blue:0.05 alpha:0.45].CGColor, (id)[UIColor clearColor].CGColor];
 }
 
 - (void)layoutSubviews
 {
     [super layoutSubviews];
     _base.frame = self.bounds;
-    _prismBeam.frame = self.bounds;
     CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
-    _glows[0].frame = CGRectMake(-w * 0.34, -h * 0.12, w * 1.05, w * 1.05);
-    _glows[1].frame = CGRectMake(w * 0.35, -h * 0.06, w * 0.90, w * 0.90);
-    _glows[2].frame = CGRectMake(w * 0.22, h * 0.38, w * 0.98, w * 0.98);
-    _glows[3].frame = CGRectMake(-w * 0.32, h * 0.56, w * 0.88, w * 0.88);
-    _glows[4].frame = CGRectMake(w * 0.08, h * 0.06, w * 0.72, w * 0.72);
-    _glows[5].frame = CGRectMake(-w * 0.20, h * 0.74, w * 1.25, w * 0.72);
-    [self startAmbientDrift];
+    _glows[0].frame = CGRectMake(-w * 0.34, -h * 0.08, w * 0.92, w * 0.92);
+    _glows[1].frame = CGRectMake(w * 0.42, -h * 0.10, w * 0.82, w * 0.82);
+    _glows[2].frame = CGRectMake(w * 0.26, h * 0.56, w * 0.94, w * 0.94);
+    _glows[3].frame = CGRectMake(-w * 0.30, h * 0.70, w * 0.72, w * 0.72);
 }
 
 @end

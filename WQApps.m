@@ -8,6 +8,7 @@
 #import "WQDir.h"
 #import "WQUI.h"
 #import "WQTheme.h"
+#import "WQMotion.h"
 #import "WQSharing.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
@@ -56,6 +57,9 @@
     WQAppItem *_importApp;
     NSTimeInterval _lastScanFinished;
     NSMutableArray<UIButton *> *_filterPills;
+    UILabel *_summaryTitleLabel;
+    UILabel *_summaryDetailLabel;
+    BOOL _didCascade;
     CGFloat _appsLayoutWidth;
 }
 
@@ -628,8 +632,44 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     UIView *strip = wq_device_header(width);
     CGFloat stripHeight = strip.frame.size.height;
 
-    UIScrollView *pillScroll = [[UIScrollView alloc] initWithFrame:CGRectMake(0, stripHeight, width, 46)];
-    pillScroll.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIVisualEffectView *summaryCard = wq_theme_make_glass_card(20, NO);
+    _summaryTitleLabel = [UILabel new];
+    _summaryTitleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
+    _summaryTitleLabel.textColor = wq_theme_primary_text();
+    _summaryTitleLabel.text = WQLocalized(@"Apps");
+    _summaryDetailLabel = [UILabel new];
+    _summaryDetailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _summaryDetailLabel.textColor = wq_theme_secondary_text();
+    _summaryDetailLabel.numberOfLines = 0;
+    _summaryDetailLabel.text = WQLocalizedNullable(@"Finding apps…");
+
+    UIButton *rescanPill = wq_theme_pill_button(WQLocalized(@"Rescan"), NO);
+    __weak typeof(self) weakSelf = self;
+    [rescanPill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [weakSelf userRefresh];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *textCol = [[UIStackView alloc] initWithArrangedSubviews:@[_summaryTitleLabel, _summaryDetailLabel]];
+    textCol.axis = UILayoutConstraintAxisVertical;
+    textCol.spacing = 2;
+    UIStackView *summaryRow = [[UIStackView alloc] initWithArrangedSubviews:@[textCol, rescanPill]];
+    summaryRow.translatesAutoresizingMaskIntoConstraints = NO;
+    summaryRow.axis = UILayoutConstraintAxisHorizontal;
+    summaryRow.alignment = UIStackViewAlignmentCenter;
+    summaryRow.spacing = 10;
+    [rescanPill setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [rescanPill setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [summaryCard.contentView addSubview:summaryRow];
+    [NSLayoutConstraint activateConstraints:@[
+        [summaryRow.topAnchor constraintEqualToAnchor:summaryCard.contentView.topAnchor constant:12],
+        [summaryRow.bottomAnchor constraintEqualToAnchor:summaryCard.contentView.bottomAnchor constant:-12],
+        [summaryRow.leadingAnchor constraintEqualToAnchor:summaryCard.contentView.leadingAnchor constant:14],
+        [summaryRow.trailingAnchor constraintEqualToAnchor:summaryCard.contentView.trailingAnchor constant:-14],
+    ]];
+
+    UIScrollView *pillScroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    pillScroll.translatesAutoresizingMaskIntoConstraints = NO;
     pillScroll.showsHorizontalScrollIndicator = NO;
     pillScroll.alwaysBounceHorizontal = YES;
     pillScroll.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
@@ -657,7 +697,6 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
         WQLocalized(@"Other Apps"),
         WQLocalized(@"Backed Up"),
     ];
-    __weak typeof(self) weakSelf = self;
     [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger idx, BOOL *__unused stop) {
         UIButton *pill = wq_theme_pill_button(title, (NSInteger)idx == current);
         pill.tag = (NSInteger)idx;
@@ -666,6 +705,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
             UIButton *sender = weakPill;
             typeof(self) strongSelf = weakSelf;
             if (!sender || !strongSelf) return;
+            wq_haptic_selection();
             [NSUserDefaults.standardUserDefaults setInteger:sender.tag forKey:kWQAppsFilterPref];
             [strongSelf syncFilterPills];
             [strongSelf resortApps];
@@ -674,18 +714,48 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
         [pillStack addArrangedSubview:pill];
     }];
 
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 50)];
+    CGFloat cardHeight = 72.0;
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + cardHeight + 52)];
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:strip];
+    [header addSubview:summaryCard];
     [header addSubview:pillScroll];
+    [NSLayoutConstraint activateConstraints:@[
+        [summaryCard.topAnchor constraintEqualToAnchor:header.topAnchor constant:stripHeight + 4],
+        [summaryCard.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16],
+        [summaryCard.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-16],
+        [summaryCard.heightAnchor constraintGreaterThanOrEqualToConstant:64],
+        [pillScroll.topAnchor constraintEqualToAnchor:summaryCard.bottomAnchor constant:4],
+        [pillScroll.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],
+        [pillScroll.trailingAnchor constraintEqualToAnchor:header.trailingAnchor],
+        [pillScroll.heightAnchor constraintEqualToConstant:46],
+    ]];
     return header;
+}
+
+- (void)updateAppsSummary
+{
+    if (!_summaryTitleLabel || !_summaryDetailLabel) return;
+    NSUInteger count = _apps.count;
+    NSUInteger backedUp = 0;
+    unsigned long long bytes = 0;
+    for (WQAppItem *app in _apps) {
+        if (app.backups.count) backedUp++;
+        if (app.sizeKnown) bytes += app.bytes;
+    }
+    NSString *title = count ? [NSString stringWithFormat:@"%lu %@", (unsigned long)count, WQLocalized(@"Apps")] : WQLocalized(@"Apps");
+    NSString *detail = _scanning ? (_status ?: WQLocalizedNullable(@"Finding apps…"))
+        : [NSString stringWithFormat:@"%@ · %@: %lu",
+           wq_size_text(bytes), WQLocalized(@"Backed Up"), (unsigned long)backedUp];
+    wq_motion_cross_fade(_summaryTitleLabel, ^{ self->_summaryTitleLabel.text = title; });
+    _summaryDetailLabel.text = detail;
 }
 
 - (void)syncFilterPills
 {
     NSInteger current = [NSUserDefaults.standardUserDefaults integerForKey:kWQAppsFilterPref];
     for (UIButton *pill in _filterPills) {
-        wq_theme_update_pill_button(pill, pill.tag == current);
+        wq_motion_set_pill_active(pill, pill.tag == current);
     }
 }
 
@@ -743,7 +813,13 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
 {
     _busy = busy;
     _status = status;
+    [self updateAppsSummary];
     [self.tableView reloadData];
+    if (!busy && !_scanning && !_didCascade && self.visibleApps.count) {
+        _didCascade = YES;
+        [self.tableView layoutIfNeeded];
+        wq_motion_cascade_visible(self.tableView);
+    }
 }
 
 // Watchdog for the app scan: each step records what it's doing; a timer logs
@@ -1144,6 +1220,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (_busy || !self.visibleApps.count) return;
+    wq_haptic_selection();
     WQAppItem *app = self.visibleApps[(NSUInteger)indexPath.row];
     if (!app.hasAccess || !app.bundleID.length || !app.hasIdentity) {
         NSString *why = app.hasAccess && app.bundleID.length && !app.hasIdentity

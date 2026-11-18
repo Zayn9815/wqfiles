@@ -17,6 +17,7 @@
 #import "WQSharing.h"
 #import "WQUI.h"
 #import "WQTheme.h"
+#import "WQMotion.h"
 #import <sqlite3.h>
 
 BOOL wq_is_sqlite_header(NSData *head)
@@ -417,6 +418,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     NSString *_error;
     NSMutableArray<NSString *> *_exportDirs;
     BOOL _exporting;
+    UIButton *_csvPill;
 }
 
 - (void)dealloc
@@ -470,6 +472,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
         _rowids = [NSMutableArray new];
         _generation = snapshot.generation;
         self.title = title;
+        self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
 }
@@ -477,10 +480,19 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    wq_theme_apply_scroll_insets(self.tableView, 28.0);
+    wq_theme_apply_scroll_insets(self.tableView, _exportName ? 96.0 : 28.0);
     if (_exportName) {
-        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"CSV") style:UIBarButtonItemStylePlain
-                                                                                 target:self action:@selector(exportCSV:)];
+        UIBarButtonItem *csvItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"CSV") style:UIBarButtonItemStylePlain
+                                                                   target:self action:@selector(exportCSV:)];
+        self.navigationItem.rightBarButtonItem = csvItem;
+        __weak typeof(self) weakSelf = self;
+        _csvPill = wq_motion_dock_pill(WQLocalized(@"CSV"), @"square.and.arrow.up", NO);
+        [_csvPill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            [weakSelf exportCSV:weakSelf.navigationItem.rightBarButtonItem];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        UIVisualEffectView *dock = wq_motion_make_dock(@[_csvPill], 8);
+        wq_motion_install_dock(dock, self, self.tableView);
     }
     [self loadMore];
 }
@@ -550,7 +562,12 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
             [self->_types addObjectsFromArray:types];
             [self->_rowids addObjectsFromArray:rowids];
             if (rows.count < page || self->_limit) self->_done = YES;
+            BOOL initial = offset == 0 && rows.count > 0;
             [self.tableView reloadData];
+            if (initial) {
+                [self.tableView layoutIfNeeded];
+                wq_motion_cascade_visible(self.tableView);
+            }
         });
     });
 }
@@ -686,6 +703,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     NSString *out = [dir stringByAppendingPathComponent:name];
     _exporting = YES;
     sender.enabled = NO;
+    _csvPill.enabled = NO;
     __weak typeof(self) weakSelf = self;
     dispatch_async(snapshot.queue, ^{
         NSString *error = nil;
@@ -697,6 +715,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
             if (!strongSelf) return;
             strongSelf->_exporting = NO;
             sender.enabled = YES;
+            strongSelf->_csvPill.enabled = YES;
             if (!ok) { wq_alert(strongSelf, @"Cannot export", error ?: @"?"); return; }
             wq_share(strongSelf, out, nil);
         });
@@ -906,6 +925,10 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     BOOL _loading, _saving;
     NSUInteger _shownGeneration;
     WQScanCancellation *_counting;      // the running row count, if any
+    UIVisualEffectView *_sqliteDock;
+    UIButton *_dockActionButton;
+    UIButton *_dockSQLButton;
+    BOOL _didCascade;
 }
 
 - (instancetype)initWithPath:(NSString *)path
@@ -921,6 +944,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         _counts = [NSMutableDictionary new];
         _loading = YES;
         self.title = path.lastPathComponent;
+        self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
 }
@@ -934,8 +958,30 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) {
         [weakSelf confirmLeaveThen:^{ [weakSelf.navigationController popViewControllerAnimated:YES]; }];
     }];
+    [self buildSQLiteDock];
     [self updateButtons];
     [self openSnapshot];
+}
+
+- (void)buildSQLiteDock
+{
+    __weak typeof(self) weakSelf = self;
+    _dockActionButton = wq_motion_dock_pill(WQLocalized(@"Edit"), @"pencil", NO);
+    [_dockActionButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        WQSQLiteViewController *me = weakSelf;
+        if (!me) return;
+        wq_haptic_impact(UIImpactFeedbackStyleMedium);
+        if (me->_snapshot.editing) [me confirmSave]; else [me startEditing];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _dockSQLButton = wq_motion_dock_pill(WQLocalized(@"SQL"), @"terminal", NO);
+    [_dockSQLButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        [weakSelf openQuery];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _sqliteDock = wq_motion_make_dock(@[_dockActionButton, _dockSQLButton], 8);
+    wq_motion_install_dock(_sqliteDock, self, self.tableView);
 }
 
 - (UIView *)buildSQLiteHeader
@@ -1026,6 +1072,11 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
             self->_tables = tables;
             [self->_counts removeAllObjects];
             [self.tableView reloadData];
+            if (!self->_didCascade && tables.count) {
+                self->_didCascade = YES;
+                [self.tableView layoutIfNeeded];
+                wq_motion_cascade_visible(self.tableView);
+            }
             [self updateButtons];
             [self countRows];
         });
@@ -1052,6 +1103,20 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     }
     [items addObject:sql];
     self.navigationItem.rightBarButtonItems = items;
+    if (_sqliteDock) {
+        _dockSQLButton.enabled = _snapshot != nil && !_saving;
+        if (_snapshot.editing) {
+            _dockActionButton.hidden = NO;
+            wq_theme_style_primary_button(_dockActionButton, WQLocalizedNullable(@"Save"), @"checkmark.circle.fill");
+            _dockActionButton.enabled = _snapshot.dirty && !_saving;
+        } else if (!_readOnly) {
+            _dockActionButton.hidden = NO;
+            wq_theme_style_secondary_button(_dockActionButton, WQLocalizedNullable(@"Edit"), @"pencil");
+            _dockActionButton.enabled = _snapshot != nil;
+        } else {
+            _dockActionButton.hidden = YES;
+        }
+    }
 }
 
 - (void)startEditing

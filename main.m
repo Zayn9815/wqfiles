@@ -16,6 +16,7 @@
 #import "WQLaunchServices.h"
 #import "WQUI.h"
 #import "WQTheme.h"
+#import "WQMotion.h"
 #import "WQSharing.h"
 #import "WQDir.h"
 #import "WQApps.h"
@@ -149,6 +150,11 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
     UITextView *_textView;
     UIImageView *_imageView;
     UIBarButtonItem *_editButton;
+    UIVisualEffectView *_fileDock;
+    UIButton *_dockShareButton;
+    UIButton *_dockEditButton;
+    UIButton *_dockOpenAsButton;
+    UIMenu *_openAsMenu;
     WQViewKind _kind;
     NSPropertyListFormat _plistFormat;
     BOOL _truncated;
@@ -245,7 +251,7 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     _textView.smartDashesType = UITextSmartDashesTypeNo;
     _textView.alwaysBounceVertical = YES;
     _textView.delegate = self;
-    wq_theme_apply_scroll_insets(_textView, 28.0);
+    wq_theme_apply_scroll_insets(_textView, 96.0);
     [self.view addSubview:_textView];
     __weak typeof(self) weakSelf = self;
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) { [weakSelf leave]; }];
@@ -263,22 +269,55 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
             [v.trailingAnchor constraintEqualToAnchor:g.trailingAnchor],
         ]];
     }
-    UIBarButtonItem *share = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
-                                                                           target:self action:@selector(share:)];
-    UIMenu *openAs = [UIMenu menuWithTitle:WQLocalizedNullable(@"Open As") children:@[
+    _openAsMenu = [UIMenu menuWithTitle:WQLocalizedNullable(@"Open As") children:@[
         [UIAction actionWithTitle:WQLocalizedNullable(@"Plist Editor") image:[UIImage systemImageNamed:@"list.bullet.indent"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenPlist]; }],
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf reopenAs:WQOpenPlist]; }],
         [UIAction actionWithTitle:WQLocalizedNullable(@"Hex Viewer") image:[UIImage systemImageNamed:@"number"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenHex]; }],
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf reopenAs:WQOpenHex]; }],
         [UIAction actionWithTitle:WQLocalizedNullable(@"SQLite Viewer") image:[UIImage systemImageNamed:@"tablecells"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenSQLite]; }],
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf reopenAs:WQOpenSQLite]; }],
         [UIAction actionWithTitle:WQLocalizedNullable(@"Media Player") image:[UIImage systemImageNamed:@"play.rectangle"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf reopenAs:WQOpenMedia]; }],
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf reopenAs:WQOpenMedia]; }],
     ]];
-    UIBarButtonItem *more = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:openAs];
-    self.navigationItem.rightBarButtonItems = @[share, more];
+    [self buildFileDock];
     _textView.text = WQLocalizedNullable(@"Loading…");
     [self load];
+}
+
+- (void)buildFileDock
+{
+    __weak typeof(self) weakSelf = self;
+    _dockShareButton = wq_motion_dock_button(nil, @"square.and.arrow.up", WQLocalized(@"Share"));
+    [_dockShareButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        [weakSelf share:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _dockEditButton = wq_motion_dock_button(nil, @"pencil", WQLocalized(@"Edit"));
+    [_dockEditButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        [weakSelf toggleEdit:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    _dockEditButton.hidden = YES;
+
+    _dockOpenAsButton = wq_motion_dock_button(nil, @"ellipsis.circle", WQLocalized(@"Open As"));
+    _dockOpenAsButton.menu = _openAsMenu;
+    _dockOpenAsButton.showsMenuAsPrimaryAction = YES;
+
+    for (UIView *b in @[_dockShareButton, _dockEditButton, _dockOpenAsButton]) {
+        [NSLayoutConstraint activateConstraints:@[
+            [b.heightAnchor constraintEqualToConstant:44],
+            [b.widthAnchor constraintGreaterThanOrEqualToConstant:48],
+        ]];
+    }
+    _fileDock = wq_motion_make_dock(@[_dockShareButton, _dockEditButton, _dockOpenAsButton], 8);
+    _fileDock.layer.zPosition = 500;
+    [self.view addSubview:_fileDock];
+    [NSLayoutConstraint activateConstraints:@[
+        [_fileDock.centerXAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerXAnchor],
+        [_fileDock.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor constant:-10],
+        [_fileDock.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:14],
+        [_fileDock.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-14],
+    ]];
 }
 
 - (void)load
@@ -384,6 +423,16 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     _editButton.title = _textView.editable ? WQLocalized(@"Save") : WQLocalized(@"Edit");
     _editButton.style = _textView.editable ? wq_primary_button_style() : UIBarButtonItemStylePlain;
     _editButton.enabled = !_editState.saving;
+    if (_dockEditButton) {
+        _dockEditButton.enabled = !_editState.saving;
+        UIButtonConfiguration *cfg = [_dockEditButton.configuration copy];
+        UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:17 weight:UIImageSymbolWeightSemibold];
+        cfg.image = [UIImage systemImageNamed:_textView.editable ? @"checkmark.circle.fill" : @"pencil" withConfiguration:sym];
+        cfg.baseForegroundColor = _textView.editable ? wq_theme_accent() : wq_theme_primary_text();
+        _dockEditButton.configuration = cfg;
+        _dockEditButton.accessibilityLabel = _textView.editable ? WQLocalized(@"Save") : WQLocalized(@"Edit");
+        wq_motion_pop(_dockEditButton);
+    }
 }
 
 - (void)enableEditing
@@ -391,8 +440,11 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     if (_editButton) return;
     _editButton = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Edit") style:UIBarButtonItemStylePlain
                                                   target:self action:@selector(toggleEdit:)];
-    NSArray *items = self.navigationItem.rightBarButtonItems;
-    self.navigationItem.rightBarButtonItems = [items arrayByAddingObject:_editButton];
+    self.navigationItem.rightBarButtonItems = @[_editButton];
+    if (_dockEditButton) {
+        _dockEditButton.hidden = NO;
+        wq_motion_pop(_dockEditButton);
+    }
 }
 
 - (void)textViewDidChange:(UITextView *)textView
@@ -501,7 +553,7 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     [self presentViewController:confirm animated:YES completion:nil];
 }
 
-- (void)share:(UIBarButtonItem *)sender
+- (void)share:(id __unused)sender
 {
     wq_share(self, _path, nil);
 }
@@ -1045,9 +1097,16 @@ static NSString *wq_info_date(struct timespec ts)
     return cell;
 }
 
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    wq_motion_cascade_visible(self.tableView);
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    wq_haptic_selection();
     UIPasteboard.generalPasteboard.string = _rows[(NSUInteger)indexPath.row][1];
 }
 
@@ -1280,6 +1339,11 @@ static NSString *wq_info_date(struct timespec ts)
     UIBarButtonItem *_fileSelectItem;
     UIBarButtonItem *_fileDoneItem;
     UIBarButtonItem *_fileAllItem;
+    UIVisualEffectView *_actionDock;   // floating Liquid Glass dock: New / Paste / Sort / Select / Search
+    UIButton *_dockPasteButton;
+    UIButton *_dockCancelMoveButton;
+    UIButton *_dockSelectButton;
+    BOOL _didCascade;
 }
 
 - (instancetype)initWithPath:(NSString *)path title:(NSString *)title
@@ -1355,7 +1419,7 @@ static NSString *wq_info_date(struct timespec ts)
         }]];
     }
     // Built when the menu opens, so the checkmarks show the current order.
-    [menuItems addObject:[UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
+    UIMenuElement *sortFilterElement = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
         WQSortKey current = wq_sort_key();
         BOOL ascending = wq_sort_ascending();
         NSMutableArray *sortActions = [NSMutableArray new];
@@ -1399,7 +1463,8 @@ static NSString *wq_info_date(struct timespec ts)
                                   identifier:nil options:0 children:filters];
         show.subtitle = WQLocalizedNullable(filterTitles[(NSUInteger)shown]);
         completion(@[sort, show]);
-    }]];
+    }];
+    [menuItems addObject:sortFilterElement];
     _menuItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
                                                  menu:[UIMenu menuWithChildren:menuItems]];
     if (_backupStorage) {
@@ -1410,6 +1475,7 @@ static NSString *wq_info_date(struct timespec ts)
         _fileSelectItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Select") style:UIBarButtonItemStylePlain
                                                            target:self action:@selector(enterFileSelection)];
     }
+    [self buildActionDockWithSortElement:sortFilterElement];
     [self restoreRightItems];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateToolbar)
                                                name:kWQMoveChanged object:nil];
@@ -1652,10 +1718,13 @@ static NSString *wq_info_date(struct timespec ts)
 - (void)updateBackupSelectionAvailability
 {
     _selectItem.enabled = !_selectingBackups && [self backupUnitPathsInItems].count > 0;
+    [self refreshActionDock];
+    if (_backupStorage && _dockSelectButton) _dockSelectButton.enabled = _selectItem.enabled;
 }
 
 - (void)updateBackupSelectionBar
 {
+    [self refreshActionDock];
     _deleteItem.enabled = _selectedBackups.count > 0;
     _allItem.enabled = _selectedBackups.count < [self backupUnitPathsInItems].count;
 }
@@ -1750,9 +1819,107 @@ static NSString *wq_info_date(struct timespec ts)
 
 - (void)restoreRightItems
 {
-    if (_backupStorage && _selectItem) self.navigationItem.rightBarButtonItems = @[_selectItem, _menuItem];
-    else if (_fileSelectItem) self.navigationItem.rightBarButtonItems = @[_fileSelectItem, _menuItem];
-    else self.navigationItem.rightBarButtonItems = @[_menuItem];
+    // Select lives in the floating dock; the bar keeps only the pull-down menu.
+    self.navigationItem.rightBarButtonItems = @[_menuItem];
+}
+
+// MARK: Floating action dock
+
+- (void)buildActionDockWithSortElement:(UIMenuElement *)sortElement
+{
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray<UIView *> *buttons = [NSMutableArray new];
+    if ([self canEditHere]) {
+        UIMenu *createMenu = [UIMenu menuWithTitle:WQLocalized(@"New") children:@[
+            [UIAction actionWithTitle:WQLocalizedNullable(@"New Folder") image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
+                              handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf promptNewFolder]; }],
+            [UIAction actionWithTitle:WQLocalizedNullable(@"New File") image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil
+                              handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf promptNewFile]; }],
+            [UIAction actionWithTitle:WQLocalizedNullable(@"Import Files") image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil
+                              handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf importFile]; }],
+            [UIAction actionWithTitle:WQLocalizedNullable(@"Import Folder") image:[UIImage systemImageNamed:@"folder.fill.badge.plus"] identifier:nil
+                              handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf importFolder]; }],
+        ]];
+        UIButton *newBtn = wq_motion_dock_button(nil, @"plus", WQLocalized(@"New"));
+        newBtn.menu = createMenu;
+        newBtn.showsMenuAsPrimaryAction = YES;
+        [buttons addObject:newBtn];
+
+        _dockPasteButton = wq_motion_dock_button(nil, @"doc.on.clipboard", WQLocalized(@"Paste"));
+        [_dockPasteButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            [weakSelf pasteFromDock];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        [buttons addObject:_dockPasteButton];
+
+        _dockCancelMoveButton = wq_motion_dock_button(nil, @"xmark.circle", WQLocalized(@"Cancel"));
+        [_dockCancelMoveButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            [weakSelf cancelMove];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        _dockCancelMoveButton.hidden = YES;
+        [buttons addObject:_dockCancelMoveButton];
+    }
+    UIButton *sort = wq_motion_dock_button(nil, @"arrow.up.arrow.down", WQLocalized(@"Sort By"));
+    sort.menu = [UIMenu menuWithChildren:@[sortElement]];
+    sort.showsMenuAsPrimaryAction = YES;
+    [buttons addObject:sort];
+    if (_backupStorage ? (_selectItem != nil) : [self canEditHere]) {
+        _dockSelectButton = wq_motion_dock_button(nil, @"checkmark.circle", WQLocalized(@"Select"));
+        [_dockSelectButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            WQDirViewController *me = weakSelf;
+            if (!me) return;
+            wq_haptic_selection();
+            if (me->_backupStorage) [me enterBackupSelection]; else [me enterFileSelection];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        [buttons addObject:_dockSelectButton];
+    }
+    UIButton *search = wq_motion_dock_button(nil, @"magnifyingglass", WQLocalized(@"Search"));
+    [search addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        UISearchController *controller = weakSelf.navigationItem.searchController;
+        controller.active = YES;
+        [controller.searchBar becomeFirstResponder];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    [buttons addObject:search];
+    for (UIView *b in buttons) {
+        [NSLayoutConstraint activateConstraints:@[[b.heightAnchor constraintEqualToConstant:44],
+                                                  [b.widthAnchor constraintGreaterThanOrEqualToConstant:44]]];
+    }
+    _actionDock = wq_motion_make_dock(buttons, 4);
+    wq_motion_install_dock(_actionDock, self, self.tableView);
+}
+
+- (void)pasteFromDock
+{
+    if (!gWQMovePaths.count) {
+        wq_alert(self, WQLocalized(@"Nothing to paste"), WQLocalized(@"Use Copy or Move on an item first."));
+        return;
+    }
+    if (![self canMoveHere]) return;
+    wq_haptic_impact(UIImpactFeedbackStyleMedium);
+    if (gWQCopyPending) [self copyHere];
+    else [self moveHere];
+}
+
+// The dock gives way to the selection / move toolbar and morphs back afterwards.
+- (void)refreshActionDock
+{
+    if (!_actionDock) return;
+    BOOL hasMove = gWQMovePaths.count > 0;
+    BOOL show = !_error && !_selectingFiles && !_selectingBackups && !hasMove;
+    _dockSelectButton.enabled = !_error && _all.count > 0;
+    if (_dockPasteButton) {
+        BOOL canPaste = hasMove && [self canMoveHere];
+        UIButtonConfiguration *cfg = [_dockPasteButton.configuration copy];
+        cfg.baseForegroundColor = canPaste ? wq_theme_accent() : wq_theme_primary_text();
+        _dockPasteButton.configuration = cfg;
+        _dockPasteButton.enabled = !hasMove || canPaste;
+        _dockPasteButton.accessibilityLabel = hasMove ? WQLocalized(gWQCopyPending ? @"Copy Here" : @"Move Here") : WQLocalized(@"Paste");
+    }
+    if (_dockCancelMoveButton) _dockCancelMoveButton.hidden = !hasMove;
+    BOOL showing = !_actionDock.hidden && _actionDock.alpha > 0.99;
+    if (show == showing) return;
+    wq_motion_set_visible(_actionDock, show, self.view.window != nil);
 }
 
 - (BOOL)wq_wantsToolbar
@@ -1814,6 +1981,7 @@ static NSString *wq_info_date(struct timespec ts)
     }
     if (self.navigationController.topViewController == self)
         [self.navigationController setToolbarHidden:![self wq_wantsToolbar] animated:YES];
+    [self refreshActionDock];
 }
 
 - (void)updateFileSelectionTitle
@@ -2384,6 +2552,12 @@ static NSString *wq_info_date(struct timespec ts)
             [self.refreshControl endRefreshing];
             [self updateHeader];
             [self.tableView reloadData];
+            if (!self->_didCascade && items.count) {
+                // Rows rise in once per screen, 35 ms apart.
+                self->_didCascade = YES;
+                [self.tableView layoutIfNeeded];
+                wq_motion_cascade_visible(self.tableView);
+            }
             [self updateBackupSelectionAvailability];
             if (self->_selectingBackups) [self updateBackupSelectionBar];
             if (self->_selectingFiles) {
@@ -2775,6 +2949,24 @@ static NSString *wq_info_date(struct timespec ts)
         if (name.length == 0 || [name containsString:@"/"]) return;
         NSString *path = [self->_path stringByAppendingPathComponent:name];
         [self runIO:^BOOL(NSString **error) { return wq_create_dir(path, error); } failure:WQLocalizedNullable(@"Cannot create folder")];
+    })];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptNewFile
+{
+    UIAlertController *alert = wq_alert_controller(@"New File", _path, UIAlertControllerStyleAlert);
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.placeholder = WQLocalizedNullable(@"Name");
+        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        f.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [alert addAction:wq_alert_action(@"Create", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        NSString *name = alert.textFields.firstObject.text;
+        if (name.length == 0 || [name containsString:@"/"]) return;
+        NSString *path = [self->_path stringByAppendingPathComponent:name];
+        [self runIO:^BOOL(NSString **error) { return wq_create_file(path, [NSData data], error); } failure:WQLocalizedNullable(@"Cannot create file")];
     })];
     [self presentViewController:alert animated:YES completion:nil];
 }
@@ -3238,6 +3430,8 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
             self->_listed = listed != nil;
             self->_names = [names sortedArrayUsingSelector:@selector(compare:)];
             [self.tableView reloadData];
+            [self.tableView layoutIfNeeded];
+            wq_motion_cascade_visible(self.tableView);
         });
     });
 }
@@ -3833,6 +4027,12 @@ static UIImage *wq_language_flag(NSString *code)
     [self reloadFavorites];
 }
 
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    wq_motion_cascade_visible(self.tableView);
+}
+
 - (void)reloadFavorites
 {
     _favorites = wq_favorites();
@@ -3940,7 +4140,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         self.clipsToBounds = YES;
         self.backgroundColor = [UIColor clearColor];
 
-        // Native iOS 26 Liquid Glass, tinted obsidian-ruby crystal.
+        // Native iOS 26 Liquid Glass, tinted crimson crystal.
         _effect = [[UIVisualEffectView alloc] initWithEffect:nil];
         _effect.translatesAutoresizingMaskIntoConstraints = NO;
         _effect.userInteractionEnabled = NO;
@@ -3996,7 +4196,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     return self;
 }
 
-// Reduce Transparency: an opaque obsidian-ruby surface instead of glass.
+// Reduce Transparency: an opaque crimson surface instead of glass.
 - (void)updateMaterial
 {
     UIVisualEffect *glass = wq_theme_glass_effect(NO);
@@ -4260,15 +4460,19 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 - (void)setHighlighted:(BOOL)highlighted
 {
     [super setHighlighted:highlighted];
-    [UIView animateWithDuration:0.16 animations:^{
-        self.alpha = highlighted ? 0.82 : 1.0;
-        self.transform = highlighted ? CGAffineTransformMakeScale(0.975, 0.975) : CGAffineTransformIdentity;
-    }];
+    [UIView animateWithDuration:0.16 animations:^{ self.alpha = highlighted ? 0.86 : 1.0; }];
+}
+
+// Scale/rebound/rim-pulse physics live in WQMotion (UIViewPropertyAnimator springs).
+- (void)didMoveToSuperview
+{
+    [super didMoveToSuperview];
+    wq_motion_add_press(self);
 }
 
 @end
 
-// Obsidian Ruby & Crystal Prism "Z" monogram badge for header & about cards.
+// Crimson Crystal Prism "Z" monogram badge for header & about cards.
 @interface WQZMonogramBadge : UIView
 - (instancetype)initWithSize:(CGFloat)size;
 @end
@@ -4294,8 +4498,8 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         _grad.startPoint = CGPointMake(0, 0);
         _grad.endPoint = CGPointMake(1, 1);
         _grad.colors = @[
-            (id)[UIColor colorWithRed:0.72 green:0.11 blue:0.23 alpha:1].CGColor,
-            (id)[UIColor colorWithRed:0.24 green:0.04 blue:0.09 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.29 green:0.08 blue:0.07 alpha:1].CGColor,
         ];
         [self.layer addSublayer:_grad];
 
@@ -4470,10 +4674,14 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 - (void)setHighlighted:(BOOL)highlighted
 {
     [super setHighlighted:highlighted];
-    [UIView animateWithDuration:0.16 delay:0 usingSpringWithDamping:0.8 initialSpringVelocity:0.5 options:0 animations:^{
-        self.alpha = highlighted ? 0.85 : 1.0;
-        self.transform = highlighted ? CGAffineTransformMakeScale(0.975, 0.975) : CGAffineTransformIdentity;
-    } completion:nil];
+    [UIView animateWithDuration:0.16 animations:^{ self.alpha = highlighted ? 0.86 : 1.0; }];
+}
+
+// Scale/rebound/rim-pulse physics live in WQMotion (UIViewPropertyAnimator springs).
+- (void)didMoveToSuperview
+{
+    [super didMoveToSuperview];
+    wq_motion_add_press(self);
 }
 
 @end
@@ -4537,6 +4745,12 @@ static void wq_apply_design(void);
     UILabel *_statusLabel;
     UILabel *_heroSubtitle;
     UIButton *_quickButton;
+    UIButton *_fullScanButton;
+    WQProgressRingView *_healthRing;
+    UIImageView *_healthGlyph;
+    NSString *_healthSymbol;
+    BOOL _hapticOnFinish;
+    BOOL _homeCascaded;
     NSString *_appGroupName;
     BOOL _checkingAccess;
     NSArray<WQHealthCheck *> *_pendingHealthFailure;
@@ -4608,6 +4822,14 @@ static void wq_apply_design(void);
     [super viewWillAppear:animated];
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     [self rebuildFavorites];
+    if (!_homeCascaded && _topHeader) {
+        // Header, hero and bento sections rise in one after another (35 ms apart).
+        _homeCascaded = YES;
+        NSMutableArray<UIView *> *entrance = [NSMutableArray arrayWithObject:_topHeader];
+        NSArray<UIView *> *sections = _contentStack.arrangedSubviews;
+        [entrance addObjectsFromArray:[sections subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)8, sections.count))]];
+        wq_motion_cascade(entrance);
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -4641,7 +4863,7 @@ static void wq_apply_design(void);
     btn.translatesAutoresizingMaskIntoConstraints = NO;
     UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    cfg.baseBackgroundColor = [UIColor colorWithRed:0.86 green:0.34 blue:0.42 alpha:0.24];
+    cfg.baseBackgroundColor = [UIColor colorWithRed:0.82 green:0.36 blue:0.34 alpha:0.26];
     cfg.baseForegroundColor = UIColor.whiteColor;
     UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:13.5 weight:UIImageSymbolWeightSemibold];
     cfg.image = [[UIImage systemImageNamed:symbol withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
@@ -4691,7 +4913,7 @@ static void wq_apply_design(void);
         [_contentStack.widthAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.widthAnchor],
     ]];
 
-    // Floating Obsidian-Ruby Liquid Glass Capsule Header
+    // Floating Crimson Liquid Glass Capsule Header
     WQPrismGlassView *headerGlass = [[WQPrismGlassView alloc] initWithRadius:26];
     _topHeader = headerGlass;
     [self.view addSubview:headerGlass];
@@ -4845,7 +5067,7 @@ static void wq_apply_design(void);
 
     UILabel *eyebrow = [UILabel new];
     eyebrow.translatesAutoresizingMaskIntoConstraints = NO;
-    eyebrow.text = @"OBSIDIAN RUBY · LIQUID GLASS";
+    eyebrow.text = @"CRIMSON · LIQUID GLASS";
     eyebrow.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightBold];
     eyebrow.textColor = wq_theme_secondary_text();
 
@@ -4872,7 +5094,7 @@ static void wq_apply_design(void);
     // Hardware telemetry tucked inside a translucent glass inset bar
     UIView *specBar = [UIView new];
     specBar.translatesAutoresizingMaskIntoConstraints = NO;
-    specBar.backgroundColor = [UIColor colorWithRed:0.08 green:0.01 blue:0.03 alpha:0.28];
+    specBar.backgroundColor = [UIColor colorWithRed:0.20 green:0.05 blue:0.05 alpha:0.28];
     specBar.layer.cornerRadius = 12;
     specBar.layer.cornerCurve = kCACornerCurveContinuous;
     specBar.layer.borderWidth = 0.5;
@@ -4898,7 +5120,14 @@ static void wq_apply_design(void);
     _quickButton = [UIButton buttonWithType:UIButtonTypeSystem];
     wq_theme_style_primary_button(_quickButton, WQLocalizedNullable(@"Quick Check"), @"checkmark.shield.fill");
     [_quickButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [weakSelf runHealthCheck];
+        [weakSelf quickCheckTapped];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    // Full Scan: forget the cached folder listings and names, then re-check everything.
+    _fullScanButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    wq_theme_style_secondary_button(_fullScanButton, WQLocalizedNullable(@"Full Scan"), @"arrow.triangle.2.circlepath");
+    [_fullScanButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        [weakSelf fullScanTapped];
     }] forControlEvents:UIControlEventTouchUpInside];
 
     // Secondary CTA: direct launch into Log
@@ -4908,19 +5137,53 @@ static void wq_apply_design(void);
         [weakSelf openLog];
     }] forControlEvents:UIControlEventTouchUpInside];
 
-    _heroButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, logButton]];
+    _heroButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, _fullScanButton, logButton]];
     _heroButtons.axis = UILayoutConstraintAxisHorizontal;
     _heroButtons.spacing = 8;
     _heroButtons.alignment = UIStackViewAlignmentCenter;
     UIView *buttonGroup = wq_theme_glass_container(_heroButtons, 8);
 
-    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[tagPill, title, specBar, buttonGroup]];
+    // Animated health badge: a ring that spins while checking, closes when healthy
+    // and swaps its glyph with a spring pop.
+    UIView *badge = [UIView new];
+    badge.translatesAutoresizingMaskIntoConstraints = NO;
+    _healthRing = [[WQProgressRingView alloc] initWithFrame:CGRectMake(0, 0, 54, 54)];
+    _healthRing.translatesAutoresizingMaskIntoConstraints = NO;
+    _healthRing.lineWidth = 4.5;
+    _healthRing.isAccessibilityElement = NO;
+    _healthGlyph = [UIImageView new];
+    _healthGlyph.translatesAutoresizingMaskIntoConstraints = NO;
+    _healthGlyph.contentMode = UIViewContentModeScaleAspectFit;
+    _healthGlyph.tintColor = UIColor.whiteColor;
+    [badge addSubview:_healthRing];
+    [badge addSubview:_healthGlyph];
+    badge.isAccessibilityElement = YES;
+    badge.accessibilityTraits = UIAccessibilityTraitImage;
+    [NSLayoutConstraint activateConstraints:@[
+        [badge.widthAnchor constraintEqualToConstant:54],
+        [badge.heightAnchor constraintEqualToConstant:54],
+        [_healthRing.topAnchor constraintEqualToAnchor:badge.topAnchor],
+        [_healthRing.bottomAnchor constraintEqualToAnchor:badge.bottomAnchor],
+        [_healthRing.leadingAnchor constraintEqualToAnchor:badge.leadingAnchor],
+        [_healthRing.trailingAnchor constraintEqualToAnchor:badge.trailingAnchor],
+        [_healthGlyph.centerXAnchor constraintEqualToAnchor:badge.centerXAnchor],
+        [_healthGlyph.centerYAnchor constraintEqualToAnchor:badge.centerYAnchor],
+        [_healthGlyph.widthAnchor constraintEqualToConstant:24],
+        [_healthGlyph.heightAnchor constraintEqualToConstant:24],
+    ]];
+    UIStackView *titleRow = [[UIStackView alloc] initWithArrangedSubviews:@[title, badge]];
+    titleRow.axis = UILayoutConstraintAxisHorizontal;
+    titleRow.alignment = UIStackViewAlignmentCenter;
+    titleRow.spacing = 12;
+
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[tagPill, titleRow, specBar, buttonGroup]];
     text.axis = UILayoutConstraintAxisVertical;
     text.alignment = UIStackViewAlignmentLeading;
     text.spacing = 10;
     text.translatesAutoresizingMaskIntoConstraints = NO;
     [NSLayoutConstraint activateConstraints:@[
         [specBar.widthAnchor constraintEqualToAnchor:text.widthAnchor],
+        [titleRow.widthAnchor constraintEqualToAnchor:text.widthAnchor],
     ]];
 
     [glass.contentView addSubview:text];
@@ -5302,6 +5565,7 @@ static void wq_apply_design(void);
 
 - (void)openContainerCard:(WQPrismCardView *)sender
 {
+    wq_haptic_selection();
     if (sender.tag < 0 || (NSUInteger)sender.tag >= _locations.count) return;
     NSArray<NSString *> *location = _locations[(NSUInteger)sender.tag];
     if ([location[0] isEqualToString:@"System Data"]) {
@@ -5313,6 +5577,7 @@ static void wq_apply_design(void);
 
 - (void)openToolCard:(UIControl *)sender
 {
+    wq_haptic_selection();
     switch (sender.tag) {
         case 0: [self openTab:1]; break;
         case 1: [self openTab:2]; break;
@@ -5351,17 +5616,20 @@ static void wq_apply_design(void);
 
 - (void)openLog
 {
+    wq_haptic_selection();
     [self.navigationController pushViewController:[WQLogViewController new] animated:YES];
 }
 
 - (void)openSettings
 {
+    wq_haptic_selection();
     WQPrismSettingsViewController *settings = [WQPrismSettingsViewController new];
     WQNavigationController *nav = [[WQNavigationController alloc] initWithRootViewController:settings];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     UISheetPresentationController *sheet = nav.sheetPresentationController;
     if (sheet) {
-        sheet.detents = @[UISheetPresentationControllerDetent.largeDetent];
+        sheet.detents = @[UISheetPresentationControllerDetent.mediumDetent, UISheetPresentationControllerDetent.largeDetent];
+        sheet.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
         sheet.prefersGrabberVisible = YES;
         sheet.preferredCornerRadius = 32;
     }
@@ -5427,11 +5695,66 @@ static void wq_apply_design(void);
     WQHealthState worst = wq_health_worst(checks);
     if (worst >= WQHealthFailed) _pendingHealthFailure = checks;
     [self updateHealthUI];
+    if (_hapticOnFinish) {
+        _hapticOnFinish = NO;
+        wq_haptic_notify(worst >= WQHealthFailed ? UINotificationFeedbackTypeError
+                         : worst == WQHealthWarning ? UINotificationFeedbackTypeWarning : UINotificationFeedbackTypeSuccess);
+    }
     if (worst < WQHealthFailed) [self reopenLastFolder];
     else _reopenFolder = nil;
     if (worst == WQHealthWarning) { [self showHealthWarnings:checks]; return; }
     if (worst < WQHealthFailed) return;
     [self presentPendingHealthFailure];
+}
+
+- (void)quickCheckTapped
+{
+    if (_checkingAccess) return;
+    wq_haptic_impact(UIImpactFeedbackStyleMedium);
+    _hapticOnFinish = YES;
+    [self runHealthCheck];
+}
+
+- (void)fullScanTapped
+{
+    if (_checkingAccess) return;
+    wq_haptic_impact(UIImpactFeedbackStyleRigid);
+    wq_enumerate_invalidate();
+    wq_display_names_reset_miss();
+    wq_log(@"home: full scan requested; listing caches cleared");
+    _hapticOnFinish = YES;
+    [self runHealthCheck];
+}
+
+- (void)updateHealthBadgeTint:(UIColor *)tint
+{
+    if (!_healthRing) return;
+    BOOL failed = _pendingHealthFailure.count > 0;
+    NSString *symbol = _checkingAccess ? @"hourglass"
+        : failed ? @"exclamationmark.triangle.fill"
+        : _appGroupName.length ? @"checkmark.shield.fill" : @"questionmark.circle.fill";
+    _healthRing.progressColor = tint;
+    _healthGlyph.tintColor = tint;
+    if (![symbol isEqualToString:_healthSymbol]) {
+        _healthSymbol = symbol;
+        wq_motion_cross_fade(_healthGlyph, ^{ self->_healthGlyph.image = [UIImage systemImageNamed:symbol]; });
+        wq_motion_pop(_healthGlyph);
+    }
+    [_healthRing setProgress:_checkingAccess ? 0.28 : 1.0 animated:YES];
+    _healthRing.superview.accessibilityLabel = _statusLabel.text;
+    static NSString *const spinKey = @"wq.spin";
+    if (_checkingAccess && !wq_motion_reduced()) {
+        if (![_healthRing.layer animationForKey:spinKey]) {
+            CABasicAnimation *spin = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
+            spin.fromValue = @0;
+            spin.toValue = @(M_PI * 2);
+            spin.duration = 1.1;
+            spin.repeatCount = HUGE_VALF;
+            [_healthRing.layer addAnimation:spin forKey:spinKey];
+        }
+    } else {
+        [_healthRing.layer removeAnimationForKey:spinKey];
+    }
 }
 
 - (void)updateHealthUI
@@ -5456,6 +5779,8 @@ static void wq_apply_design(void);
         ? [NSString stringWithFormat:@"%@\n%@", wq_device_line(), _appGroupName]
         : [NSString stringWithFormat:@"%@\n%@", wq_device_line(), WQLocalizedNullable(@"No App Group")];
     _quickButton.enabled = !_checkingAccess;
+    _fullScanButton.enabled = !_checkingAccess;
+    [self updateHealthBadgeTint:tint];
     wq_theme_style_primary_button(_quickButton,
         _checkingAccess ? WQLocalizedNullable(@"Checking access…") : WQLocalizedNullable(@"Quick Check"),
         @"checkmark.shield.fill");
@@ -5644,7 +5969,9 @@ static NSString *const kWQTroubleshootingFooter =
 
 #pragma mark - WQ Prism settings
 
-@implementation WQPrismSettingsViewController
+@implementation WQPrismSettingsViewController {
+    BOOL _cascaded;
+}
 
 - (instancetype)init
 {
@@ -5682,7 +6009,7 @@ static NSString *const kWQTroubleshootingFooter =
     title.numberOfLines = 0;
 
     UILabel *sub = [UILabel new];
-    sub.text = [NSString stringWithFormat:@"%@\n%@", NSBundle.mainBundle.bundleIdentifier ?: @"com.zayn.wqglass", wq_device_line()];
+    sub.text = [NSString stringWithFormat:@"%@\n%@", NSBundle.mainBundle.bundleIdentifier ?: @"cz.kolbi.wqfiles", wq_device_line()];
     sub.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     sub.textColor = wq_theme_secondary_text();
     sub.numberOfLines = 0;
@@ -5737,6 +6064,15 @@ static NSString *const kWQTroubleshootingFooter =
 {
     [super viewWillAppear:animated];
     [self.tableView reloadData];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (!_cascaded) {
+        _cascaded = YES;
+        wq_motion_cascade_visible(self.tableView);
+    }
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
@@ -5824,6 +6160,7 @@ static NSString *const kWQTroubleshootingFooter =
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 0) return;
+    wq_haptic_selection();
     if (indexPath.section == 2) { wq_confirm_reset_access_cache(self, nil); return; }
     if (indexPath.row == 0) {
         [self.navigationController pushViewController:[WQLanguageViewController new] animated:YES];
@@ -5844,7 +6181,10 @@ static NSString *const kWQTroubleshootingFooter =
 
 #pragma mark - WQ Prism vault
 
-@implementation WQPrismVaultViewController
+@implementation WQPrismVaultViewController {
+    UILabel *_vaultSummaryLabel;
+    BOOL _cascaded;
+}
 
 - (instancetype)init
 {
@@ -5858,7 +6198,80 @@ static NSString *const kWQTroubleshootingFooter =
     wq_prism_install_background(self);
     self.tableView.backgroundColor = [UIColor clearColor];
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
-    self.tableView.tableHeaderView = wq_device_header(self.view.bounds.size.width ?: 360);
+    self.tableView.tableHeaderView = [self buildVaultHeader];
+}
+
+- (UIView *)buildVaultHeader
+{
+    CGFloat w = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
+    UIView *strip = wq_device_header(w);
+    CGFloat stripH = strip.frame.size.height;
+    UIVisualEffectView *card = wq_theme_make_glass_card(20, NO);
+    WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:@"externaldrive.fill.badge.timemachine" tone:@"amber" size:38];
+    UILabel *title = [UILabel new];
+    title.text = WQLocalizedNullable(@"Backups");
+    title.font = [UIFont systemFontOfSize:16 weight:UIFontWeightBold];
+    title.textColor = wq_theme_primary_text();
+    _vaultSummaryLabel = [UILabel new];
+    _vaultSummaryLabel.text = WQLocalizedNullable(@"Checking access…");
+    _vaultSummaryLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+    _vaultSummaryLabel.textColor = wq_theme_secondary_text();
+    _vaultSummaryLabel.numberOfLines = 0;
+    UIStackView *col = [[UIStackView alloc] initWithArrangedSubviews:@[title, _vaultSummaryLabel]];
+    col.axis = UILayoutConstraintAxisVertical;
+    col.spacing = 2;
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, col]];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 12;
+    [card.contentView addSubview:row];
+    [NSLayoutConstraint activateConstraints:@[
+        [row.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:12],
+        [row.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-12],
+        [row.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:14],
+        [row.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-14],
+    ]];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, stripH + 86)];
+    box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [box addSubview:strip];
+    [box addSubview:card];
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:box.topAnchor constant:stripH + 4],
+        [card.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
+        [card.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-6],
+    ]];
+    return box;
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(wq_io(), ^{
+        NSUInteger appCount = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:wq_app_backup_root() error:nil] count];
+        NSUInteger fileCount = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:wq_backup_root() error:nil] count];
+        NSUInteger delCount = [wq_recently_deleted_checked(nil) count];
+        NSString *summary = [NSString stringWithFormat:@"%@: %lu · %@: %lu · %@: %lu",
+            WQLocalized(@"App Backups"), (unsigned long)appCount,
+            WQLocalized(@"File Backups"), (unsigned long)fileCount,
+            WQLocalized(@"Recently Deleted"), (unsigned long)delCount];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQPrismVaultViewController *me = weakSelf;
+            if (!me) return;
+            wq_motion_cross_fade(me->_vaultSummaryLabel, ^{ me->_vaultSummaryLabel.text = summary; });
+        });
+    });
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (!_cascaded) {
+        _cascaded = YES;
+        wq_motion_cascade_visible(self.tableView);
+    }
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
@@ -5891,6 +6304,7 @@ static NSString *const kWQTroubleshootingFooter =
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    wq_haptic_selection();
     if (indexPath.row == 0) {
         [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         UIViewController *next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:WQLocalizedNullable(@"App Backups")];
@@ -5908,7 +6322,7 @@ static NSString *const kWQTroubleshootingFooter =
 
 #pragma mark - WQ Prism tabs
 
-@interface WQPrismTabController : UITabBarController
+@interface WQPrismTabController : UITabBarController <UITabBarControllerDelegate>
 @end
 
 @implementation WQPrismTabController
@@ -5937,12 +6351,13 @@ static NSString *const kWQTroubleshootingFooter =
 
     self.viewControllers = @[homeNav, appsNav, cleanNav, vaultNav];
     self.selectedIndex = 0;
-    // iOS 26 floating Liquid Glass tab bar: glowing obsidian-ruby active selection
-    // pill (#B81D3A) with pure white active tab and rose-pearl (#F2C6CC) inactive
+    self.delegate = self;
+    // iOS 26 floating Liquid Glass tab bar: glowing crimson active selection
+    // pill (#9B2627) with pure white active tab and blush (#E6B8B5) inactive
     // tabs; shrinks while scrolling down so crystal content refracts beneath.
     UITabBarAppearance *tabAppearance = [UITabBarAppearance new];
     [tabAppearance configureWithDefaultBackground];
-    tabAppearance.backgroundColor = [UIColor colorWithRed:0.16 green:0.03 blue:0.07 alpha:0.35];
+    tabAppearance.backgroundColor = [UIColor colorWithRed:0.36 green:0.11 blue:0.11 alpha:0.35];
     tabAppearance.selectionIndicatorTintColor = [wq_theme_active_pill() colorWithAlphaComponent:0.94];
     for (UITabBarItemAppearance *item in @[
         tabAppearance.stackedLayoutAppearance,
@@ -5958,7 +6373,14 @@ static NSString *const kWQTroubleshootingFooter =
     self.tabBar.scrollEdgeAppearance = tabAppearance;
     self.tabBar.tintColor = wq_theme_primary_text();
     self.tabBar.unselectedItemTintColor = wq_theme_secondary_text();
+    self.tabBar.itemPositioning = UITabBarItemPositioningCentered;
+    self.tabBar.itemSpacing = 14.0;
     self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+}
+
+- (void)tabBarController:(UITabBarController *__unused)tabBarController didSelectViewController:(UIViewController *__unused)viewController
+{
+    wq_haptic_selection();
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -6722,7 +7144,7 @@ static NSString *wq_count_text(int64_t n)
 @end
 
 @implementation WQScanWindowController {
-    UIProgressView *_bar;
+    WQProgressBarView *_bar;
     UILabel *_status;
     CFAbsoluteTime _started;
 }
@@ -6752,8 +7174,7 @@ static NSString *wq_count_text(int64_t n)
     text.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     text.textColor = wq_theme_secondary_text();
     text.text = WQLocalizedNullable(@"iOS doesn't let WQ Glass list these folders directly, so it checks every file on this device once. This is only slow the first time: later scans only check new files.\n\nKeep WQ Glass open. Switching to another app or locking the screen pauses the scan.");
-    _bar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-    _bar.progressTintColor = wq_theme_accent();
+    _bar = [[WQProgressBarView alloc] initWithFrame:CGRectZero];
     _status = [UILabel new];
     _status.font = [UIFont monospacedDigitSystemFontOfSize:[UIFont preferredFontForTextStyle:UIFontTextStyleBody].pointSize
                                                     weight:UIFontWeightRegular];
@@ -6830,7 +7251,7 @@ static NSString *wq_count_text(int64_t n)
 {
     if (total <= 0) return;
     float fraction = (float)((double)done / (double)total);
-    [_bar setProgress:fraction animated:NO];
+    [_bar setProgress:fraction animated:YES];
     double elapsed = CFAbsoluteTimeGetCurrent() - _started;
     NSString *left = @"";
     if (elapsed > 5 && done > 0 && done < total) {
