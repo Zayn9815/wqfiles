@@ -5,19 +5,33 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "GitHub-hosted macOS runner pool"
+        required: false
+        default: "macos-26-intel"
+        type: choice
+        options:
+          - macos-26-intel
+          - macos-15-intel
+          - macos-26
+          - macos-15
 
 jobs:
   build-ios:
     name: Build Unsigned WQFiles.ipa
-    runs-on: macos-26
+    runs-on: ${{ inputs.runner || 'macos-26-intel' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Select Xcode 26
         run: |
-          if [ -d "/Applications/Xcode_26.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_26.app/Contents/Developer
+          if ! xcodebuild -version 2>/dev/null | grep -q "Xcode 26"; then
+            XCODE_26=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1 || true)
+            if [ -n "$XCODE_26" ] && [ -d "$XCODE_26/Contents/Developer" ]; then
+              sudo xcode-select -s "$XCODE_26/Contents/Developer"
+            fi
           fi
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
