@@ -151,7 +151,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     self.tableView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.rowHeight = 20;
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     self.tableView.tableHeaderView = [self buildHexHeader];
     __weak typeof(self) weakSelf = self;
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) { [weakSelf leave]; }];

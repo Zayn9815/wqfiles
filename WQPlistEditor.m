@@ -175,7 +175,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 {
     [super viewDidLoad];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     __weak typeof(self) weakSelf = self;
     if (self.isRoot) {
         self.tableView.tableHeaderView = [self buildPlistHeader];

@@ -2,7 +2,7 @@
 //  main.m
 //  WQ Glass
 //
-//  Standalone flagship Liquid Glass filesystem & PosterBoard studio built
+//  Standalone flagship Liquid Glass filesystem studio built
 //  on the worse_query sandbox escape by Taj C (forcequit),
 //  https://github.com/forcequitOS/worse_query, GPL-3.0-or-later.
 //  This app is GPL-3.0-or-later as well (see LICENSE).
@@ -16,7 +16,6 @@
 #import "WQLaunchServices.h"
 #import "WQUI.h"
 #import "WQTheme.h"
-#import "WQPosterBoard.h"
 #import "WQSharing.h"
 #import "WQDir.h"
 #import "WQApps.h"
@@ -4741,7 +4740,7 @@ static void wq_apply_design(void);
     eyebrow.numberOfLines = 0;
 
     UILabel *title = [UILabel new];
-    title.text = WQLocalizedNullable(@"Containers & Lock Screen Studio");
+    title.text = WQLocalizedNullable(@"All your containers, in one place.");
     title.font = [UIFont systemFontOfSize:21 weight:UIFontWeightBold];
     title.adjustsFontForContentSizeCategory = YES;
     title.textColor = UIColor.whiteColor;
@@ -4762,14 +4761,14 @@ static void wq_apply_design(void);
         [weakSelf runHealthCheck];
     }] forControlEvents:UIControlEventTouchUpInside];
 
-    // Secondary CTA: direct launch into PosterBoard Studio
-    UIButton *posterButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    wq_theme_style_secondary_button(posterButton, @"PosterBoard", @"photo.on.rectangle.angled");
-    [posterButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [weakSelf openPosterBoard];
+    // Secondary CTA: direct launch into Log
+    UIButton *logButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    wq_theme_style_secondary_button(logButton, WQLocalizedNullable(@"Log"), @"doc.plaintext");
+    [logButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        [weakSelf openLog];
     }] forControlEvents:UIControlEventTouchUpInside];
 
-    _heroButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, posterButton]];
+    _heroButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, logButton]];
     _heroButtons.axis = UILayoutConstraintAxisHorizontal;
     _heroButtons.spacing = 8;
     _heroButtons.alignment = UIStackViewAlignmentCenter;
@@ -4800,7 +4799,6 @@ static void wq_apply_design(void);
     list.spacing = 10;
 
     NSArray<NSArray<NSString *> *> *tools = @[
-        @[@"PosterBoard Studio", @"Import .tendies, wallpapers & respring", @"photo.on.rectangle.angled", @"crimson", @"NEW"],
         @[@"Apps", @"App data backups, restores & info", @"square.grid.3x3.fill", @"sky", @""],
         @[@"Cache Cleaner", @"Clean Library/Caches, tmp & crash logs", @"sparkles", @"mint", @""],
         @[@"Go to Path…", @"Jump directly to any file or container", @"arrow.right.circle.fill", @"violet", @""],
@@ -5139,18 +5137,12 @@ static void wq_apply_design(void);
 - (void)openToolCard:(UIControl *)sender
 {
     switch (sender.tag) {
-        case 0: [self openPosterBoard]; break;
-        case 1: [self openTab:1]; break;
-        case 2: [self openTab:2]; break;
-        case 3: [self goToPath]; break;
-        case 4: [self openTab:3]; break;
+        case 0: [self openTab:1]; break;
+        case 1: [self openTab:2]; break;
+        case 2: [self goToPath]; break;
+        case 3: [self openTab:3]; break;
         default: break;
     }
-}
-
-- (void)openPosterBoard
-{
-    [self.navigationController pushViewController:[WQPosterBoardViewController new] animated:YES];
 }
 
 - (void)openTab:(NSInteger)index

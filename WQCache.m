@@ -406,7 +406,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         self.tableView.backgroundColor = [UIColor clearColor];
     }
     self.tableView.tableHeaderView = [self buildGlassCacheHeader];
-    wq_theme_apply_scroll_insets(self.tableView, 116.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
     search.obscuresBackgroundDuringPresentation = NO;

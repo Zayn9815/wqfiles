@@ -239,7 +239,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
 }
 
 - (BOOL)editable { return _snapshot.editing && _table && _alias && !_updating; }
@@ -477,7 +477,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     if (_exportName) {
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"CSV") style:UIBarButtonItemStylePlain
                                                                                  target:self action:@selector(exportCSV:)];
@@ -928,7 +928,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    wq_theme_apply_scroll_insets(self.tableView, 112.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
     self.tableView.tableHeaderView = [self buildSQLiteHeader];
     __weak typeof(self) weakSelf = self;
     self.navigationItem.backAction = [UIAction actionWithHandler:^(UIAction *__unused a) {

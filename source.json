@@ -14,8 +14,8 @@
       "name": "WQ Glass",
       "bundleIdentifier": "com.zayn.wqglass",
       "developerName": "Zayn9815",
-      "subtitle": "Liquid Glass file manager & PosterBoard Studio for iOS 26 and 27",
-      "localizedDescription": "Standalone crimson Liquid Glass file browser, app data manager, PosterBoard Studio and cache cleaner for iOS 26 and 27, built on the worse_query sandbox technique. No jailbreak and no kernel exploit.\n\n• Browse every app's data container, app groups, extension and daemon containers\n• PosterBoard & Wallpaper Studio: import .tendies archives, apply custom photo wallpapers, safety backups, Open PosterBoard & Respring\n• Plist editor and hex viewer/editor; edits are backed up first\n• Select, move across apps, compress and extract ZIPs; import files and whole folders\n• Syntax highlighting, SQLite viewer and media player\n• Back up, restore and clear app data; AirDrop backups as ZIP\n• Cache cleaner\n\niOS 26 and 27 (tested on 26.7.1, 27.0.1 and 27.2.1; on iOS 26, System Data and System Groups are not available). Needs a signer that keeps the App Group entitlement (AltStore, SideStore or Impactor; not Sideloadly).",
+      "subtitle": "Liquid Glass file manager for iOS 26 and 27",
+      "localizedDescription": "Standalone crimson Liquid Glass file browser, app data manager and cache cleaner for iOS 26 and 27, built on the worse_query sandbox technique. No jailbreak and no kernel exploit.\n\n• Browse every app's data container, app groups, extension and daemon containers\n• Plist editor and hex viewer/editor; edits are backed up first\n• Select, move across apps, compress and extract ZIPs; import files and whole folders\n• Syntax highlighting, SQLite viewer and media player\n• Back up, restore and clear app data; AirDrop backups as ZIP\n• Cache cleaner\n\niOS 26 and 27 (tested on 26.7.1, 27.0.1 and 27.2.1; on iOS 26, System Data and System Groups are not available). Needs a signer that keeps the App Group entitlement (AltStore, SideStore or Impactor; not Sideloadly).",
       "iconURL": "https://raw.githubusercontent.com/Zayn9815/wqfiles/main/icons/AppIcon1024.png",
       "tintColor": "#9B2627",
       "category": "utilities",
@@ -26,7 +26,7 @@
           "date": "2026-11-15",
           "size": 950000,
           "downloadURL": "https://github.com/Zayn9815/wqfiles/releases/download/v4.0/WQFiles.ipa",
-          "localizedDescription": "WQ Glass v4.0 flagship redesign: custom crimson Liquid Glass identity and Z monogram icon, redesigned asymmetric bento & swipeable container deck, unified glass headers and pill filters across sub-screens, and PosterBoard & Wallpaper Studio (.tendies import, custom photo wallpapers, automatic safety backup/restore, Open PosterBoard, and Respring).",
+          "localizedDescription": "WQ Glass v4.0 flagship redesign: custom crimson Liquid Glass identity and Z monogram icon, redesigned asymmetric bento & swipeable container deck, and unified glass headers and pill filters across sub-screens.",
           "minOSVersion": "26.0"
         },
         {
