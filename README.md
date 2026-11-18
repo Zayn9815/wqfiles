@@ -1,24 +1,24 @@
-# Worse Query Files
+# WQ Glass
 
-**WQ Files** is a file browser, app data manager and cache cleaner for iOS 26
-and 27. "WQ" stands for worse_query, the sandbox technique it is built on. It
+**WQ Glass** is an obsidian-ruby Liquid Glass file browser, app data manager and cache cleaner for iOS 26
+and 27, built on the `worse_query` sandbox technique. It
 reaches other apps' and system containers with no jailbreak and no kernel
-exploit. Tested on iOS 26.7.1, 27.0.1, 27.2.1 and the 27.3 beta (confirmed by a user).
+exploit. Tested on iOS 26.7.1, 27.0.1, 27.2.1 and the 27.3 beta.
 
-**iOS 26 (26.0 to 26.7.2):** supported since 0.7; tested on 26.7.1. worse_query reaches the app, extension, daemon and app group
-containers there, but not System Data or the system groups, so WQ Files hides
+**iOS 26 (26.0 to 26.7.2):** supported since 0.7; tested on 26.7.1. `worse_query` reaches the app, extension, daemon and app group
+containers there, but not System Data or the system groups, so WQ Glass hides
 those two and the Cache Cleaner has no crash-log section. A full inode scan
 would take most of an hour on iOS 26, so App Data, Extension Data and App
 Groups are listed from the LaunchServices database instead (found once and
 remembered). Internal Daemons aren't in that database: the first scan for them
 takes long, later ones only check new files. Apps, backups, restores, clearing
 app data, the Cache Cleaner and the file browser work as on iOS 27. App icons
-don't: iOS 26 hands WQ Files only placeholder icons and doesn't let it read
+don't: iOS 26 hands WQ Glass only placeholder icons and doesn't let it read
 other apps' bundles, so apps show symbol tiles.
 
-WQ Files is available in English, German, Italian, Spanish, Portuguese
+WQ Glass is available in English, German, Italian, Spanish, Portuguese
 (Brazil), Russian, Polish, Turkish, Thai, Korean, Arabic and Simplified Chinese. It follows
-the device language; **Language** in WQ Files' Settings picks another, used
+the device language; **Language** in WQ Glass' Settings picks another, used
 from the next start.
 
 ## What it opens
@@ -30,7 +30,7 @@ from the next start.
 - **App Bundles**: each installed app's bundle container
   (`/var/containers/Bundle/Application`) with its `.app`, labeled with the
   app's name; also from Apps: long-press an app → **Open App Bundle**. Shown
-  only where iOS lets WQ Files open these folders (the startup check tries;
+  only where iOS lets WQ Glass open these folders (the startup check tries;
   iOS 26 and 27.0.1 don't).
 - **System Data**: `/var/containers/Data/System` (listing only; its contents
   are owned by root).
@@ -82,7 +82,7 @@ new files.
     **Largest Files** (the 100 biggest files below the folder) and **Add to
     Favorites**; favorites are listed on the start screen (under Tools in the
     classic design). With **Reopen Last
-    Folder** on (Settings), WQ Files starts in the folder you were in.
+    Folder** on (Settings), WQ Glass starts in the folder you were in.
   - **Compress** creates a ZIP next to the items; **Extract** (long-press a
     .zip, or tap it and choose **Extract and Open**) unpacks it into a new folder. Entries that would land outside that
     folder, encrypted ZIPs and symbolic links are refused or left out.
@@ -97,16 +97,16 @@ new files.
     database and its `-wal` file; close the app first for an up-to-date copy.
     **Edit** changes that copy: tap a value in a row to change it, swipe a row
     to delete it, or run any SQL. **Save** writes the copy back to the app:
-    force-quit the app first (WQ Files can't tell whether it's running). Before
-    writing, WQ Files checks the copy with SQLite's integrity check and refuses
+    force-quit the app first (WQ Glass can't tell whether it's running). Before
+    writing, WQ Glass checks the copy with SQLite's integrity check and refuses
     if the app changed the database since it was opened; the previous
     database goes to Backups. SQLite writes the edited database in a
     transaction and handles its journal or WAL so the target app can recover
-    even if WQ Files is interrupted.
+    even if WQ Glass is interrupted.
   - **Media player**: audio and video (mp3, m4a, wav, mp4, mov…) play in the
-    system player. WQ Files streams the file to the player itself, so playback
+    system player. WQ Glass streams the file to the player itself, so playback
     starts right away; formats that can't stream this way (or a stream that
-    fails) are copied to WQ Files' temporary folder first.
+    fails) are copied to WQ Glass' temporary folder first.
   - **Text and images**: text is editable, images render, plists can also be
     edited as XML text. Code and data files get syntax colors (XML/plist,
     JSON, YAML, INI/TOML, CSS, SQL, Markdown, C/Objective-C, Swift,
@@ -121,13 +121,13 @@ new files.
 - **Keep Data Before Restore** (Settings, on by default): restoring an app
   backup or a file backup first backs up what's there now, so a failed restore
   can be undone. Turn it off to delete that backup once the restore succeeded.
-- **Reopen Last Folder** (Settings, on by default): WQ Files starts in the
+- **Reopen Last Folder** (Settings, on by default): WQ Glass starts in the
   folder you were in, once the startup check has passed.
-- **Check for Updates** (Settings, on by default): at most twice a day WQ
-  Files downloads the public `source.json` from this repository and shows a
+- **Check for Updates** (Settings, on by default): at most twice a day WQ Glass
+  downloads the public `source.json` from this repository and shows a
   note on the start screen when a newer version is out. This is its only
   network access; nothing about the device or its data is sent. Turn it off to
-  keep WQ Files fully offline.
+  keep WQ Glass fully offline.
 - **New Design** (Settings, on by default): the start screen with container
   cards and Home, Apps, Clean and Backups tabs; Settings opens from the gear.
   Turn it off for the classic design: one list with Containers, Tools and
@@ -177,16 +177,16 @@ and only change what you understand.
 
 ## Troubleshooting
 
-- **Startup check**: while the start screen is up, WQ Files checks in the
+- **Startup check**: while the start screen is up, WQ Glass checks in the
   background the App Group, whether it finds other apps' folders, whether its
   sandbox access really opens a sample of them, and whether the app database
   identifies them. A new iOS version can break any of these; instead of empty
-  or wrong lists, WQ Files then covers everything with what failed (Try Again,
+  or wrong lists, WQ Glass then covers everything with what failed (Try Again,
   Log, Continue Anyway). Problems that
   leave it partly usable (app names, an untested iOS version) are shown once as
   a warning. The result is in **Log** as `health: …`.
 
-- **Every folder refused (`token cache recovery failed`)**: WQ Files briefly
+- **Every folder refused (`token cache recovery failed`)**: WQ Glass briefly
   swaps its own `Library/Caches` folder in the App Group to get each access
   token. If a swap was interrupted, or another app sharing the App Group
   changed that folder, it refuses every token instead of risking the
@@ -209,42 +209,28 @@ and only change what you understand.
 - **`(no label)`**: a token was obtained, but the container identifier
   (`com.apple.containermanager.identifier` xattr or the container metadata
   plist) could not be read. On iOS 27.2 the attribute can't be read at all,
-  so WQ Files also asks the container manager for a path-to-identifier map
+  so WQ Glass also asks the container manager for a path-to-identifier map
   and then looks the container up in the LaunchServices database, which lists
   the data container of every app and most extensions. If the identifier is
   still missing (for example a system/daemon container with none, or an
   extension the database doesn't list), the folder stays browsable but cannot
   be backed up or cleared until identity is available.
 
-## Install with AltStore or SideStore
+## Sideloading
 
-<h3 align="center">
-<a href="https://altdirect.app/?url=https://raw.githubusercontent.com/Zayn9815/wqfiles/main/source.json"><img src="https://altdirect.app/assets/png/AltSource_Blue.png" width="200"></a>
-&nbsp;
-<a href="https://github.com/Zayn9815/wqfiles/releases/latest/download/WQFiles.ipa"><img src="https://altdirect.app/assets/png/Download_Blue.png" width="200"></a>
-</h3>
-
-Tap **Add AltSource** on your iPhone to add the source in AltStore, SideStore,
-LiveContainer and others (via [AltDirect](https://altdirect.app)), or add it by hand:
-
-```
-https://raw.githubusercontent.com/Zayn9815/wqfiles/main/source.json
-```
-
-Or download `WQFiles.ipa` from [Releases](https://github.com/Zayn9815/wqfiles/releases) and sign it yourself.
+Build `WQFiles.ipa` from source using `./build.sh` on macOS (or via the repository workflow), then sign and install the `.ipa` with a sideloading tool that preserves the App Group entitlement.
 
 ## Signing: the App Group
 
-WQ Files needs an **App Group** to work: worse_query asks for access through
+WQ Glass needs an **App Group** to work: `worse_query` asks for access through
 your app's group container. Whatever signs the IPA must give it one. The app
 uses whichever group it receives, so the group name doesn't matter. The top
 of **Log** shows the group it got, or "No App Group" when it got none.
 
-- **AltStore, SideStore or [Impactor](https://github.com/claration/impactor)
+- **AltStore, SideStore or Impactor
   with your Apple ID** (free or paid): they create the App Group
-  automatically. This is the easiest way. Impactor runs on macOS, Windows and
-  Linux; it's confirmed to work with a paid developer account. **Sideloadly
-  doesn't add the App Group**, so WQ Files signed with it reports "No App
+  automatically. This is the easiest way. **Sideloadly
+  doesn't add the App Group**, so WQ Glass signed with it reports "No App
   Group".
 - **Feather, ESign and similar tools with a certificate (.p12) and a
   provisioning profile:** the profile has to contain an App Group. Wildcard
@@ -269,10 +255,7 @@ The deployment minimum is iOS 26.0. Builds first run the host regression suite,
 then stage and validate the archive, metadata, signature and App Group before
 replacing `WQFiles.ipa` in the project directory. Set `WQ_SKIP_PREFLIGHT=1` for
 fixture builds that do not have a test tree. For a separate output, set
-`WQFILES_FINAL_IPA` to an absolute path in an existing directory. The source
-updater validates the IPA's embedded metadata before atomically replacing
-`source.json`; its version/build arguments must match the artifact, and an
-existing release description is preserved when no new notes are supplied.
+`WQFILES_FINAL_IPA` to an absolute path in an existing directory.
 
 ## Regression tests
 
@@ -290,8 +273,8 @@ concurrent writes still require supported-device validation.
 
 ## Translations
 
-WQ Files is in English, German, Italian, Spanish, Portuguese (Brazil), Russian, Polish, Turkish, Thai, Korean,
-Arabic and Simplified Chinese. New languages and corrections are welcome as pull requests:
+WQ Glass is in English, German, Italian, Spanish, Portuguese (Brazil), Russian, Polish, Turkish, Thai, Korean,
+Arabic and Simplified Chinese. New languages and corrections are welcome:
 
 - **Correct a translation:** edit the line in `<language>.lproj/Localizable.strings`
   (for example `it.lproj`). The English text on the left is the key; change
@@ -299,28 +282,16 @@ Arabic and Simplified Chinese. New languages and corrections are welcome as pull
 - **Add a language:** copy `en.lproj` to a folder named with the language code
   (`fr.lproj`, `pt-PT.lproj`…), translate the right-hand side, and add the code
   to `CFBundleLocalizations` in `Info.plist` and to `LANGUAGES` in
-  `tests/test_localization.py`. The language then appears in WQ Files'
+  `tests/test_localization.py`. The language then appears in WQ Glass'
   Language setting by itself.
 - Keep every placeholder (`%@`, `%lu`, `%.1f`…) in the same order as in the
-  English text, and leave paths, file names and `WQ Files` as they are.
+  English text, and leave paths, file names and `WQ Glass` as they are.
   `python3 -m unittest tests.test_localization` checks this.
-
-German, Italian, Spanish, Portuguese, Polish, Turkish and Thai, and the newest Chinese, Arabic and Korean strings, are
-machine translations so far: corrections from native speakers are especially
-welcome.
 
 ## Credit and license
 
-- Sandbox technique: [worse_query](https://github.com/forcequitOS/worse_query)
-  by Taj C (forcequit), GPL-3.0-or-later. This app reimplements it.
-- Container enumeration with `fsgetpath`: from
-  [KAMUI](https://github.com/murk-sus/kamui-escape) by murk-sus.
-- Simplified Chinese translation: [iosrxwy](https://github.com/iosrxwy)
-  ([#38](https://github.com/kolbicz/WQFiles/pull/38)).
-- Arabic translation: [hfip](https://github.com/hfip)
-  ([#39](https://github.com/kolbicz/WQFiles/issues/39)).
-- Korean translation: [hooray804](https://github.com/hooray804)
-- Russian translation: [Reinascape](https://github.com/Reinascape)
-  ([#40](https://github.com/kolbicz/WQFiles/pull/40)).
+- Sandbox technique: `worse_query` by Taj C (forcequit), GPL-3.0-or-later.
+- Container enumeration with `fsgetpath`: from `KAMUI` by murk-sus.
+- Translations: `iosrxwy` (Simplified Chinese), `hfip` (Arabic), `hooray804` (Korean), `Reinascape` (Russian).
 
-WQ Files is GPL-3.0-or-later (see `LICENSE`).
+WQ Glass is GPL-3.0-or-later (see `LICENSE`).

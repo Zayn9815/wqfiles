@@ -1251,6 +1251,7 @@ static NSString *wq_info_date(struct timespec ts)
     NSArray<WQItem *> *_items;   // what the search lets through (shown)
     NSString *_query;
     UILabel *_pathLabel;
+    UIVisualEffectView *_pathCard;
     UIView *_headerBox;
     NSString *_scanStatus;
     CGFloat _headerWidth;
@@ -1283,7 +1284,7 @@ static NSString *wq_info_date(struct timespec ts)
 
 - (instancetype)initWithPath:(NSString *)path title:(NSString *)title
 {
-    if ((self = [super initWithStyle:UITableViewStylePlain])) {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
         _path = [path copy];
         self.title = title ?: (path.lastPathComponent.length ? path.lastPathComponent : @"/");
         _baseTitle = self.title;
@@ -1466,8 +1467,8 @@ static NSString *wq_info_date(struct timespec ts)
     }
 }
 
-// Device strip, then the full path in normal-size text that wraps at the
-// slashes (the navigation bar's prompt shrank it until unreadable). Tap to copy.
+// Device strip, then the full path in normal-size text inside a frosted Liquid
+// Glass card (the navigation bar's prompt shrank it until unreadable). Tap to copy.
 - (void)updateHeader
 {
     CGFloat width = self.tableView.bounds.size.width ?: self.view.bounds.size.width;
@@ -1475,28 +1476,38 @@ static NSString *wq_info_date(struct timespec ts)
         _pathLabel = [UILabel new];
         _pathLabel.numberOfLines = 0;
         _pathLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
-        _pathLabel.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+        _pathLabel.font = [UIFont monospacedSystemFontOfSize:11.5 weight:UIFontWeightMedium];
         _pathLabel.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
         _pathLabel.textAlignment = NSTextAlignmentLeft;   // paths read left to right in every language
         _pathLabel.textColor = wq_theme_secondary_text();
+        _pathLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         _pathLabel.userInteractionEnabled = YES;
         [_pathLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyPath)]];
     }
     if (!_headerBox) {
         _headerBox = wq_device_header(width);
-        [_headerBox addSubview:_pathLabel];
+        _pathCard = wq_theme_make_glass_card(16, NO);
+        _pathCard.translatesAutoresizingMaskIntoConstraints = YES;
+        _pathCard.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+        _pathCard.userInteractionEnabled = YES;
+        [_pathCard.contentView addSubview:_pathLabel];
+        [_headerBox addSubview:_pathCard];
         self.tableView.tableHeaderView = _headerBox;
     }
     // Zero-width spaces after each slash let lines break between components.
     NSString *breakable = [_path stringByReplacingOccurrencesOfString:@"/" withString:@"/\u200B"];
     _pathLabel.text = _scanStatus ? [NSString stringWithFormat:@"%@\n%@", breakable, _scanStatus] : breakable;
     UIView *pill = _headerBox.subviews.firstObject;
-    CGFloat side = 16, top = (pill && pill != _pathLabel ? CGRectGetMaxY(pill.frame) : kWQDeviceStripHeight) + 8;
-    CGSize fit = [_pathLabel sizeThatFits:CGSizeMake(MAX(120, width - 2 * side), CGFLOAT_MAX)];
-    CGFloat height = top + ceil(fit.height) + 10;
+    CGFloat side = 16, padX = 12, padY = 9;
+    CGFloat top = (pill && pill != _pathCard ? CGRectGetMaxY(pill.frame) : kWQDeviceStripHeight) + 6;
+    CGFloat cardWidth = MAX(140.0, width - 2 * side);
+    CGSize fit = [_pathLabel sizeThatFits:CGSizeMake(MAX(100.0, cardWidth - 2 * padX), CGFLOAT_MAX)];
+    CGFloat cardHeight = ceil(fit.height) + 2 * padY;
+    CGFloat height = top + cardHeight + 10;
     CGFloat oldHeight = _headerBox.frame.size.height;
     _headerBox.frame = CGRectMake(0, 0, width, height);
-    _pathLabel.frame = CGRectMake(side, top, MAX(0, width - 2 * side), ceil(fit.height));
+    _pathCard.frame = CGRectMake(side, top, cardWidth, cardHeight);
+    _pathLabel.frame = CGRectMake(padX, padY, MAX(0, cardWidth - 2 * padX), ceil(fit.height));
     _headerWidth = width;
     if (fabs(height - oldHeight) > 0.5) self.tableView.tableHeaderView = _headerBox;
 }
@@ -3917,6 +3928,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 @implementation WQPrismGlassView {
     UIVisualEffectView *_effect;
     CAGradientLayer *_sheen;
+    CAGradientLayer *_bottomRim;
 }
 
 - (instancetype)initWithRadius:(CGFloat)radius
@@ -3928,7 +3940,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         self.clipsToBounds = YES;
         self.backgroundColor = [UIColor clearColor];
 
-        // Native iOS 26 Liquid Glass, tinted crimson-rose.
+        // Native iOS 26 Liquid Glass, tinted obsidian-ruby crystal.
         _effect = [[UIVisualEffectView alloc] initWithEffect:nil];
         _effect.translatesAutoresizingMaskIntoConstraints = NO;
         _effect.userInteractionEnabled = NO;
@@ -3942,14 +3954,27 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             [_effect.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         ]];
 
-        // Layered reflection: a faint blush sheen across the top edge.
+        // Layered diagonal crystal refraction sheen across the prism face.
         _sheen = [CAGradientLayer layer];
-        _sheen.startPoint = CGPointMake(0.5, 0.0);
-        _sheen.endPoint = CGPointMake(0.5, 1.0);
-        _sheen.colors = @[(id)[UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.16].CGColor,
-                          (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.0].CGColor];
-        _sheen.locations = @[@0.0, @0.42];
+        _sheen.startPoint = CGPointMake(0.0, 0.0);
+        _sheen.endPoint = CGPointMake(0.95, 0.90);
+        _sheen.colors = @[
+            (id)[UIColor colorWithRed:1.0 green:0.93 blue:0.95 alpha:0.24].CGColor,
+            (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.90 alpha:0.07].CGColor,
+            (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.90 alpha:0.0].CGColor,
+        ];
+        _sheen.locations = @[@0.0, @0.34, @0.72];
         [self.layer addSublayer:_sheen];
+
+        // Secondary bottom-edge optical rim reflection.
+        _bottomRim = [CAGradientLayer layer];
+        _bottomRim.startPoint = CGPointMake(0.5, 1.0);
+        _bottomRim.endPoint = CGPointMake(0.5, 0.72);
+        _bottomRim.colors = @[
+            (id)[UIColor colorWithRed:1.0 green:0.78 blue:0.84 alpha:0.14].CGColor,
+            (id)[UIColor colorWithRed:1.0 green:0.78 blue:0.84 alpha:0.0].CGColor,
+        ];
+        [self.layer addSublayer:_bottomRim];
 
         _contentView = [UIView new];
         _contentView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3971,38 +3996,42 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     return self;
 }
 
-// Reduce Transparency: an opaque crimson surface instead of glass.
+// Reduce Transparency: an opaque obsidian-ruby surface instead of glass.
 - (void)updateMaterial
 {
     UIVisualEffect *glass = wq_theme_glass_effect(NO);
     _effect.effect = glass;
     self.backgroundColor = glass ? [UIColor clearColor] : wq_theme_solid_surface();
     _sheen.hidden = glass == nil;
+    _bottomRim.hidden = glass == nil;
 }
 
 - (void)layoutSubviews
 {
     [super layoutSubviews];
     _sheen.frame = self.bounds;
+    _bottomRim.frame = self.bounds;
 }
 
 - (void)updateBorder
 {
-    // 0.5–1 pt warm coral specular rim.
+    // Crisp crystal specular rim.
     CGFloat scale = self.traitCollection.displayScale;
     if (scale <= 0) scale = 3.0;
-    self.layer.borderWidth = MAX(0.5, 1.5 / scale);
+    self.layer.borderWidth = MAX(0.75, 2.0 / scale);
     self.layer.borderColor = wq_theme_rim().CGColor;
 }
 
 @end
 
+// Circular frosted crystal orb icon badge.
 @interface WQPrismIconTile : UIView
 - (instancetype)initWithSymbol:(NSString *)symbol tone:(NSString *)tone size:(CGFloat)size;
 @end
 
 @implementation WQPrismIconTile {
     CAGradientLayer *_gradient;
+    CAGradientLayer *_glaze;
     UIImageView *_imageView;
 }
 
@@ -4011,17 +4040,30 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     if ((self = [super initWithFrame:CGRectZero])) {
         self.translatesAutoresizingMaskIntoConstraints = NO;
         self.userInteractionEnabled = NO;
-        self.layer.cornerRadius = size * 0.29;
-        self.layer.cornerCurve = kCACornerCurveContinuous;
+        self.layer.cornerRadius = size * 0.5;
+        self.layer.borderWidth = 0.9;
+        self.layer.borderColor = [UIColor colorWithRed:1.0 green:0.92 blue:0.94 alpha:0.55].CGColor;
         self.clipsToBounds = YES;
         NSArray<UIColor *> *colors = WQPrismTone(tone);
         _gradient = [CAGradientLayer layer];
-        _gradient.startPoint = CGPointMake(0.0, 0.0);
-        _gradient.endPoint = CGPointMake(1.0, 1.0);
-        _gradient.colors = @[(id)colors[0].CGColor, (id)colors[1].CGColor];
+        _gradient.startPoint = CGPointMake(0.15, 0.0);
+        _gradient.endPoint = CGPointMake(0.85, 1.0);
+        _gradient.colors = @[
+            (id)[colors[0] colorWithAlphaComponent:0.92].CGColor,
+            (id)[colors[1] colorWithAlphaComponent:0.95].CGColor,
+        ];
         [self.layer addSublayer:_gradient];
 
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:size * 0.44
+        _glaze = [CAGradientLayer layer];
+        _glaze.startPoint = CGPointMake(0.5, 0.0);
+        _glaze.endPoint = CGPointMake(0.5, 0.6);
+        _glaze.colors = @[
+            (id)[UIColor colorWithWhite:1.0 alpha:0.32].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.0].CGColor,
+        ];
+        [self.layer addSublayer:_glaze];
+
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:size * 0.42
                                                                                          weight:UIImageSymbolWeightSemibold];
         _imageView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol withConfiguration:cfg]];
         _imageView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4033,8 +4075,8 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             [self.heightAnchor constraintEqualToConstant:size],
             [_imageView.centerXAnchor constraintEqualToAnchor:self.centerXAnchor],
             [_imageView.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_imageView.widthAnchor constraintEqualToConstant:size * 0.60],
-            [_imageView.heightAnchor constraintEqualToConstant:size * 0.60],
+            [_imageView.widthAnchor constraintEqualToConstant:size * 0.56],
+            [_imageView.heightAnchor constraintEqualToConstant:size * 0.56],
         ]];
     }
     return self;
@@ -4044,10 +4086,12 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 {
     [super layoutSubviews];
     _gradient.frame = self.bounds;
+    _glaze.frame = self.bounds;
 }
 
 @end
 
+// Staggered Glass Bento Module for Containers.
 @interface WQPrismCardView : UIControl
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *metaLabel;
@@ -4062,6 +4106,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 @implementation WQPrismCardView {
     WQPrismGlassView *_glass;
     WQPrismIconTile *_icon;
+    UIView *_chevronOrb;
     UIImageView *_chevron;
 }
 
@@ -4074,10 +4119,10 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     if ((self = [super initWithFrame:CGRectZero])) {
         self.translatesAutoresizingMaskIntoConstraints = NO;
         self.clipsToBounds = YES;
-        self.layer.cornerRadius = compact ? 20 : 24;
+        self.layer.cornerRadius = compact ? 22 : 24;
         self.layer.cornerCurve = kCACornerCurveContinuous;
 
-        _glass = [[WQPrismGlassView alloc] initWithRadius:compact ? 20 : 24];
+        _glass = [[WQPrismGlassView alloc] initWithRadius:compact ? 22 : 24];
         _glass.userInteractionEnabled = NO;
         [self addSubview:_glass];
         [NSLayoutConstraint activateConstraints:@[
@@ -4087,13 +4132,13 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             [_glass.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         ]];
 
-        _icon = [[WQPrismIconTile alloc] initWithSymbol:symbol tone:tone size:compact ? 30 : 36];
+        _icon = [[WQPrismIconTile alloc] initWithSymbol:symbol tone:tone size:compact ? 32 : 38];
         [self addSubview:_icon];
 
         UIFont *titleFont = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleSubheadline]
-            scaledFontForFont:[UIFont systemFontOfSize:(compact ? 13.0 : 15.0) weight:UIFontWeightSemibold]];
+            scaledFontForFont:[UIFont systemFontOfSize:(compact ? 13.5 : 15.5) weight:UIFontWeightBold]];
         UIFont *metaFont = [[UIFontMetrics metricsForTextStyle:UIFontTextStyleCaption1]
-            scaledFontForFont:[UIFont systemFontOfSize:(compact ? 9.5 : 10.5) weight:UIFontWeightRegular]];
+            scaledFontForFont:[UIFont monospacedSystemFontOfSize:(compact ? 9.0 : 10.0) weight:UIFontWeightMedium]];
 
         _titleLabel = [UILabel new];
         _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4108,6 +4153,17 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         _titleLabel.userInteractionEnabled = NO;
         [self addSubview:_titleLabel];
 
+        // Frosted capsule around path metadata.
+        UIView *metaPill = [UIView new];
+        metaPill.translatesAutoresizingMaskIntoConstraints = NO;
+        metaPill.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.10];
+        metaPill.layer.cornerRadius = 8;
+        metaPill.layer.cornerCurve = kCACornerCurveContinuous;
+        metaPill.layer.borderWidth = 0.5;
+        metaPill.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.22].CGColor;
+        metaPill.userInteractionEnabled = NO;
+        [self addSubview:metaPill];
+
         _metaLabel = [UILabel new];
         _metaLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _metaLabel.font = metaFont;
@@ -4117,51 +4173,80 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         _metaLabel.numberOfLines = 1;
         _metaLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
         _metaLabel.userInteractionEnabled = NO;
-        [self addSubview:_metaLabel];
+        [metaPill addSubview:_metaLabel];
+        [NSLayoutConstraint activateConstraints:@[
+            [_metaLabel.topAnchor constraintEqualToAnchor:metaPill.topAnchor constant:3],
+            [_metaLabel.bottomAnchor constraintEqualToAnchor:metaPill.bottomAnchor constant:-3],
+            [_metaLabel.leadingAnchor constraintEqualToAnchor:metaPill.leadingAnchor constant:7],
+            [_metaLabel.trailingAnchor constraintEqualToAnchor:metaPill.trailingAnchor constant:-7],
+        ]];
 
         if (!compact) {
             _moreButton = [UIButton buttonWithType:UIButtonTypeSystem];
             _moreButton.translatesAutoresizingMaskIntoConstraints = NO;
-            [_moreButton setImage:[UIImage systemImageNamed:@"ellipsis"] forState:UIControlStateNormal];
+            UIButtonConfiguration *mcfg = [UIButtonConfiguration glassButtonConfiguration];
+            mcfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+            mcfg.baseBackgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.14];
+            mcfg.baseForegroundColor = wq_theme_secondary_text();
+            mcfg.contentInsets = NSDirectionalEdgeInsetsZero;
+            UIImageSymbolConfiguration *msym = [UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightBold];
+            mcfg.image = [UIImage systemImageNamed:@"ellipsis" withConfiguration:msym];
+            _moreButton.configuration = mcfg;
             _moreButton.tintColor = wq_theme_secondary_text();
+            _moreButton.layer.borderWidth = 0.6;
+            _moreButton.layer.borderColor = wq_theme_rim().CGColor;
+            _moreButton.layer.cornerRadius = 14;
+            _moreButton.clipsToBounds = YES;
             _moreButton.showsMenuAsPrimaryAction = YES;
             _moreButton.accessibilityLabel = WQLocalizedNullable(@"More");
             [self addSubview:_moreButton];
 
-            _chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+            _chevronOrb = [UIView new];
+            _chevronOrb.translatesAutoresizingMaskIntoConstraints = NO;
+            _chevronOrb.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.14];
+            _chevronOrb.layer.cornerRadius = 12;
+            _chevronOrb.layer.borderWidth = 0.6;
+            _chevronOrb.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.28].CGColor;
+            _chevronOrb.userInteractionEnabled = NO;
+            [self addSubview:_chevronOrb];
+
+            UIImageSymbolConfiguration *csym = [UIImageSymbolConfiguration configurationWithPointSize:9.5 weight:UIImageSymbolWeightBold];
+            _chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right" withConfiguration:csym]];
             _chevron.translatesAutoresizingMaskIntoConstraints = NO;
-            _chevron.tintColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.6];
+            _chevron.tintColor = wq_theme_primary_text();
             _chevron.image = [_chevron.image imageFlippedForRightToLeftLayoutDirection];
             _chevron.userInteractionEnabled = NO;
-            [self addSubview:_chevron];
+            [_chevronOrb addSubview:_chevron];
         }
 
-        CGFloat top = compact ? 10.0 : 13.0;
-        CGFloat side = compact ? 11.0 : 13.0;
-        NSLayoutXAxisAnchor *metaTrailing = _chevron ? _chevron.leadingAnchor : self.trailingAnchor;
-        CGFloat metaTrailingGap = _chevron ? -6.0 : -side;
+        CGFloat top = compact ? 11.0 : 14.0;
+        CGFloat side = compact ? 12.0 : 14.0;
+        NSLayoutXAxisAnchor *metaTrailing = _chevronOrb ? _chevronOrb.leadingAnchor : self.trailingAnchor;
+        CGFloat metaTrailingGap = _chevronOrb ? -6.0 : -side;
         [NSLayoutConstraint activateConstraints:@[
             [_icon.topAnchor constraintEqualToAnchor:self.topAnchor constant:top],
             [_icon.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:side],
             [_titleLabel.topAnchor constraintEqualToAnchor:_icon.bottomAnchor constant:(compact ? 8 : 11)],
             [_titleLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:side],
             [_titleLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-side],
-            [_metaLabel.topAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.bottomAnchor constant:3],
-            [_metaLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:side],
-            [_metaLabel.trailingAnchor constraintEqualToAnchor:metaTrailing constant:metaTrailingGap],
-            [self.heightAnchor constraintGreaterThanOrEqualToConstant:(compact ? 104 : 148)],
-            [self.bottomAnchor constraintGreaterThanOrEqualToAnchor:_metaLabel.bottomAnchor constant:(compact ? 10 : 13)],
+            [metaPill.topAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.bottomAnchor constant:6],
+            [metaPill.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:side],
+            [metaPill.trailingAnchor constraintLessThanOrEqualToAnchor:metaTrailing constant:metaTrailingGap],
+            [self.heightAnchor constraintGreaterThanOrEqualToConstant:(compact ? 104 : 138)],
+            [self.bottomAnchor constraintGreaterThanOrEqualToAnchor:metaPill.bottomAnchor constant:(compact ? 10 : 13)],
         ]];
         if (_moreButton) {
             [NSLayoutConstraint activateConstraints:@[
-                [_moreButton.topAnchor constraintEqualToAnchor:self.topAnchor constant:5],
-                [_moreButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-5],
-                [_moreButton.widthAnchor constraintEqualToConstant:30],
-                [_moreButton.heightAnchor constraintEqualToConstant:30],
-                [_chevron.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-13],
-                [_chevron.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-12],
-                [_chevron.widthAnchor constraintEqualToConstant:11],
-                [_chevron.heightAnchor constraintEqualToConstant:11],
+                [_moreButton.topAnchor constraintEqualToAnchor:self.topAnchor constant:12],
+                [_moreButton.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12],
+                [_moreButton.widthAnchor constraintEqualToConstant:28],
+                [_moreButton.heightAnchor constraintEqualToConstant:28],
+                [_chevronOrb.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12],
+                [_chevronOrb.centerYAnchor constraintEqualToAnchor:metaPill.centerYAnchor],
+                [_chevronOrb.widthAnchor constraintEqualToConstant:24],
+                [_chevronOrb.heightAnchor constraintEqualToConstant:24],
+                [_chevron.centerXAnchor constraintEqualToAnchor:_chevronOrb.centerXAnchor],
+                [_chevron.centerYAnchor constraintEqualToAnchor:_chevronOrb.centerYAnchor],
             ]];
         }
 
@@ -4177,19 +4262,20 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     [super setHighlighted:highlighted];
     [UIView animateWithDuration:0.16 animations:^{
         self.alpha = highlighted ? 0.82 : 1.0;
-        self.transform = highlighted ? CGAffineTransformMakeScale(0.985, 0.985) : CGAffineTransformIdentity;
+        self.transform = highlighted ? CGAffineTransformMakeScale(0.975, 0.975) : CGAffineTransformIdentity;
     }];
 }
 
 @end
 
-// Geometric crimson Liquid Glass "Z" monogram badge for header & about cards.
+// Obsidian Ruby & Crystal Prism "Z" monogram badge for header & about cards.
 @interface WQZMonogramBadge : UIView
 - (instancetype)initWithSize:(CGFloat)size;
 @end
 
 @implementation WQZMonogramBadge {
     CAGradientLayer *_grad;
+    CAGradientLayer *_sheen;
     CAShapeLayer *_zLayer;
 }
 
@@ -4198,20 +4284,30 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     if ((self = [super initWithFrame:CGRectMake(0, 0, size, size)])) {
         self.translatesAutoresizingMaskIntoConstraints = NO;
         self.userInteractionEnabled = NO;
-        self.layer.cornerRadius = size * 0.27;
+        self.layer.cornerRadius = size * 0.30;
         self.layer.cornerCurve = kCACornerCurveContinuous;
         self.layer.borderWidth = 1.0;
-        self.layer.borderColor = [UIColor colorWithRed:1.0 green:0.86 blue:0.85 alpha:0.45].CGColor;
+        self.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.93 alpha:0.65].CGColor;
         self.clipsToBounds = YES;
 
         _grad = [CAGradientLayer layer];
         _grad.startPoint = CGPointMake(0, 0);
         _grad.endPoint = CGPointMake(1, 1);
         _grad.colors = @[
-            (id)[UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:1].CGColor,
-            (id)[UIColor colorWithRed:0.36 green:0.11 blue:0.11 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.72 green:0.11 blue:0.23 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.24 green:0.04 blue:0.09 alpha:1].CGColor,
         ];
         [self.layer addSublayer:_grad];
+
+        _sheen = [CAGradientLayer layer];
+        _sheen.startPoint = CGPointMake(0, 0);
+        _sheen.endPoint = CGPointMake(0.85, 0.85);
+        _sheen.colors = @[
+            (id)[UIColor colorWithWhite:1.0 alpha:0.28].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.0].CGColor,
+        ];
+        _sheen.locations = @[@0.0, @0.55];
+        [self.layer addSublayer:_sheen];
 
         _zLayer = [CAShapeLayer layer];
         _zLayer.fillColor = UIColor.whiteColor.CGColor;
@@ -4229,6 +4325,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 {
     [super layoutSubviews];
     _grad.frame = self.bounds;
+    _sheen.frame = self.bounds;
     CGFloat w = self.bounds.size.width;
     CGFloat h = self.bounds.size.height;
     CGFloat pad = w * 0.25;
@@ -4252,7 +4349,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
 @end
 
-// Full-width interactive glass list tile for Tools.
+// Spatial Glass Utility Pad for the 2x2 Tools bento grid.
 @interface WQPrismToolRow : UIControl
 - (instancetype)initWithTitle:(NSString *)title subtitle:(NSString *)subtitle symbol:(NSString *)symbol tone:(NSString *)tone badge:(NSString *_Nullable)badge;
 @end
@@ -4266,46 +4363,18 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     if ((self = [super initWithFrame:CGRectZero])) {
         self.translatesAutoresizingMaskIntoConstraints = NO;
         self.clipsToBounds = YES;
-        self.layer.cornerRadius = 22;
+        self.layer.cornerRadius = 24;
         self.layer.cornerCurve = kCACornerCurveContinuous;
 
-        _glass = [[WQPrismGlassView alloc] initWithRadius:22];
+        _glass = [[WQPrismGlassView alloc] initWithRadius:24];
         _glass.userInteractionEnabled = NO;
         [self addSubview:_glass];
 
-        WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:symbol tone:tone size:40];
+        WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:symbol tone:tone size:38];
         [icon setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
         [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 
-        UILabel *titleLabel = [UILabel new];
-        titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        titleLabel.text = title;
-        titleLabel.font = [UIFont systemFontOfSize:15.5 weight:UIFontWeightSemibold];
-        titleLabel.textColor = wq_theme_primary_text();
-        titleLabel.numberOfLines = 2;
-        titleLabel.adjustsFontSizeToFitWidth = YES;
-        titleLabel.minimumScaleFactor = 0.85;
-
-        UILabel *subLabel = [UILabel new];
-        subLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        subLabel.text = subtitle;
-        subLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
-        subLabel.textColor = wq_theme_secondary_text();
-        subLabel.numberOfLines = 0;
-
-        UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, subLabel]];
-        textStack.axis = UILayoutConstraintAxisVertical;
-        textStack.spacing = 2;
-        textStack.userInteractionEnabled = NO;
-        [textStack setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
-
-        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, textStack]];
-        row.translatesAutoresizingMaskIntoConstraints = NO;
-        row.axis = UILayoutConstraintAxisHorizontal;
-        row.alignment = UIStackViewAlignmentCenter;
-        row.spacing = 12;
-        row.userInteractionEnabled = NO;
-
+        UIView *topTrailing = nil;
         if (badge.length) {
             UIView *pillWrap = [UIView new];
             pillWrap.translatesAutoresizingMaskIntoConstraints = NO;
@@ -4314,49 +4383,82 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             pillWrap.layer.cornerCurve = kCACornerCurveContinuous;
             pillWrap.clipsToBounds = YES;
             pillWrap.userInteractionEnabled = NO;
-            [pillWrap setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-            [pillWrap setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-
             UILabel *pill = [UILabel new];
             pill.text = badge;
-            pill.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightBold];
+            pill.font = [UIFont systemFontOfSize:10 weight:UIFontWeightBold];
             pill.textColor = wq_theme_primary_text();
-            pill.textAlignment = NSTextAlignmentCenter;
             pill.translatesAutoresizingMaskIntoConstraints = NO;
-            [pill setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
             [pillWrap addSubview:pill];
             [NSLayoutConstraint activateConstraints:@[
                 [pill.topAnchor constraintEqualToAnchor:pillWrap.topAnchor constant:3],
                 [pill.bottomAnchor constraintEqualToAnchor:pillWrap.bottomAnchor constant:-3],
-                [pill.leadingAnchor constraintEqualToAnchor:pillWrap.leadingAnchor constant:8],
-                [pill.trailingAnchor constraintEqualToAnchor:pillWrap.trailingAnchor constant:-8],
+                [pill.leadingAnchor constraintEqualToAnchor:pillWrap.leadingAnchor constant:7],
+                [pill.trailingAnchor constraintEqualToAnchor:pillWrap.trailingAnchor constant:-7],
             ]];
-            [row addArrangedSubview:pillWrap];
+            topTrailing = pillWrap;
+        } else {
+            UIView *orb = [UIView new];
+            orb.translatesAutoresizingMaskIntoConstraints = NO;
+            orb.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.14];
+            orb.layer.cornerRadius = 12;
+            orb.layer.borderWidth = 0.6;
+            orb.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.28].CGColor;
+            orb.userInteractionEnabled = NO;
+            UIImageSymbolConfiguration *symCfg = [UIImageSymbolConfiguration configurationWithPointSize:9.5 weight:UIImageSymbolWeightBold];
+            UIImageView *arrow = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.right" withConfiguration:symCfg]];
+            arrow.translatesAutoresizingMaskIntoConstraints = NO;
+            arrow.tintColor = wq_theme_primary_text();
+            [orb addSubview:arrow];
+            [NSLayoutConstraint activateConstraints:@[
+                [orb.widthAnchor constraintEqualToConstant:24],
+                [orb.heightAnchor constraintEqualToConstant:24],
+                [arrow.centerXAnchor constraintEqualToAnchor:orb.centerXAnchor],
+                [arrow.centerYAnchor constraintEqualToAnchor:orb.centerYAnchor],
+            ]];
+            topTrailing = orb;
         }
 
-        UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
-        chevron.tintColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.7];
-        chevron.contentMode = UIViewContentModeScaleAspectFit;
-        chevron.image = [chevron.image imageFlippedForRightToLeftLayoutDirection];
-        [chevron setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-        [chevron setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-        [NSLayoutConstraint activateConstraints:@[
-            [chevron.widthAnchor constraintEqualToConstant:11],
-            [chevron.heightAnchor constraintEqualToConstant:12],
-        ]];
-        [row addArrangedSubview:chevron];
+        UIView *topSpacer = [UIView new];
+        [topSpacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+        UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[icon, topSpacer, topTrailing]];
+        topRow.axis = UILayoutConstraintAxisHorizontal;
+        topRow.alignment = UIStackViewAlignmentTop;
+        topRow.userInteractionEnabled = NO;
 
-        [_glass.contentView addSubview:row];
+        UILabel *titleLabel = [UILabel new];
+        titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        titleLabel.text = title;
+        titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+        titleLabel.textColor = wq_theme_primary_text();
+        titleLabel.numberOfLines = 2;
+        titleLabel.adjustsFontSizeToFitWidth = YES;
+        titleLabel.minimumScaleFactor = 0.82;
+
+        UILabel *subLabel = [UILabel new];
+        subLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        subLabel.text = subtitle;
+        subLabel.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightRegular];
+        subLabel.textColor = wq_theme_secondary_text();
+        subLabel.numberOfLines = 3;
+
+        UIStackView *pad = [[UIStackView alloc] initWithArrangedSubviews:@[topRow, titleLabel, subLabel]];
+        pad.translatesAutoresizingMaskIntoConstraints = NO;
+        pad.axis = UILayoutConstraintAxisVertical;
+        pad.spacing = 6;
+        pad.userInteractionEnabled = NO;
+        [pad setCustomSpacing:10 afterView:topRow];
+
+        [_glass.contentView addSubview:pad];
         [NSLayoutConstraint activateConstraints:@[
             [_glass.topAnchor constraintEqualToAnchor:self.topAnchor],
             [_glass.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
             [_glass.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_glass.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
-            [row.topAnchor constraintEqualToAnchor:_glass.contentView.topAnchor constant:12],
-            [row.bottomAnchor constraintEqualToAnchor:_glass.contentView.bottomAnchor constant:-12],
-            [row.leadingAnchor constraintEqualToAnchor:_glass.contentView.leadingAnchor constant:14],
-            [row.trailingAnchor constraintEqualToAnchor:_glass.contentView.trailingAnchor constant:-14],
-            [self.heightAnchor constraintGreaterThanOrEqualToConstant:66],
+            [pad.topAnchor constraintEqualToAnchor:_glass.contentView.topAnchor constant:13],
+            [pad.bottomAnchor constraintEqualToAnchor:_glass.contentView.bottomAnchor constant:-13],
+            [pad.leadingAnchor constraintEqualToAnchor:_glass.contentView.leadingAnchor constant:13],
+            [pad.trailingAnchor constraintEqualToAnchor:_glass.contentView.trailingAnchor constant:-13],
+            [self.heightAnchor constraintGreaterThanOrEqualToConstant:124],
         ]];
         self.isAccessibilityElement = YES;
         self.accessibilityTraits = UIAccessibilityTraitButton;
@@ -4370,7 +4472,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     [super setHighlighted:highlighted];
     [UIView animateWithDuration:0.16 delay:0 usingSpringWithDamping:0.8 initialSpringVelocity:0.5 options:0 animations:^{
         self.alpha = highlighted ? 0.85 : 1.0;
-        self.transform = highlighted ? CGAffineTransformMakeScale(0.985, 0.985) : CGAffineTransformIdentity;
+        self.transform = highlighted ? CGAffineTransformMakeScale(0.975, 0.975) : CGAffineTransformIdentity;
     } completion:nil];
 }
 
@@ -4539,9 +4641,9 @@ static void wq_apply_design(void);
     btn.translatesAutoresizingMaskIntoConstraints = NO;
     UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    cfg.baseBackgroundColor = [UIColor colorWithRed:0.61 green:0.23 blue:0.21 alpha:0.42];
+    cfg.baseBackgroundColor = [UIColor colorWithRed:0.86 green:0.34 blue:0.42 alpha:0.24];
     cfg.baseForegroundColor = UIColor.whiteColor;
-    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:13.5 weight:UIImageSymbolWeightSemibold];
     cfg.image = [[UIImage systemImageNamed:symbol withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(0, 0, 0, 0);
     btn.configuration = cfg;
@@ -4549,13 +4651,13 @@ static void wq_apply_design(void);
     btn.accessibilityLabel = label;
     btn.layer.borderWidth = 0.75;
     btn.layer.borderColor = wq_theme_rim().CGColor;
-    btn.layer.cornerRadius = 18;
+    btn.layer.cornerRadius = 17;
     btn.clipsToBounds = YES;
     [btn addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
     wq_theme_add_spring_tap(btn);
     [NSLayoutConstraint activateConstraints:@[
-        [btn.widthAnchor constraintEqualToConstant:36],
-        [btn.heightAnchor constraintEqualToConstant:36],
+        [btn.widthAnchor constraintEqualToConstant:34],
+        [btn.heightAnchor constraintEqualToConstant:34],
     ]];
     return btn;
 }
@@ -4566,8 +4668,8 @@ static void wq_apply_design(void);
     _scroll.translatesAutoresizingMaskIntoConstraints = NO;
     _scroll.alwaysBounceVertical = YES;
     _scroll.showsVerticalScrollIndicator = NO;
-    _scroll.contentInset = UIEdgeInsetsMake(74, 0, 116, 0);
-    _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(74, 0, 116, 0);
+    _scroll.contentInset = UIEdgeInsetsMake(76, 0, 116, 0);
+    _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(76, 0, 116, 0);
     [self.view addSubview:_scroll];
 
     _contentStack = [[UIStackView alloc] initWithFrame:CGRectZero];
@@ -4589,40 +4691,42 @@ static void wq_apply_design(void);
         [_contentStack.widthAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.widthAnchor],
     ]];
 
-    // Floating Sleek Top Glass Header Bar
-    WQPrismGlassView *headerGlass = [[WQPrismGlassView alloc] initWithRadius:24];
+    // Floating Obsidian-Ruby Liquid Glass Capsule Header
+    WQPrismGlassView *headerGlass = [[WQPrismGlassView alloc] initWithRadius:26];
     _topHeader = headerGlass;
     [self.view addSubview:headerGlass];
 
-    WQZMonogramBadge *monogram = [[WQZMonogramBadge alloc] initWithSize:36];
+    WQZMonogramBadge *monogram = [[WQZMonogramBadge alloc] initWithSize:34];
     [monogram setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [monogram setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 
     UILabel *brandTitle = [UILabel new];
-    brandTitle.text = @"WQ Glass";
-    brandTitle.font = [UIFont systemFontOfSize:17.5 weight:UIFontWeightBold];
+    brandTitle.text = @"WQ GLASS";
+    brandTitle.font = [UIFont systemFontOfSize:15.5 weight:UIFontWeightHeavy];
     brandTitle.textColor = UIColor.whiteColor;
     brandTitle.adjustsFontSizeToFitWidth = YES;
-    brandTitle.minimumScaleFactor = 0.85;
+    brandTitle.minimumScaleFactor = 0.82;
 
     UILabel *verPill = [UILabel new];
-    verPill.text = [NSString stringWithFormat:@"v%@", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"4.0"];
-    verPill.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightBold];
+    verPill.text = [NSString stringWithFormat:@"v%@ · CRYSTAL", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"4.0"];
+    verPill.font = [UIFont monospacedSystemFontOfSize:9.5 weight:UIFontWeightBold];
     verPill.textColor = wq_theme_secondary_text();
 
     UIStackView *brandText = [[UIStackView alloc] initWithArrangedSubviews:@[brandTitle, verPill]];
     brandText.axis = UILayoutConstraintAxisVertical;
-    brandText.spacing = 0;
+    brandText.spacing = 1;
     [brandText setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisHorizontal];
 
     _statusPill = [UIView new];
     _statusPill.translatesAutoresizingMaskIntoConstraints = NO;
     _statusPill.layer.cornerRadius = 11;
     _statusPill.layer.cornerCurve = kCACornerCurveContinuous;
+    _statusPill.layer.borderWidth = 0.6;
+    _statusPill.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.25].CGColor;
 
     _statusLabel = [UILabel new];
     _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _statusLabel.font = [UIFont systemFontOfSize:10.5 weight:UIFontWeightSemibold];
+    _statusLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightBold];
     _statusLabel.textColor = UIColor.systemGreenColor;
     _statusLabel.adjustsFontSizeToFitWidth = YES;
     _statusLabel.minimumScaleFactor = 0.78;
@@ -4631,23 +4735,28 @@ static void wq_apply_design(void);
     [NSLayoutConstraint activateConstraints:@[
         [_statusLabel.topAnchor constraintEqualToAnchor:_statusPill.topAnchor constant:4],
         [_statusLabel.bottomAnchor constraintEqualToAnchor:_statusPill.bottomAnchor constant:-4],
-        [_statusLabel.leadingAnchor constraintEqualToAnchor:_statusPill.leadingAnchor constant:9],
-        [_statusLabel.trailingAnchor constraintEqualToAnchor:_statusPill.trailingAnchor constant:-9],
+        [_statusLabel.leadingAnchor constraintEqualToAnchor:_statusPill.leadingAnchor constant:8],
+        [_statusLabel.trailingAnchor constraintEqualToAnchor:_statusPill.trailingAnchor constant:-8],
     ]];
 
+    UIButton *jumpIconBtn = [self headerIconButton:@"arrow.forward.circle" label:WQLocalizedNullable(@"Go to Path") selector:@selector(goToPath)];
     UIButton *logIconBtn = [self headerIconButton:@"doc.plaintext" label:WQLocalizedNullable(@"Log") selector:@selector(openLog)];
     UIButton *gearIconBtn = [self headerIconButton:@"gearshape.fill" label:WQLocalizedNullable(@"Settings") selector:@selector(openSettings)];
-    [logIconBtn setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-    [gearIconBtn setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    UIStackView *actionRow = [[UIStackView alloc] initWithArrangedSubviews:@[jumpIconBtn, logIconBtn, gearIconBtn]];
+    actionRow.axis = UILayoutConstraintAxisHorizontal;
+    actionRow.spacing = 5;
+    actionRow.alignment = UIStackViewAlignmentCenter;
+    UIView *actionGlassGroup = wq_theme_glass_container(actionRow, 5);
+    [actionGlassGroup setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 
     UIView *spacer = [UIView new];
     [spacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
 
-    UIStackView *headerRow = [[UIStackView alloc] initWithArrangedSubviews:@[monogram, brandText, _statusPill, spacer, logIconBtn, gearIconBtn]];
+    UIStackView *headerRow = [[UIStackView alloc] initWithArrangedSubviews:@[monogram, brandText, _statusPill, spacer, actionGlassGroup]];
     headerRow.translatesAutoresizingMaskIntoConstraints = NO;
     headerRow.axis = UILayoutConstraintAxisHorizontal;
     headerRow.alignment = UIStackViewAlignmentCenter;
-    headerRow.spacing = 8;
+    headerRow.spacing = 7;
     [headerGlass.contentView addSubview:headerRow];
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
@@ -4679,31 +4788,23 @@ static void wq_apply_design(void);
     [self buildHeroWithWrapper:insetSection];
     [_contentStack setCustomSpacing:18 afterView:_heroView.superview ?: _heroView];
 
-    UIView *containersHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Containers"), @"Swipe deck"));
+    UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), @"2×2 Grid"));
+    [_contentStack addArrangedSubview:toolsHeader];
+    [_contentStack setCustomSpacing:10 afterView:toolsHeader];
+    [_contentStack addArrangedSubview:insetSection([self buildToolsRail])];
+    [_contentStack setCustomSpacing:18 afterView:[_contentStack.arrangedSubviews lastObject]];
+
+    UIView *containersHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Containers"), @"Bento"));
     [_contentStack addArrangedSubview:containersHeader];
     [_contentStack setCustomSpacing:10 afterView:containersHeader];
 
-    // Horizontal swipeable frosted-glass container card deck
-    UIScrollView *deckScroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
-    deckScroll.translatesAutoresizingMaskIntoConstraints = NO;
-    deckScroll.showsHorizontalScrollIndicator = NO;
-    deckScroll.clipsToBounds = NO;
-    deckScroll.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
-
+    // 2-Column Staggered Glass Bento Grid (replaces horizontal deck)
     _containersStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _containersStack.translatesAutoresizingMaskIntoConstraints = NO;
-    _containersStack.axis = UILayoutConstraintAxisHorizontal;
+    _containersStack.axis = UILayoutConstraintAxisVertical;
+    _containersStack.alignment = UIStackViewAlignmentFill;
     _containersStack.spacing = 12;
-    [deckScroll addSubview:_containersStack];
-    [NSLayoutConstraint activateConstraints:@[
-        [deckScroll.heightAnchor constraintGreaterThanOrEqualToConstant:158],
-        [_containersStack.topAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.topAnchor],
-        [_containersStack.bottomAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.bottomAnchor],
-        [_containersStack.leadingAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.leadingAnchor],
-        [_containersStack.trailingAnchor constraintEqualToAnchor:deckScroll.contentLayoutGuide.trailingAnchor],
-        [_containersStack.heightAnchor constraintEqualToAnchor:deckScroll.frameLayoutGuide.heightAnchor],
-    ]];
-    [_contentStack addArrangedSubview:deckScroll];
+    [_contentStack addArrangedSubview:insetSection(_containersStack)];
 
     _containersNoteLabel = [UILabel new];
     _containersNoteLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
@@ -4712,11 +4813,6 @@ static void wq_apply_design(void);
     _containersNoteLabel.numberOfLines = 0;
     UIView *noteWrap = insetSection(_containersNoteLabel);
     [_contentStack addArrangedSubview:noteWrap];
-
-    UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), nil));
-    [_contentStack addArrangedSubview:toolsHeader];
-    [_contentStack setCustomSpacing:10 afterView:toolsHeader];
-    [_contentStack addArrangedSubview:insetSection([self buildToolsRail])];
 
     UIView *favoritesHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Favorites"), nil));
     [_contentStack addArrangedSubview:favoritesHeader];
@@ -4730,30 +4826,74 @@ static void wq_apply_design(void);
 
 - (void)buildHeroWithWrapper:(UIView *(^)(UIView *))wrap
 {
-    WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:26];
+    WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:28];
     _heroView = glass;
 
+    // Frosted glass tag pill at top of Hero Spotlight
+    UIView *tagPill = [UIView new];
+    tagPill.translatesAutoresizingMaskIntoConstraints = NO;
+    tagPill.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.12];
+    tagPill.layer.cornerRadius = 11;
+    tagPill.layer.cornerCurve = kCACornerCurveContinuous;
+    tagPill.layer.borderWidth = 0.6;
+    tagPill.layer.borderColor = wq_theme_rim().CGColor;
+
+    UIView *tagDot = [UIView new];
+    tagDot.translatesAutoresizingMaskIntoConstraints = NO;
+    tagDot.backgroundColor = wq_theme_accent();
+    tagDot.layer.cornerRadius = 3;
+
     UILabel *eyebrow = [UILabel new];
-    eyebrow.text = @"CRIMSON LIQUID GLASS STUDIO";
-    eyebrow.font = [UIFont monospacedSystemFontOfSize:10.5 weight:UIFontWeightBold];
+    eyebrow.translatesAutoresizingMaskIntoConstraints = NO;
+    eyebrow.text = @"OBSIDIAN RUBY · LIQUID GLASS";
+    eyebrow.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightBold];
     eyebrow.textColor = wq_theme_secondary_text();
-    eyebrow.numberOfLines = 0;
+
+    [tagPill addSubview:tagDot];
+    [tagPill addSubview:eyebrow];
+    [NSLayoutConstraint activateConstraints:@[
+        [tagDot.widthAnchor constraintEqualToConstant:6],
+        [tagDot.heightAnchor constraintEqualToConstant:6],
+        [tagDot.leadingAnchor constraintEqualToAnchor:tagPill.leadingAnchor constant:9],
+        [tagDot.centerYAnchor constraintEqualToAnchor:tagPill.centerYAnchor],
+        [eyebrow.topAnchor constraintEqualToAnchor:tagPill.topAnchor constant:4],
+        [eyebrow.bottomAnchor constraintEqualToAnchor:tagPill.bottomAnchor constant:-4],
+        [eyebrow.leadingAnchor constraintEqualToAnchor:tagDot.trailingAnchor constant:6],
+        [eyebrow.trailingAnchor constraintEqualToAnchor:tagPill.trailingAnchor constant:-9],
+    ]];
 
     UILabel *title = [UILabel new];
     title.text = WQLocalizedNullable(@"All your containers, in one place.");
-    title.font = [UIFont systemFontOfSize:21 weight:UIFontWeightBold];
+    title.font = [UIFont systemFontOfSize:23 weight:UIFontWeightHeavy];
     title.adjustsFontForContentSizeCategory = YES;
     title.textColor = UIColor.whiteColor;
     title.numberOfLines = 0;
 
+    // Hardware telemetry tucked inside a translucent glass inset bar
+    UIView *specBar = [UIView new];
+    specBar.translatesAutoresizingMaskIntoConstraints = NO;
+    specBar.backgroundColor = [UIColor colorWithRed:0.08 green:0.01 blue:0.03 alpha:0.28];
+    specBar.layer.cornerRadius = 12;
+    specBar.layer.cornerCurve = kCACornerCurveContinuous;
+    specBar.layer.borderWidth = 0.5;
+    specBar.layer.borderColor = wq_theme_hairline().CGColor;
+
     _heroSubtitle = [UILabel new];
-    _heroSubtitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    _heroSubtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    _heroSubtitle.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     _heroSubtitle.adjustsFontForContentSizeCategory = YES;
     _heroSubtitle.textColor = wq_theme_secondary_text();
     _heroSubtitle.numberOfLines = 0;
     _heroSubtitle.text = wq_device_line();
+    [specBar addSubview:_heroSubtitle];
+    [NSLayoutConstraint activateConstraints:@[
+        [_heroSubtitle.topAnchor constraintEqualToAnchor:specBar.topAnchor constant:7],
+        [_heroSubtitle.bottomAnchor constraintEqualToAnchor:specBar.bottomAnchor constant:-7],
+        [_heroSubtitle.leadingAnchor constraintEqualToAnchor:specBar.leadingAnchor constant:10],
+        [_heroSubtitle.trailingAnchor constraintEqualToAnchor:specBar.trailingAnchor constant:-10],
+    ]];
 
-    // Primary CTA: white capsule with guaranteed #6B211E dark crimson foreground across all states
+    // Primary CTA: white capsule with guaranteed #5A0D1B dark ruby foreground across all states
     __weak typeof(self) weakSelf = self;
     _quickButton = [UIButton buttonWithType:UIButtonTypeSystem];
     wq_theme_style_primary_button(_quickButton, WQLocalizedNullable(@"Quick Check"), @"checkmark.shield.fill");
@@ -4774,11 +4914,14 @@ static void wq_apply_design(void);
     _heroButtons.alignment = UIStackViewAlignmentCenter;
     UIView *buttonGroup = wq_theme_glass_container(_heroButtons, 8);
 
-    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[eyebrow, title, _heroSubtitle, buttonGroup]];
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[tagPill, title, specBar, buttonGroup]];
     text.axis = UILayoutConstraintAxisVertical;
     text.alignment = UIStackViewAlignmentLeading;
-    text.spacing = 8;
+    text.spacing = 10;
     text.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [specBar.widthAnchor constraintEqualToAnchor:text.widthAnchor],
+    ]];
 
     [glass.contentView addSubview:text];
     [NSLayoutConstraint activateConstraints:@[
@@ -4794,9 +4937,9 @@ static void wq_apply_design(void);
 
 - (UIView *)buildToolsRail
 {
-    UIStackView *list = [[UIStackView alloc] initWithFrame:CGRectZero];
-    list.axis = UILayoutConstraintAxisVertical;
-    list.spacing = 10;
+    UIStackView *grid = [[UIStackView alloc] initWithFrame:CGRectZero];
+    grid.axis = UILayoutConstraintAxisVertical;
+    grid.spacing = 12;
 
     NSArray<NSArray<NSString *> *> *tools = @[
         @[@"Apps", @"App data backups, restores & info", @"square.grid.3x3.fill", @"sky", @""],
@@ -4804,18 +4947,28 @@ static void wq_apply_design(void);
         @[@"Go to Path…", @"Jump directly to any file or container", @"arrow.right.circle.fill", @"violet", @""],
         @[@"Backups", @"App backups, File backups & deleted", @"clock.arrow.circlepath", @"amber", @""],
     ];
+    NSMutableArray<WQPrismToolRow *> *pads = [NSMutableArray new];
     for (NSUInteger i = 0; i < tools.count; i++) {
         NSArray<NSString *> *t = tools[i];
-        WQPrismToolRow *row = [[WQPrismToolRow alloc] initWithTitle:WQLocalizedNullable(t[0])
+        WQPrismToolRow *pad = [[WQPrismToolRow alloc] initWithTitle:WQLocalizedNullable(t[0])
                                                            subtitle:t[1]
                                                              symbol:t[2]
                                                                tone:t[3]
                                                               badge:t[4]];
-        row.tag = (NSInteger)i;
-        [row addTarget:self action:@selector(openToolCard:) forControlEvents:UIControlEventTouchUpInside];
-        [list addArrangedSubview:row];
+        pad.tag = (NSInteger)i;
+        [pad addTarget:self action:@selector(openToolCard:) forControlEvents:UIControlEventTouchUpInside];
+        [pads addObject:pad];
     }
-    return list;
+    for (NSUInteger i = 0; i < pads.count; i += 2) {
+        UIStackView *row = [UIStackView new];
+        row.axis = UILayoutConstraintAxisHorizontal;
+        row.distribution = UIStackViewDistributionFillEqually;
+        row.spacing = 12;
+        [row addArrangedSubview:pads[i]];
+        if (i + 1 < pads.count) [row addArrangedSubview:pads[i + 1]];
+        [grid addArrangedSubview:row];
+    }
+    return grid;
 }
 
 - (UIView *)buildFavoritesRail
@@ -4827,15 +4980,16 @@ static void wq_apply_design(void);
     _favoritesStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _favoritesStack.translatesAutoresizingMaskIntoConstraints = NO;
     _favoritesStack.axis = UILayoutConstraintAxisHorizontal;
-    _favoritesStack.spacing = 8;
-    [rail addSubview:_favoritesStack];
+    _favoritesStack.spacing = 6;
+    UIView *favGroup = wq_theme_glass_container(_favoritesStack, 6);
+    [rail addSubview:favGroup];
     [NSLayoutConstraint activateConstraints:@[
         [rail.heightAnchor constraintGreaterThanOrEqualToConstant:44],
-        [_favoritesStack.topAnchor constraintEqualToAnchor:rail.contentLayoutGuide.topAnchor],
-        [_favoritesStack.bottomAnchor constraintEqualToAnchor:rail.contentLayoutGuide.bottomAnchor],
-        [_favoritesStack.leadingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.leadingAnchor],
-        [_favoritesStack.trailingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.trailingAnchor],
-        [_favoritesStack.heightAnchor constraintEqualToAnchor:rail.frameLayoutGuide.heightAnchor],
+        [favGroup.topAnchor constraintEqualToAnchor:rail.contentLayoutGuide.topAnchor],
+        [favGroup.bottomAnchor constraintEqualToAnchor:rail.contentLayoutGuide.bottomAnchor],
+        [favGroup.leadingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.leadingAnchor],
+        [favGroup.trailingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.trailingAnchor],
+        [favGroup.heightAnchor constraintEqualToAnchor:rail.frameLayoutGuide.heightAnchor],
     ]];
     return rail;
 }
@@ -4847,7 +5001,7 @@ static void wq_apply_design(void);
     stack.spacing = 10;
     [stack addArrangedSubview:WQPrismSectionHeaderView(WQLocalizedNullable(@"System"), nil)];
 
-    WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:22];
+    WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:24];
     UIStackView *rows = [[UIStackView alloc] initWithFrame:CGRectZero];
     rows.translatesAutoresizingMaskIntoConstraints = NO;
     rows.axis = UILayoutConstraintAxisVertical;
@@ -4856,8 +5010,8 @@ static void wq_apply_design(void);
     [NSLayoutConstraint activateConstraints:@[
         [rows.topAnchor constraintEqualToAnchor:glass.contentView.topAnchor constant:4],
         [rows.bottomAnchor constraintEqualToAnchor:glass.contentView.bottomAnchor constant:-4],
-        [rows.leadingAnchor constraintEqualToAnchor:glass.contentView.leadingAnchor constant:10],
-        [rows.trailingAnchor constraintEqualToAnchor:glass.contentView.trailingAnchor constant:-10],
+        [rows.leadingAnchor constraintEqualToAnchor:glass.contentView.leadingAnchor constant:12],
+        [rows.trailingAnchor constraintEqualToAnchor:glass.contentView.trailingAnchor constant:-12],
     ]];
     _systemRows = rows;
     [stack addArrangedSubview:glass];
@@ -4869,10 +5023,12 @@ static void wq_apply_design(void);
 
 - (UIView *)buildFooter
 {
+    WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:22];
+
     UILabel *version = [UILabel new];
     version.text = wq_app_version_line();
-    version.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightMedium];
-    version.textColor = wq_theme_secondary_text();
+    version.font = [UIFont monospacedSystemFontOfSize:10.5 weight:UIFontWeightBold];
+    version.textColor = wq_theme_primary_text();
     version.textAlignment = NSTextAlignmentCenter;
 
     UIButtonConfiguration *linkCfg = [UIButtonConfiguration plainButtonConfiguration];
@@ -4889,16 +5045,24 @@ static void wq_apply_design(void);
     creditCfg.attributedTitle = [[NSAttributedString alloc] initWithString:WQLocalized(@"Sandbox escape: worse_query by @forcequitOS")
         attributes:@{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2]}];
     creditCfg.buttonSize = UIButtonConfigurationSizeSmall;
-    creditCfg.baseForegroundColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.8];
+    creditCfg.baseForegroundColor = [wq_theme_secondary_text() colorWithAlphaComponent:0.85];
     UIButton *credit = [UIButton buttonWithConfiguration:creditCfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [UIApplication.sharedApplication openURL:[NSURL URLWithString:@"https://x.com/forcequitOS"] options:@{} completionHandler:nil];
     }]];
 
     UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[version, github, credit]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentCenter;
-    stack.spacing = 6;
-    return stack;
+    stack.spacing = 4;
+    [glass.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:glass.contentView.topAnchor constant:14],
+        [stack.bottomAnchor constraintEqualToAnchor:glass.contentView.bottomAnchor constant:-14],
+        [stack.leadingAnchor constraintEqualToAnchor:glass.contentView.leadingAnchor constant:14],
+        [stack.trailingAnchor constraintEqualToAnchor:glass.contentView.trailingAnchor constant:-14],
+    ]];
+    return glass;
 }
 
 - (void)rebuildLocations
@@ -4982,6 +5146,7 @@ static void wq_apply_design(void);
         [_containersStack removeArrangedSubview:view];
         [view removeFromSuperview];
     }
+    NSMutableArray<WQPrismCardView *> *cards = [NSMutableArray new];
     for (NSUInteger i = 0; i < _locations.count; i++) {
         NSArray<NSString *> *location = _locations[i];
         if ([location[0] isEqualToString:@"System Data"]) continue;
@@ -4996,8 +5161,20 @@ static void wq_apply_design(void);
         card.moreButton.menu = [self containerMenuForIndex:i];
         card.metaLabel.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
         card.metaLabel.textAlignment = NSTextAlignmentLeft;
-        [card.widthAnchor constraintEqualToConstant:176].active = YES;
-        [_containersStack addArrangedSubview:card];
+        [cards addObject:card];
+    }
+    for (NSUInteger i = 0; i < cards.count; i += 2) {
+        if (i + 1 < cards.count) {
+            UIStackView *row = [UIStackView new];
+            row.axis = UILayoutConstraintAxisHorizontal;
+            row.distribution = UIStackViewDistributionFillEqually;
+            row.spacing = 12;
+            [row addArrangedSubview:cards[i]];
+            [row addArrangedSubview:cards[i + 1]];
+            [_containersStack addArrangedSubview:row];
+        } else {
+            [_containersStack addArrangedSubview:cards[i]];
+        }
     }
     BOOL showNote = !wq_system_areas_reachable();
     _containersNoteLabel.superview.hidden = !showNote;
@@ -5029,7 +5206,7 @@ static void wq_apply_design(void);
         cfg.title = entry[@"title"] ?: path.lastPathComponent;
         cfg.image = [[UIImage systemImageNamed:@"star.fill"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         cfg.imageColorTransformer = ^UIColor *(UIColor *__unused color) {
-            return UIColor.systemOrangeColor;
+            return wq_theme_accent();
         };
         cfg.imagePadding = 5;
         cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 12, 7, 12);
@@ -5038,7 +5215,7 @@ static void wq_apply_design(void);
         UIButton *button = [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
             [weakSelf openPath:path title:entry[@"title"] ?: path.lastPathComponent];
         }]];
-        button.tintColor = UIColor.systemOrangeColor;
+        button.tintColor = wq_theme_accent();
         wq_theme_add_spring_tap(button);
         [_favoritesStack addArrangedSubview:button];
     }
@@ -5760,12 +5937,13 @@ static NSString *const kWQTroubleshootingFooter =
 
     self.viewControllers = @[homeNav, appsNav, cleanNav, vaultNav];
     self.selectedIndex = 0;
-    // iOS 26 floating Liquid Glass tab bar: glowing crimson active selection
-    // pill (#9B2627) with pure white active tab and blush (#E6B8B5) inactive
-    // tabs; shrinks while scrolling down so crimson content refracts beneath.
+    // iOS 26 floating Liquid Glass tab bar: glowing obsidian-ruby active selection
+    // pill (#B81D3A) with pure white active tab and rose-pearl (#F2C6CC) inactive
+    // tabs; shrinks while scrolling down so crystal content refracts beneath.
     UITabBarAppearance *tabAppearance = [UITabBarAppearance new];
     [tabAppearance configureWithDefaultBackground];
-    tabAppearance.selectionIndicatorTintColor = [UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:0.90];
+    tabAppearance.backgroundColor = [UIColor colorWithRed:0.16 green:0.03 blue:0.07 alpha:0.35];
+    tabAppearance.selectionIndicatorTintColor = [wq_theme_active_pill() colorWithAlphaComponent:0.94];
     for (UITabBarItemAppearance *item in @[
         tabAppearance.stackedLayoutAppearance,
         tabAppearance.inlineLayoutAppearance,

@@ -59,6 +59,8 @@
     CGFloat _appsLayoutWidth;
 }
 
+- (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
+
 - (instancetype)initRestoringBundleID:(NSString *)bundleID
 {
     if ((self = [self init])) _restoreBundleID = [bundleID copy];
@@ -635,15 +637,16 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     UIStackView *pillStack = [UIStackView new];
     pillStack.translatesAutoresizingMaskIntoConstraints = NO;
     pillStack.axis = UILayoutConstraintAxisHorizontal;
-    pillStack.spacing = 8;
+    pillStack.spacing = 6;
     pillStack.alignment = UIStackViewAlignmentCenter;
-    [pillScroll addSubview:pillStack];
+    UIView *pillGroup = wq_theme_glass_container(pillStack, 6);
+    [pillScroll addSubview:pillGroup];
     [NSLayoutConstraint activateConstraints:@[
-        [pillStack.topAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.topAnchor constant:4],
-        [pillStack.bottomAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.bottomAnchor constant:-6],
-        [pillStack.leadingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.leadingAnchor],
-        [pillStack.trailingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.trailingAnchor],
-        [pillStack.heightAnchor constraintEqualToConstant:34],
+        [pillGroup.topAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.topAnchor constant:4],
+        [pillGroup.bottomAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.bottomAnchor constant:-6],
+        [pillGroup.leadingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.leadingAnchor],
+        [pillGroup.trailingAnchor constraintEqualToAnchor:pillScroll.contentLayoutGuide.trailingAnchor],
+        [pillGroup.heightAnchor constraintEqualToConstant:34],
     ]];
 
     _filterPills = [NSMutableArray new];
@@ -1102,6 +1105,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"app"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"app"];
+    cell.backgroundColor = [UIColor clearColor];
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
     if (_busy && !_apps.count) {
         c.text = WQLocalizedNullable(@"Scanning…");
