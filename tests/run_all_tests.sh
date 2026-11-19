@@ -120,7 +120,7 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
         cat "$OUT/ios-syntax.log" >&2
         exit 1
     }
-    xcrun --sdk iphoneos clang "${FLAGS[@]}" -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers -lsqlite3 -lz \
+    xcrun --sdk iphoneos clang "${FLAGS[@]}" -framework UIKit -framework QuartzCore -framework Foundation -framework Security -framework UniformTypeIdentifiers -lsqlite3 -lz \
         "${SOURCES[@]}" -o "$OUT/WQFiles-link-check" > "$OUT/ios-link.log" 2>&1 || {
         cat "$OUT/ios-link.log" >&2
         exit 1
