@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Generate the Sci-Fi Glacier Cyber-Shield "WQ" app icon set (Pillow).
+"""Generate the iPhone Duo app icon set (Pillow).
 
+Two-tone split squircle: Natural Titanium (left) and Anodized Space Black
+(right) with a central hinge hairline, a frosted optical-glass "WQ" monogram
+and a fine Sapphire (#0A84FF) edge highlight.
+
+(Script keeps its historical file name; build.sh references it.)
 Usage: python3 scripts/generate_scifi_icon.py [output_dir]
 """
-import math
 import os
 import sys
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
-S = 2048  # supersampled canvas
-CYAN = (0, 245, 255)
-AURORA = (79, 255, 176)
+S = 2048
+SAPPHIRE = (10, 132, 255)
+ICE = (90, 200, 250)
 
 SIZES = {
     "AppIcon1024.png": 1024,
@@ -24,23 +28,17 @@ SIZES = {
 }
 
 
-def vgradient(size, top, bottom):
-    img = Image.new("RGB", (size, size))
+def gradient(w, h, top, bottom, diagonal=False):
+    img = Image.new("RGB", (w, h))
     px = ImageDraw.Draw(img)
-    for y in range(size):
-        t = y / (size - 1)
-        px.line([(0, y), (size, y)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)))
+    n = h
+    for y in range(n):
+        t = y / (n - 1)
+        px.line([(0, y), (w, y)], fill=tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3)))
     return img
 
 
-def glow(layer, radius, strength=1.0):
-    blur = layer.filter(ImageFilter.GaussianBlur(radius))
-    if strength != 1.0:
-        blur = blur.point(lambda v: min(255, int(v * strength)))
-    return blur
-
-
-def find_font(size):
+def font(size):
     for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
               "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
               "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -53,76 +51,78 @@ def find_font(size):
     return ImageFont.load_default()
 
 
-def shield_points(cx, cy, w, h):
-    return [(cx, cy - h / 2), (cx + w / 2, cy - h * 0.34), (cx + w * 0.46, cy + h * 0.14),
-            (cx, cy + h / 2), (cx - w * 0.46, cy + h * 0.14), (cx - w / 2, cy - h * 0.34)]
-
-
 def build():
     c = S // 2
-    # Deep sub-zero background #050E1A -> #0D253A
-    img = vgradient(S, (5, 14, 26), (13, 37, 58)).convert("RGBA")
+    # Left: Natural Titanium. Right: Anodized Space Black.
+    img = Image.new("RGB", (S, S))
+    img.paste(gradient(c, S, (196, 190, 178), (128, 123, 114)), (0, 0))
+    img.paste(gradient(c, S, (26, 29, 36), (9, 10, 13)), (c, 0))
+    img = img.convert("RGBA")
 
-    # Brushed metallic ice-silver beveled outer frame
-    frame = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    fd = ImageDraw.Draw(frame)
-    for i in range(0, 56):
-        t = i / 55
-        v = int(228 - 120 * t)
-        fd.rounded_rectangle([i, i, S - 1 - i, S - 1 - i], radius=int(S * 0.22) - i,
-                             outline=(v - 12, v, min(255, v + 18), 255), width=1)
-    img = Image.alpha_composite(img, frame)
+    # Brushed texture on the titanium half
+    brush = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(brush)
+    for y in range(0, S, 4):
+        a = 10 if (y // 4) % 3 == 0 else 0
+        if a:
+            bd.line([(0, y), (c, y)], fill=(255, 255, 255, a), width=2)
+    img = Image.alpha_composite(img, brush)
 
-    # Concentric HUD targeting rings
-    rings = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    rd = ImageDraw.Draw(rings)
-    for r, col, wd, a in [(860, CYAN, 6, 150), (760, AURORA, 10, 190), (660, CYAN, 4, 120), (560, CYAN, 8, 170)]:
-        rd.ellipse([c - r, c - r, c + r, c + r], outline=col + (a,), width=wd)
-    for k in range(48):  # tick marks
-        ang = math.radians(k * 7.5)
-        r0, r1 = (820, 880) if k % 4 == 0 else (845, 880)
-        rd.line([(c + r0 * math.cos(ang), c + r0 * math.sin(ang)),
-                 (c + r1 * math.cos(ang), c + r1 * math.sin(ang))], fill=CYAN + (200,), width=7)
-    for a0, a1 in [(200, 250), (20, 70)]:  # bright arc segments
-        rd.arc([c - 760, c - 760, c + 760, c + 760], a0, a1, fill=AURORA + (255,), width=18)
-    img = Image.alpha_composite(img, glow(rings, 22, 1.4))
-    img = Image.alpha_composite(img, rings)
+    # Central hinge hairline: dark core with light edge.
+    hinge = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(hinge)
+    hd.rectangle([c - 5, 0, c + 4, S], fill=(0, 0, 0, 150))
+    hd.rectangle([c - 7, 0, c - 6, S], fill=(255, 255, 255, 90))
+    hd.rectangle([c + 5, 0, c + 6, S], fill=(255, 255, 255, 40))
+    img = Image.alpha_composite(img, hinge)
 
-    # Holographic cyber shield
-    sh = shield_points(c, c + 10, 760, 880)
-    body = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(body).polygon(sh, fill=(10, 40, 66, 235))
-    img = Image.alpha_composite(img, body)
+    # Sapphire squircle edge highlight (fine, inset), with soft glow.
     edge = Image.new("RGBA", (S, S), (0, 0, 0, 0))
     ed = ImageDraw.Draw(edge)
-    ed.line(sh + [sh[0]], fill=CYAN + (255,), width=16, joint="curve")
-    inner = shield_points(c, c + 10, 690, 800)
-    ed.line(inner + [inner[0]], fill=(200, 250, 255, 150), width=5, joint="curve")
-    img = Image.alpha_composite(img, glow(edge, 18, 1.6))
+    ed.rounded_rectangle([46, 46, S - 47, S - 47], radius=470, outline=SAPPHIRE + (255,), width=10)
+    glow = edge.filter(ImageFilter.GaussianBlur(26))
+    img = Image.alpha_composite(img, glow)
     img = Image.alpha_composite(img, edge)
 
-    # Crystalline glowing "WQ"
-    font = find_font(430)
-    txt = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    # Frosted optical-glass "WQ" monogram
+    f = font(520)
+    txt = Image.new("L", (S, S), 0)
     td = ImageDraw.Draw(txt)
-    box = td.textbbox((0, 0), "WQ", font=font)
+    box = td.textbbox((0, 0), "WQ", font=f)
     tx = c - (box[2] - box[0]) / 2 - box[0]
-    ty = c + 10 - (box[3] - box[1]) / 2 - box[1]
-    td.text((tx, ty), "WQ", font=font, fill=(235, 255, 255, 255))
-    mask = txt.split()[3]
-    tint = Image.new("RGBA", (S, S), CYAN + (0,))
-    tint.putalpha(mask)
-    img = Image.alpha_composite(img, glow(tint, 30, 2.0))
-    # vertical ice gradient inside letters
-    grad = vgradient(S, (255, 255, 255), (128, 240, 255)).convert("RGBA")
-    grad.putalpha(mask)
-    img = Image.alpha_composite(img, grad)
+    ty = c - (box[3] - box[1]) / 2 - box[1]
+    td.text((tx, ty), "WQ", font=f, fill=255)
 
-    # Specular top highlight
+    # soft drop shadow
+    shadow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    shadow.putalpha(txt.filter(ImageFilter.GaussianBlur(28)).point(lambda v: int(v * 0.55)))
+    shadow = ImageChops.offset(shadow, 0, 22)
+    img = Image.alpha_composite(img, shadow)
+
+    # glass body: translucent white with vertical sheen
+    glass = gradient(S, S, (255, 255, 255), (205, 225, 245)).convert("RGBA")
+    glass.putalpha(txt.point(lambda v: int(v * 0.62)))
+    img = Image.alpha_composite(img, glass)
+
+    # crisp specular rim: letters minus slightly-eroded letters
+    eroded = txt.filter(ImageFilter.MinFilter(9))
+    rim = ImageChops.subtract(txt, eroded)
+    rimlayer = Image.new("RGBA", (S, S), (255, 255, 255, 0))
+    rimlayer.putalpha(rim.point(lambda v: int(v * 0.85)))
+    img = Image.alpha_composite(img, rimlayer)
+
+    # sapphire inner glow tint on the right half of the letters
+    tint = Image.new("RGBA", (S, S), ICE + (0,))
+    half = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(half).rectangle([c, 0, S, S], fill=70)
+    tint.putalpha(ImageChops.multiply(txt, half).filter(ImageFilter.GaussianBlur(3)))
+    img = Image.alpha_composite(img, tint)
+
+    # top specular sweep
     hl = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(hl).ellipse([-S * 0.2, -S * 0.75, S * 1.2, S * 0.28], fill=(220, 250, 255, 26))
+    ImageDraw.Draw(hl).ellipse([-S * 0.25, -S * 0.8, S * 1.25, S * 0.30], fill=(255, 255, 255, 20))
     img = Image.alpha_composite(img, hl)
-    return img.convert("RGB")  # iOS icons must be opaque, system applies the mask
+    return img.convert("RGB")
 
 
 def main():
