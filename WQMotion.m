@@ -12,6 +12,13 @@ const CGFloat kWQMotionSpringDamping = 0.45;
 
 static const void *kWQMotionPressKey = &kWQMotionPressKey;
 static const void *kWQMotionAnimatorKey = &kWQMotionAnimatorKey;
+static const void *kWQMotionScrollStateKey = &kWQMotionScrollStateKey;
+static const void *kWQMotionAuroraOverlayKey = &kWQMotionAuroraOverlayKey;
+static const void *kWQMotionHorizontalDetentKey = &kWQMotionHorizontalDetentKey;
+static const void *kWQMotionScanSweepKey = &kWQMotionScanSweepKey;
+static const void *kWQMotionBracketsKey = &kWQMotionBracketsKey;
+static const void *kWQMotionRollupKey = &kWQMotionRollupKey;
+static const void *kWQMotionRollupLastValKey = &kWQMotionRollupLastValKey;
 
 BOOL wq_motion_reduced(void)
 {
@@ -72,6 +79,7 @@ static UIViewPropertyAnimator *wq_motion_bezier(NSTimeInterval duration, void (^
 @interface WQMotionPressTarget : NSObject <UIGestureRecognizerDelegate>
 @property (nonatomic, weak) UIView *view;
 @property (nonatomic) CGFloat maxTiltAngle;
+@property (nonatomic) BOOL pressed;
 @property (nonatomic, strong, nullable) CAGradientLayer *sheenLayer;
 - (void)handle:(UILongPressGestureRecognizer *)gesture;
 @end
@@ -153,6 +161,7 @@ static UIViewPropertyAnimator *wq_motion_bezier(NSTimeInterval duration, void (^
     CGFloat scale = wq_motion_reduced() ? 0.99 : kWQMotionPressScale;
     switch (gesture.state) {
         case UIGestureRecognizerStateBegan: {
+            self.pressed = YES;
             UIViewPropertyAnimator *old = objc_getAssociatedObject(view, kWQMotionAnimatorKey);
             [old stopAnimation:YES];
             CATransform3D target = [self tiltTransformForPoint:pt inBounds:view.bounds scale:scale];
@@ -182,6 +191,7 @@ static UIViewPropertyAnimator *wq_motion_bezier(NSTimeInterval duration, void (^
         case UIGestureRecognizerStateEnded:
         case UIGestureRecognizerStateCancelled:
         case UIGestureRecognizerStateFailed: {
+            self.pressed = NO;
             UIViewPropertyAnimator *old = objc_getAssociatedObject(view, kWQMotionAnimatorKey);
             [old stopAnimation:YES];
             UIViewPropertyAnimator *up = wq_motion_spring_physics(kWQMotionSpringResponse, kWQMotionSpringDamping, 4.0, ^{
@@ -373,6 +383,30 @@ void wq_motion_morph_layout(UIView *container, void (^changes)(void))
     [a startAnimation];
 }
 
+void wq_motion_spring_morph(UIView *container, void (^changes)(void), void (^completion)(void))
+{
+    if (!container) {
+        if (changes) changes();
+        if (completion) completion();
+        return;
+    }
+    UIView *target = container.superview ?: container;
+    if (wq_motion_reduced() || !container.window) {
+        if (changes) changes();
+        [target layoutIfNeeded];
+        if (completion) completion();
+        return;
+    }
+    UIViewPropertyAnimator *a = wq_motion_spring_physics(0.32, 0.72, 0, ^{
+        if (changes) changes();
+        [target layoutIfNeeded];
+    });
+    if (completion) {
+        [a addCompletion:^(UIViewAnimatingPosition __unused pos) { completion(); }];
+    }
+    [a startAnimation];
+}
+
 // Reflective icy top-edge glaze inside Glacier Edge floating docks.
 @interface WQGlacierDockGlazeView : UIView
 @end
@@ -473,6 +507,20 @@ void wq_motion_install_dock(UIView *dock, UIViewController *host, UIScrollView *
     if (scroll) wq_theme_apply_scroll_insets(scroll, 96.0);
 }
 
+void wq_motion_install_corner_rail(UIView *rail, UIViewController *host, UIScrollView *scroll, CGFloat bottomOffset)
+{
+    [host.view addSubview:rail];
+    rail.layer.zPosition = 500;
+    UILayoutGuide *horizGuide = [host.view isKindOfClass:UIScrollView.class]
+        ? ((UIScrollView *)host.view).frameLayoutGuide : host.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [rail.trailingAnchor constraintEqualToAnchor:horizGuide.trailingAnchor constant:-14],
+        [rail.bottomAnchor constraintEqualToAnchor:host.view.safeAreaLayoutGuide.bottomAnchor constant:-bottomOffset],
+        [rail.leadingAnchor constraintGreaterThanOrEqualToAnchor:horizGuide.leadingAnchor constant:14],
+    ]];
+    if (scroll) wq_theme_apply_scroll_insets(scroll, MAX(96.0, bottomOffset + 78.0));
+}
+
 void wq_motion_set_visible(UIVisualEffectView *glass, BOOL visible, BOOL animated)
 {
     if (!glass) return;
@@ -493,10 +541,645 @@ void wq_motion_set_visible(UIVisualEffectView *glass, BOOL visible, BOOL animate
     if (visible) glass.hidden = NO;
     if (!animated) { apply(); glass.hidden = !visible; return; }
     UIViewPropertyAnimator *a = visible
-        ? wq_motion_spring_physics(0.34, 0.72, 0, apply)
+        ? wq_motion_spring_physics(0.32, 0.72, 0, apply)
         : wq_motion_bezier(0.24, apply);
     [a addCompletion:^(UIViewAnimatingPosition __unused p) { if (!visible) glass.hidden = YES; }];
     [a startAnimation];
+}
+
+#pragma mark - 120Hz Sci-Fi Scrolling Choreography
+
+@interface WQMotionScrollState : NSObject
+@property (nonatomic) CGFloat lastOffsetY;
+@property (nonatomic) CFTimeInterval lastTimestamp;
+@property (nonatomic) CGFloat smoothedVelocity;
+@property (nonatomic) BOOL hasOffset;
+@property (nonatomic) NSInteger lastDetent;
+@property (nonatomic) BOOL hasDetent;
+@property (nonatomic) CFTimeInterval lastDetentTime;
+@property (nonatomic, strong) UISelectionFeedbackGenerator *detentGenerator;
+@end
+
+@implementation WQMotionScrollState
+- (instancetype)init
+{
+    if ((self = [super init])) {
+        _detentGenerator = [UISelectionFeedbackGenerator new];
+        [_detentGenerator prepare];
+    }
+    return self;
+}
+@end
+
+static WQMotionScrollState *wq_motion_scroll_state(UIScrollView *scrollView)
+{
+    WQMotionScrollState *state = objc_getAssociatedObject(scrollView, kWQMotionScrollStateKey);
+    if (!state) {
+        state = [WQMotionScrollState new];
+        objc_setAssociatedObject(scrollView, kWQMotionScrollStateKey, state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return state;
+}
+
+@interface WQAuroraEdgeOverlayView : UIView
+@property (nonatomic, strong) CAGradientLayer *topGlow;
+@property (nonatomic, strong) CAGradientLayer *bottomGlow;
+- (void)setTopIntensity:(CGFloat)top bottomIntensity:(CGFloat)bottom animated:(BOOL)animated;
+@end
+
+@implementation WQAuroraEdgeOverlayView
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = UIColor.clearColor;
+        self.layer.zPosition = 420;
+
+        _topGlow = [CAGradientLayer layer];
+        _topGlow.startPoint = CGPointMake(0.5, 0.0);
+        _topGlow.endPoint = CGPointMake(0.5, 1.0);
+        _topGlow.colors = @[
+            (id)[wq_theme_accent() colorWithAlphaComponent:0.42].CGColor,
+            (id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.16].CGColor,
+            (id)[UIColor clearColor].CGColor,
+        ];
+        _topGlow.locations = @[@0.0, @0.42, @1.0];
+        _topGlow.opacity = 0.0f;
+        [self.layer addSublayer:_topGlow];
+
+        _bottomGlow = [CAGradientLayer layer];
+        _bottomGlow.startPoint = CGPointMake(0.5, 1.0);
+        _bottomGlow.endPoint = CGPointMake(0.5, 0.0);
+        _bottomGlow.colors = @[
+            (id)[wq_theme_accent() colorWithAlphaComponent:0.42].CGColor,
+            (id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.16].CGColor,
+            (id)[UIColor clearColor].CGColor,
+        ];
+        _bottomGlow.locations = @[@0.0, @0.42, @1.0];
+        _bottomGlow.opacity = 0.0f;
+        [self.layer addSublayer:_bottomGlow];
+    }
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    CGFloat w = self.bounds.size.width;
+    CGFloat h = self.bounds.size.height;
+    CGFloat topInset = self.safeAreaInsets.top;
+    CGFloat bottomInset = self.safeAreaInsets.bottom;
+    CGFloat band = 34.0;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _topGlow.frame = CGRectMake(0, MAX(0, topInset - 4.0), w, band);
+    _bottomGlow.frame = CGRectMake(0, MAX(0, h - bottomInset - band + 4.0), w, band);
+    [CATransaction commit];
+}
+
+- (void)setTopIntensity:(CGFloat)top bottomIntensity:(CGFloat)bottom animated:(BOOL)animated
+{
+    float topVal = (float)MAX(0.0, MIN(0.65, top));
+    float botVal = (float)MAX(0.0, MIN(0.65, bottom));
+    [CATransaction begin];
+    if (!animated) {
+        [CATransaction setDisableActions:YES];
+    } else {
+        [CATransaction setAnimationDuration:0.30];
+    }
+    _topGlow.opacity = topVal;
+    _bottomGlow.opacity = botVal;
+    [CATransaction commit];
+}
+
+@end
+
+static WQAuroraEdgeOverlayView *wq_motion_aurora_overlay(UIScrollView *scrollView, UIView *hostView)
+{
+    if (!hostView) return nil;
+    WQAuroraEdgeOverlayView *overlay = objc_getAssociatedObject(hostView, kWQMotionAuroraOverlayKey);
+    if (!overlay) {
+        overlay = [[WQAuroraEdgeOverlayView alloc] initWithFrame:hostView.bounds];
+        overlay.translatesAutoresizingMaskIntoConstraints = NO;
+        [hostView addSubview:overlay];
+        if ([hostView isKindOfClass:UIScrollView.class]) {
+            UILayoutGuide *frameGuide = ((UIScrollView *)hostView).frameLayoutGuide;
+            [NSLayoutConstraint activateConstraints:@[
+                [overlay.topAnchor constraintEqualToAnchor:frameGuide.topAnchor],
+                [overlay.bottomAnchor constraintEqualToAnchor:frameGuide.bottomAnchor],
+                [overlay.leadingAnchor constraintEqualToAnchor:frameGuide.leadingAnchor],
+                [overlay.trailingAnchor constraintEqualToAnchor:frameGuide.trailingAnchor],
+            ]];
+        } else {
+            [NSLayoutConstraint activateConstraints:@[
+                [overlay.topAnchor constraintEqualToAnchor:hostView.topAnchor],
+                [overlay.bottomAnchor constraintEqualToAnchor:hostView.bottomAnchor],
+                [overlay.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor],
+                [overlay.trailingAnchor constraintEqualToAnchor:hostView.trailingAnchor],
+            ]];
+        }
+        objc_setAssociatedObject(hostView, kWQMotionAuroraOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    } else if (overlay.superview == hostView) {
+        [hostView bringSubviewToFront:overlay];
+    }
+    (void)scrollView;
+    return overlay;
+}
+
+static void wq_motion_tint_focal_rim(UIView *view, CGFloat focus)
+{
+    UIView *rim = wq_motion_rim_view(view, 1);
+    if (!rim) return;
+    // Smoothly brighten rim from icy-teal (0.20) toward luminous glacial cyan/silver (0.56) at focal center.
+    CGFloat t = MAX(0.0, MIN(1.0, focus));
+    CGFloat r = 0.50 + 0.36 * t;
+    CGFloat g = 0.94 + 0.06 * t;
+    CGFloat b = 1.0;
+    CGFloat a = 0.22 + 0.34 * t * t;
+    rim.layer.borderColor = [UIColor colorWithRed:r green:g blue:b alpha:a].CGColor;
+}
+
+void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView *> *views)
+{
+    if (!scrollView || !views.count) return;
+    BOOL reduced = wq_motion_reduced();
+    CGRect visibleRect = CGRectMake(scrollView.contentOffset.x,
+                                    scrollView.contentOffset.y + scrollView.adjustedContentInset.top,
+                                    scrollView.bounds.size.width,
+                                    MAX(1.0, scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
+    CGFloat viewportMidY = CGRectGetMidY(visibleRect);
+    CGFloat halfSpan = MAX(120.0, visibleRect.size.height * 0.54);
+    const CGFloat maxPitch = (CGFloat)(3.5 * M_PI / 180.0);
+
+    for (UIView *v in views) {
+        if (!v || v.hidden || !v.superview) continue;
+        WQMotionPressTarget *press = objc_getAssociatedObject(v, kWQMotionPressKey);
+        if (press && press.pressed) continue;
+        if (reduced) {
+            if (!CATransform3DIsIdentity(v.transform3D)) {
+                v.transform3D = CATransform3DIdentity;
+            }
+            continue;
+        }
+        // Compute un-transformed layout center in scrollView coordinates (frame shifts when rotated).
+        CGPoint centerInScroll = [v.superview convertPoint:v.center toView:scrollView];
+        CGFloat dist = centerInScroll.y - viewportMidY;
+        CGFloat norm = MAX(-1.0, MIN(1.0, dist / halfSpan));
+        CGFloat focus = 1.0 - fabs(norm);
+        CGFloat scale = 0.96 + 0.04 * focus;
+
+        CATransform3D t = CATransform3DIdentity;
+        t.m34 = -1.0 / 900.0;
+        t = CATransform3DRotate(t, norm * maxPitch, 1.0, 0.0, 0.0);
+        t = CATransform3DScale(t, scale, scale, 1.0);
+        v.transform3D = t;
+
+        UIView *rimTarget = [v isKindOfClass:UITableViewCell.class] ? ((UITableViewCell *)v).backgroundView : v;
+        if (rimTarget) wq_motion_tint_focal_rim(rimTarget, focus);
+    }
+}
+
+void wq_motion_apply_scroll_wave(UIScrollView *scrollView)
+{
+    if (!scrollView) return;
+    NSArray<UIView *> *cells = nil;
+    if ([scrollView isKindOfClass:UITableView.class]) {
+        cells = [(UITableView *)scrollView visibleCells];
+    } else if ([scrollView isKindOfClass:UICollectionView.class]) {
+        cells = [(UICollectionView *)scrollView visibleCells];
+    }
+    if (cells.count) wq_motion_apply_scroll_wave_views(scrollView, cells);
+}
+
+void wq_motion_update_scroll_aurora(UIScrollView *scrollView, UIView *hostView)
+{
+    if (!scrollView || !hostView) return;
+    WQAuroraEdgeOverlayView *overlay = wq_motion_aurora_overlay(scrollView, hostView);
+    if (!overlay) return;
+    if (wq_motion_reduced()) {
+        [overlay setTopIntensity:0 bottomIntensity:0 animated:NO];
+        return;
+    }
+    WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
+    CFTimeInterval now = CACurrentMediaTime();
+    CGFloat y = scrollView.contentOffset.y;
+    if (!state.hasOffset) {
+        state.lastOffsetY = y;
+        state.lastTimestamp = now;
+        state.hasOffset = YES;
+        return;
+    }
+    CFTimeInterval dt = now - state.lastTimestamp;
+    if (dt < 0.002) return;
+    CGFloat rawVel = (y - state.lastOffsetY) / (CGFloat)dt;   // pts/sec (>0 scrolling down)
+    state.lastOffsetY = y;
+    state.lastTimestamp = now;
+    if (dt > 0.15) state.smoothedVelocity = 0;
+    state.smoothedVelocity = state.smoothedVelocity * 0.68 + rawVel * 0.32;
+
+    CGFloat mag = fabs(state.smoothedVelocity);
+    CGFloat intensity = MIN(0.58, MAX(0.0, (mag - 120.0) / 1700.0));
+    CGFloat topGlow = state.smoothedVelocity < 0 ? intensity : intensity * 0.18;
+    CGFloat botGlow = state.smoothedVelocity > 0 ? intensity : intensity * 0.18;
+    [overlay setTopIntensity:topGlow bottomIntensity:botGlow animated:NO];
+}
+
+void wq_motion_settle_scroll_aurora(UIScrollView *scrollView, UIView *hostView)
+{
+    if (!scrollView || !hostView) return;
+    WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
+    state.smoothedVelocity = 0;
+    WQAuroraEdgeOverlayView *overlay = objc_getAssociatedObject(hostView, kWQMotionAuroraOverlayKey);
+    if (overlay) [overlay setTopIntensity:0 bottomIntensity:0 animated:YES];
+}
+
+void wq_motion_apply_header_parallax(UIScrollView *scrollView, UIView *headerView)
+{
+    if (!scrollView || !headerView) return;
+    if (wq_motion_reduced()) {
+        if (!CGAffineTransformIsIdentity(headerView.transform)) {
+            headerView.transform = CGAffineTransformIdentity;
+        }
+        return;
+    }
+    CGFloat scrollY = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
+    CGFloat shift = 0;
+    if (scrollY > 0) {
+        // 0.35x vertical parallax depth as content glides over/past the header.
+        shift = MIN(36.0, scrollY * 0.35);
+    } else if (scrollY < 0) {
+        shift = MAX(-14.0, scrollY * 0.20);
+    }
+    headerView.transform = CGAffineTransformMakeTranslation(0, shift);
+}
+
+void wq_motion_scroll_detent(UIScrollView *scrollView, NSInteger detentIndex)
+{
+    if (!scrollView) return;
+    WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
+    if (!state.hasDetent) {
+        state.lastDetent = detentIndex;
+        state.hasDetent = YES;
+        return;
+    }
+    if (detentIndex == state.lastDetent) return;
+    state.lastDetent = detentIndex;
+    if (!scrollView.dragging && !scrollView.decelerating) return;
+    CFTimeInterval now = CACurrentMediaTime();
+    if (now - state.lastDetentTime < 0.075) return;
+    state.lastDetentTime = now;
+    [state.detentGenerator selectionChanged];
+    [state.detentGenerator prepare];
+}
+
+@interface WQMotionHorizontalDetentDelegate : NSObject <UIScrollViewDelegate>
+@property (nonatomic) CGFloat stepWidth;
+@end
+
+@implementation WQMotionHorizontalDetentDelegate
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    CGFloat step = MAX(24.0, self.stepWidth);
+    NSInteger bucket = (NSInteger)llround((scrollView.contentOffset.x + scrollView.adjustedContentInset.left) / step);
+    wq_motion_scroll_detent(scrollView, bucket);
+}
+@end
+
+void wq_motion_attach_horizontal_detents(UIScrollView *scrollView, CGFloat stepWidth)
+{
+    if (!scrollView) return;
+    WQMotionHorizontalDetentDelegate *delegate = [WQMotionHorizontalDetentDelegate new];
+    delegate.stepWidth = stepWidth > 0 ? stepWidth : 78.0;
+    scrollView.delegate = delegate;
+    objc_setAssociatedObject(scrollView, kWQMotionHorizontalDetentKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+#pragma mark - Holographic HUD Brackets, Scanline Sweep & Kinetic Telemetry
+
+@interface WQHUDEdgeBracketsView : UIView
+@property (nonatomic) CGFloat inset;
+@property (nonatomic) CGFloat armLength;
+@end
+
+@implementation WQHUDEdgeBracketsView {
+    CAShapeLayer *_cyanCorners;
+    CAShapeLayer *_auroraCorners;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame inset:(CGFloat)inset armLength:(CGFloat)armLength
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = UIColor.clearColor;
+        self.layer.zPosition = 260;
+        _inset = inset;
+        _armLength = armLength;
+
+        _cyanCorners = [CAShapeLayer layer];
+        _cyanCorners.fillColor = UIColor.clearColor.CGColor;
+        _cyanCorners.strokeColor = [wq_theme_accent() colorWithAlphaComponent:0.42].CGColor;
+        _cyanCorners.lineWidth = 1.0;
+        _cyanCorners.lineCap = kCALineCapSquare;
+        [self.layer addSublayer:_cyanCorners];
+
+        _auroraCorners = [CAShapeLayer layer];
+        _auroraCorners.fillColor = UIColor.clearColor.CGColor;
+        _auroraCorners.strokeColor = [wq_theme_aurora_teal() colorWithAlphaComponent:0.36].CGColor;
+        _auroraCorners.lineWidth = 1.0;
+        _auroraCorners.lineCap = kCALineCapSquare;
+        [self.layer addSublayer:_auroraCorners];
+    }
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    CGRect r = CGRectInset(self.bounds, _inset, _inset);
+    if (r.size.width < _armLength * 2.0 || r.size.height < _armLength * 2.0) return;
+    CGFloat arm = _armLength;
+    CGFloat minX = CGRectGetMinX(r), maxX = CGRectGetMaxX(r);
+    CGFloat minY = CGRectGetMinY(r), maxY = CGRectGetMaxY(r);
+
+    // Top-left & bottom-right brackets in glacial aqua (#00F5FF).
+    UIBezierPath *cyan = [UIBezierPath bezierPath];
+    [cyan moveToPoint:CGPointMake(minX, minY + arm)];
+    [cyan addLineToPoint:CGPointMake(minX, minY)];
+    [cyan addLineToPoint:CGPointMake(minX + arm, minY)];
+    [cyan moveToPoint:CGPointMake(maxX - arm, maxY)];
+    [cyan addLineToPoint:CGPointMake(maxX, maxY)];
+    [cyan addLineToPoint:CGPointMake(maxX, maxY - arm)];
+
+    // Top-right & bottom-left brackets in aurora teal (#4FFFB0).
+    UIBezierPath *aurora = [UIBezierPath bezierPath];
+    [aurora moveToPoint:CGPointMake(maxX - arm, minY)];
+    [aurora addLineToPoint:CGPointMake(maxX, minY)];
+    [aurora addLineToPoint:CGPointMake(maxX, minY + arm)];
+    [aurora moveToPoint:CGPointMake(minX, maxY - arm)];
+    [aurora addLineToPoint:CGPointMake(minX, maxY)];
+    [aurora addLineToPoint:CGPointMake(minX + arm, maxY)];
+
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _cyanCorners.frame = self.bounds;
+    _cyanCorners.path = cyan.CGPath;
+    _auroraCorners.frame = self.bounds;
+    _auroraCorners.path = aurora.CGPath;
+    [CATransaction commit];
+}
+
+@end
+
+void wq_motion_add_hud_brackets(UIView *view, CGFloat inset, CGFloat armLength)
+{
+    if (!view) return;
+    UIView *host = [view isKindOfClass:UIVisualEffectView.class] ? ((UIVisualEffectView *)view).contentView : view;
+    if (objc_getAssociatedObject(host, kWQMotionBracketsKey)) return;
+    WQHUDEdgeBracketsView *brackets = [[WQHUDEdgeBracketsView alloc] initWithFrame:host.bounds inset:inset armLength:armLength];
+    brackets.translatesAutoresizingMaskIntoConstraints = NO;
+    [host addSubview:brackets];
+    [NSLayoutConstraint activateConstraints:@[
+        [brackets.topAnchor constraintEqualToAnchor:host.topAnchor],
+        [brackets.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+        [brackets.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+        [brackets.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+    ]];
+    objc_setAssociatedObject(host, kWQMotionBracketsKey, brackets, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+@interface WQScanSweepOverlayView : UIView
+@property (nonatomic) BOOL repeating;
+- (void)triggerOnce;
+- (void)updateAnimationState;
+@end
+
+@implementation WQScanSweepOverlayView {
+    CAGradientLayer *_beam;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame repeating:(BOOL)repeating
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = UIColor.clearColor;
+        self.clipsToBounds = YES;
+        self.layer.zPosition = 240;
+        _repeating = repeating;
+
+        _beam = [CAGradientLayer layer];
+        _beam.startPoint = CGPointMake(0.0, 0.25);
+        _beam.endPoint = CGPointMake(1.0, 0.75);
+        _beam.colors = @[
+            (id)[UIColor clearColor].CGColor,
+            (id)[wq_theme_accent() colorWithAlphaComponent:0.14].CGColor,
+            (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.28].CGColor,
+            (id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.14].CGColor,
+            (id)[UIColor clearColor].CGColor,
+        ];
+        _beam.locations = @[@0.0, @0.30, @0.50, @0.70, @1.0];
+        _beam.opacity = 0.0f;
+        [self.layer addSublayer:_beam];
+
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(updateAnimationState)
+                                                   name:UIAccessibilityReduceMotionStatusDidChangeNotification
+                                                 object:nil];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    CGFloat w = MAX(1.0, self.bounds.size.width);
+    CGFloat h = MAX(1.0, self.bounds.size.height);
+    CGFloat beamW = MAX(88.0, w * 0.44);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _beam.bounds = CGRectMake(0, 0, beamW, h * 1.4);
+    _beam.position = CGPointMake(-beamW, h * 0.5);
+    [CATransaction commit];
+    [self updateAnimationState];
+}
+
+- (void)didMoveToWindow
+{
+    [super didMoveToWindow];
+    [self updateAnimationState];
+}
+
+- (void)updateAnimationState
+{
+    static NSString *const kSweepKey = @"wq.hud.scan.repeat";
+    if (!self.window || wq_motion_reduced() || !_repeating || self.bounds.size.width < 8) {
+        [_beam removeAnimationForKey:kSweepKey];
+        if (wq_motion_reduced()) _beam.opacity = 0.0f;
+        return;
+    }
+    if ([_beam animationForKey:kSweepKey]) return;
+    CGFloat w = self.bounds.size.width;
+    CGFloat beamW = _beam.bounds.size.width;
+    CAKeyframeAnimation *pos = [CAKeyframeAnimation animationWithKeyPath:@"position.x"];
+    pos.values = @[@(-beamW), @(w + beamW), @(w + beamW)];
+    pos.keyTimes = @[@0.0, @0.28, @1.0];
+    pos.timingFunctions = @[
+        [CAMediaTimingFunction functionWithControlPoints:0.25f :0.1f :0.25f :1.0f],
+        [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear],
+    ];
+    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    fade.values = @[@0.0, @0.85, @0.95, @0.0, @0.0];
+    fade.keyTimes = @[@0.0, @0.06, @0.22, @0.28, @1.0];
+    CAAnimationGroup *group = [CAAnimationGroup animation];
+    group.animations = @[pos, fade];
+    group.duration = 5.4;
+    group.repeatCount = HUGE_VALF;
+    [_beam addAnimation:group forKey:kSweepKey];
+}
+
+- (void)triggerOnce
+{
+    if (!self.window || wq_motion_reduced() || self.bounds.size.width < 8) return;
+    CGFloat w = self.bounds.size.width;
+    CGFloat beamW = MAX(88.0, w * 0.44);
+    [_beam removeAnimationForKey:@"wq.hud.scan.once"];
+    CABasicAnimation *pos = [CABasicAnimation animationWithKeyPath:@"position.x"];
+    pos.fromValue = @(-beamW);
+    pos.toValue = @(w + beamW);
+    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
+    fade.values = @[@0.0, @1.0, @1.0, @0.0];
+    fade.keyTimes = @[@0.0, @0.18, @0.80, @1.0];
+    CAAnimationGroup *group = [CAAnimationGroup animation];
+    group.animations = @[pos, fade];
+    group.duration = 0.92;
+    group.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.22f :1.0f :0.36f :1.0f];
+    [_beam addAnimation:group forKey:@"wq.hud.scan.once"];
+}
+
+@end
+
+void wq_motion_add_scan_sweep(UIView *view, BOOL repeating)
+{
+    if (!view) return;
+    UIView *host = [view isKindOfClass:UIVisualEffectView.class] ? ((UIVisualEffectView *)view).contentView : view;
+    WQScanSweepOverlayView *existing = objc_getAssociatedObject(host, kWQMotionScanSweepKey);
+    if (existing) {
+        existing.repeating = repeating;
+        [existing updateAnimationState];
+        return;
+    }
+    WQScanSweepOverlayView *sweep = [[WQScanSweepOverlayView alloc] initWithFrame:host.bounds repeating:repeating];
+    sweep.translatesAutoresizingMaskIntoConstraints = NO;
+    [host addSubview:sweep];
+    [NSLayoutConstraint activateConstraints:@[
+        [sweep.topAnchor constraintEqualToAnchor:host.topAnchor],
+        [sweep.bottomAnchor constraintEqualToAnchor:host.bottomAnchor],
+        [sweep.leadingAnchor constraintEqualToAnchor:host.leadingAnchor],
+        [sweep.trailingAnchor constraintEqualToAnchor:host.trailingAnchor],
+    ]];
+    objc_setAssociatedObject(host, kWQMotionScanSweepKey, sweep, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+void wq_motion_trigger_scan_sweep(UIView *view)
+{
+    if (!view || wq_motion_reduced()) return;
+    UIView *host = [view isKindOfClass:UIVisualEffectView.class] ? ((UIVisualEffectView *)view).contentView : view;
+    WQScanSweepOverlayView *sweep = objc_getAssociatedObject(host, kWQMotionScanSweepKey);
+    if (!sweep) {
+        wq_motion_add_scan_sweep(view, NO);
+        sweep = objc_getAssociatedObject(host, kWQMotionScanSweepKey);
+    }
+    [sweep triggerOnce];
+}
+
+@interface WQMotionRollupDriver : NSObject
+@property (nonatomic, weak) UILabel *label;
+@property (nonatomic) double fromValue;
+@property (nonatomic) double toValue;
+@property (nonatomic) CFTimeInterval startTime;
+@property (nonatomic) CFTimeInterval duration;
+@property (nonatomic, copy) NSString *(^formatter)(double value);
+@property (nonatomic, strong, nullable) CADisplayLink *displayLink;
+- (void)start;
+- (void)stop;
+@end
+
+@implementation WQMotionRollupDriver
+
+- (void)start
+{
+    [self stop];
+    _startTime = CACurrentMediaTime();
+    _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
+    _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(60, 120, 120);
+    [_displayLink addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+}
+
+- (void)stop
+{
+    if (_displayLink) {
+        [_displayLink invalidate];
+        _displayLink = nil;
+    }
+}
+
+- (void)tick:(CADisplayLink *__unused)link
+{
+    UILabel *label = self.label;
+    if (!label) {
+        [self stop];
+        return;
+    }
+    CFTimeInterval elapsed = CACurrentMediaTime() - _startTime;
+    double progress = _duration > 0 ? MIN(1.0, MAX(0.0, elapsed / _duration)) : 1.0;
+    // Cubic ease-out interpolation for crisp kinetic telemetry roll-up.
+    double eased = 1.0 - pow(1.0 - progress, 3.0);
+    double current = _fromValue + (_toValue - _fromValue) * eased;
+    objc_setAssociatedObject(label, kWQMotionRollupLastValKey, @(current), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (_formatter) label.text = _formatter(current);
+    if (progress >= 1.0) {
+        objc_setAssociatedObject(label, kWQMotionRollupLastValKey, @(_toValue), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (_formatter) label.text = _formatter(_toValue);
+        [self stop];
+    }
+}
+
+@end
+
+void wq_motion_rollup_number(UILabel *label, double targetValue, NSTimeInterval duration,
+                             NSString *(^formatter)(double value))
+{
+    if (!label || !formatter) return;
+    WQMotionRollupDriver *existing = objc_getAssociatedObject(label, kWQMotionRollupKey);
+    [existing stop];
+    NSNumber *prevNum = objc_getAssociatedObject(label, kWQMotionRollupLastValKey);
+    double fromValue = prevNum ? prevNum.doubleValue : 0.0;
+    if (wq_motion_reduced() || duration <= 0.02 || !label.window || fabs(targetValue - fromValue) < 0.001) {
+        objc_setAssociatedObject(label, kWQMotionRollupLastValKey, @(targetValue), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        label.text = formatter(targetValue);
+        return;
+    }
+    WQMotionRollupDriver *driver = [WQMotionRollupDriver new];
+    driver.label = label;
+    driver.fromValue = fromValue;
+    driver.toValue = targetValue;
+    driver.duration = duration;
+    driver.formatter = formatter;
+    objc_setAssociatedObject(label, kWQMotionRollupKey, driver, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [driver start];
+}
+
+void wq_motion_rollup_bytes(UILabel *label, unsigned long long targetBytes, NSTimeInterval duration)
+{
+    wq_motion_rollup_number(label, (double)targetBytes, duration, ^NSString *(double value) {
+        long long bytes = (long long)llround(MAX(0.0, value));
+        return [NSByteCountFormatter stringFromByteCount:bytes countStyle:NSByteCountFormatterCountStyleFile];
+    });
 }
 
 #pragma mark - Status transitions
@@ -525,6 +1208,7 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
     CAShapeLayer *_track;
     CALayer *_arcHost;
     CAGradientLayer *_aurora;
+    CAGradientLayer *_scanBeam;
     CAShapeLayer *_arc;
     CAShapeLayer *_check;
     BOOL _checkVisible;
@@ -553,6 +1237,19 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
         _aurora.startPoint = CGPointMake(0.0, 0.0);
         _aurora.endPoint = CGPointMake(1.0, 1.0);
         [_arcHost addSublayer:_aurora];
+
+        // Masked holographic scanline sweep gliding across the active ring arc.
+        _scanBeam = [CAGradientLayer layer];
+        _scanBeam.startPoint = CGPointMake(0.5, 0.0);
+        _scanBeam.endPoint = CGPointMake(0.5, 1.0);
+        _scanBeam.colors = @[
+            (id)[UIColor clearColor].CGColor,
+            (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.65].CGColor,
+            (id)[UIColor clearColor].CGColor,
+        ];
+        _scanBeam.locations = @[@(-0.4), @(-0.2), @(0.0)];
+        _scanBeam.opacity = 0.0f;
+        [_arcHost addSublayer:_scanBeam];
 
         _arc = [CAShapeLayer layer];
         _arc.fillColor = UIColor.clearColor.CGColor;
@@ -596,8 +1293,11 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
 - (void)updateAuroraShimmer
 {
     static NSString *const kAuroraSpinKey = @"wq.aurora.shimmer";
+    static NSString *const kRingScanKey = @"wq.ring.scanline";
     if (!self.window || wq_motion_reduced()) {
         [_aurora removeAnimationForKey:kAuroraSpinKey];
+        [_scanBeam removeAnimationForKey:kRingScanKey];
+        _scanBeam.opacity = 0.0f;
         return;
     }
     if (![_aurora animationForKey:kAuroraSpinKey]) {
@@ -607,6 +1307,16 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
         rot.duration = 4.2;
         rot.repeatCount = HUGE_VALF;
         [_aurora addAnimation:rot forKey:kAuroraSpinKey];
+    }
+    if (![_scanBeam animationForKey:kRingScanKey]) {
+        _scanBeam.opacity = 0.72f;
+        CABasicAnimation *sweep = [CABasicAnimation animationWithKeyPath:@"locations"];
+        sweep.fromValue = @[@(-0.45), @(-0.20), @(0.05)];
+        sweep.toValue = @[@(0.95), @(1.20), @(1.45)];
+        sweep.duration = 2.6;
+        sweep.repeatCount = HUGE_VALF;
+        sweep.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [_scanBeam addAnimation:sweep forKey:kRingScanKey];
     }
 }
 
@@ -643,6 +1353,7 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
     _track.path = _arc.path = circle.CGPath;
     _track.frame = _arcHost.frame = self.bounds;
     _arc.frame = _arcHost.bounds;
+    _scanBeam.frame = _arcHost.bounds;
     CGFloat diag = hypot(self.bounds.size.width, self.bounds.size.height);
     _aurora.bounds = CGRectMake(0, 0, diag, diag);
     _aurora.position = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
@@ -687,6 +1398,13 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
     CGFloat d = MIN(self.bounds.size.width, self.bounds.size.height);
     if (d < 12) return;
     CGPoint center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
+    // Masked luminous scanline pulse along the circular progress arc.
+    CABasicAnimation *burstSweep = [CABasicAnimation animationWithKeyPath:@"locations"];
+    burstSweep.fromValue = @[@(-0.45), @(-0.20), @(0.05)];
+    burstSweep.toValue = @[@(0.95), @(1.20), @(1.45)];
+    burstSweep.duration = 0.62;
+    burstSweep.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.22f :1.0f :0.36f :1.0f];
+    [_scanBeam addAnimation:burstSweep forKey:@"wq.ring.burstSweep"];
 
     // Expanding glacial aura ring shockwave.
     CAShapeLayer *wave = [CAShapeLayer layer];

@@ -1300,7 +1300,7 @@ static NSString *wq_info_date(struct timespec ts)
 
 @end
 
-@interface WQDirViewController ()
+@interface WQDirViewController () <UISearchControllerDelegate>
 - (BOOL)wq_wantsToolbar;
 @end
 
@@ -1310,6 +1310,7 @@ static NSString *wq_info_date(struct timespec ts)
     NSArray<WQItem *> *_items;   // what the search lets through (shown)
     NSString *_query;
     UILabel *_pathLabel;
+    UILabel *_pathCountLabel;
     UIVisualEffectView *_pathCard;
     UIView *_headerBox;
     NSString *_scanStatus;
@@ -1339,10 +1340,16 @@ static NSString *wq_info_date(struct timespec ts)
     UIBarButtonItem *_fileSelectItem;
     UIBarButtonItem *_fileDoneItem;
     UIBarButtonItem *_fileAllItem;
-    UIVisualEffectView *_actionDock;   // floating Liquid Glass dock: New / Paste / Sort / Select / Search
+    UIVisualEffectView *_actionDock;            // Orbital Command HUD / Glacier Telemetry Pill
+    UIStackView *_dockWingsStack;
+    UIButton *_dockCoreButton;
+    UIButton *_dockTelemetryPill;
     UIButton *_dockPasteButton;
     UIButton *_dockCancelMoveButton;
     UIButton *_dockSelectButton;
+    BOOL _dockCompact;
+    BOOL _searchPresenting;
+    CGFloat _lastScrollY;
     BOOL _didCascade;
 }
 
@@ -1483,6 +1490,7 @@ static NSString *wq_info_date(struct timespec ts)
     [self updateHeader];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
+    search.delegate = self;
     search.obscuresBackgroundDuringPresentation = NO;
     search.searchBar.placeholder = _labels ? WQLocalized(@"Search names and bundle IDs") : WQLocalized(@"Search this folder");
     search.searchBar.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -1534,7 +1542,7 @@ static NSString *wq_info_date(struct timespec ts)
 }
 
 // Device strip, then the full path in normal-size text inside a frosted Liquid
-// Glass card (the navigation bar's prompt shrank it until unreadable). Tap to copy.
+// Glass HUD card (the navigation bar's prompt shrank it until unreadable). Tap to copy.
 - (void)updateHeader
 {
     CGFloat width = self.tableView.bounds.size.width ?: self.view.bounds.size.width;
@@ -1550,13 +1558,23 @@ static NSString *wq_info_date(struct timespec ts)
         _pathLabel.userInteractionEnabled = YES;
         [_pathLabel addGestureRecognizer:[[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(copyPath)]];
     }
+    if (!_pathCountLabel) {
+        _pathCountLabel = [UILabel new];
+        _pathCountLabel.font = [UIFont monospacedDigitSystemFontOfSize:10.5 weight:UIFontWeightBold];
+        _pathCountLabel.textColor = wq_theme_aurora_teal();
+        _pathCountLabel.textAlignment = NSTextAlignmentRight;
+        _pathCountLabel.text = @"--";
+    }
     if (!_headerBox) {
         _headerBox = wq_device_header(width);
         _pathCard = wq_theme_make_glass_card(16, NO);
         _pathCard.translatesAutoresizingMaskIntoConstraints = YES;
         _pathCard.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         _pathCard.userInteractionEnabled = YES;
+        wq_motion_add_hud_brackets(_pathCard, 5, 9);
+        wq_motion_add_scan_sweep(_pathCard, NO);
         [_pathCard.contentView addSubview:_pathLabel];
+        [_pathCard.contentView addSubview:_pathCountLabel];
         [_headerBox addSubview:_pathCard];
         self.tableView.tableHeaderView = _headerBox;
     }
@@ -1567,15 +1585,34 @@ static NSString *wq_info_date(struct timespec ts)
     CGFloat side = 16, padX = 12, padY = 9;
     CGFloat top = (pill && pill != _pathCard ? CGRectGetMaxY(pill.frame) : kWQDeviceStripHeight) + 6;
     CGFloat cardWidth = MAX(140.0, width - 2 * side);
-    CGSize fit = [_pathLabel sizeThatFits:CGSizeMake(MAX(100.0, cardWidth - 2 * padX), CGFLOAT_MAX)];
-    CGFloat cardHeight = ceil(fit.height) + 2 * padY;
+    CGFloat badgeWidth = 76.0;
+    CGFloat labelWidth = MAX(80.0, cardWidth - 2 * padX - badgeWidth - 8.0);
+    CGSize fit = [_pathLabel sizeThatFits:CGSizeMake(labelWidth, CGFLOAT_MAX)];
+    CGFloat cardHeight = MAX(36.0, ceil(fit.height) + 2 * padY);
     CGFloat height = top + cardHeight + 10;
     CGFloat oldHeight = _headerBox.frame.size.height;
     _headerBox.frame = CGRectMake(0, 0, width, height);
     _pathCard.frame = CGRectMake(side, top, cardWidth, cardHeight);
-    _pathLabel.frame = CGRectMake(padX, padY, MAX(0, cardWidth - 2 * padX), ceil(fit.height));
+    _pathLabel.frame = CGRectMake(padX, padY, labelWidth, ceil(fit.height));
+    _pathCountLabel.frame = CGRectMake(cardWidth - padX - badgeWidth, padY, badgeWidth, 16);
     _headerWidth = width;
     if (fabs(height - oldHeight) > 0.5) self.tableView.tableHeaderView = _headerBox;
+}
+
+- (void)updateTelemetryCount
+{
+    NSUInteger shownCount = _items.count;
+    if (_pathCountLabel) {
+        NSString *itemsWord = WQLocalized(@"Items");
+        wq_motion_rollup_number(_pathCountLabel, (double)shownCount, 0.42, ^NSString *(double value) {
+            return [NSString stringWithFormat:@"%lu %@", (unsigned long)llround(MAX(0.0, value)), itemsWord];
+        });
+    }
+    if (_dockTelemetryPill) {
+        UIButtonConfiguration *cfg = [_dockTelemetryPill.configuration copy];
+        cfg.title = [NSString stringWithFormat:@"%lu · %@", (unsigned long)shownCount, WQLocalized(@"HUD")];
+        _dockTelemetryPill.configuration = cfg;
+    }
 }
 
 - (void)viewDidLayoutSubviews
@@ -1682,6 +1719,7 @@ static NSString *wq_info_date(struct timespec ts)
     _indexRows = rows;
     // A filled menu button shows that a Show filter hides some containers.
     _menuItem.image = [UIImage systemImageNamed:filter ? @"ellipsis.circle.fill" : @"ellipsis.circle"];
+    [self updateTelemetryCount];
 }
 
 - (NSArray<NSString *> *)sectionIndexTitlesForTableView:(UITableView *)tableView
@@ -1823,33 +1861,42 @@ static NSString *wq_info_date(struct timespec ts)
     self.navigationItem.rightBarButtonItems = @[_menuItem];
 }
 
-// MARK: Floating action dock
+// MARK: Orbital Command HUD & Glacier Telemetry Pill
 
 - (void)buildActionDockWithSortElement:(UIMenuElement *)sortElement
 {
     __weak typeof(self) weakSelf = self;
-    NSMutableArray<UIView *> *buttons = [NSMutableArray new];
-    if ([self canEditHere]) {
-        UIMenu *createMenu = [UIMenu menuWithTitle:WQLocalized(@"New") children:@[
-            [UIAction actionWithTitle:WQLocalizedNullable(@"New Folder") image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
-                              handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf promptNewFolder]; }],
-            [UIAction actionWithTitle:WQLocalizedNullable(@"New File") image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil
-                              handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf promptNewFile]; }],
+    BOOL editable = [self canEditHere];
+
+    // Left tapered glass wing: New Folder & Import (when editable)
+    NSMutableArray<UIView *> *leftWingItems = [NSMutableArray new];
+    if (editable) {
+        UIButton *newFolderBtn = wq_motion_dock_button(nil, @"folder.badge.plus", WQLocalized(@"New Folder"));
+        [newFolderBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_impact(UIImpactFeedbackStyleLight);
+            [weakSelf promptNewFolder];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        [leftWingItems addObject:newFolderBtn];
+
+        UIMenu *importMenu = [UIMenu menuWithTitle:WQLocalized(@"Import") children:@[
             [UIAction actionWithTitle:WQLocalizedNullable(@"Import Files") image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil
                               handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf importFile]; }],
             [UIAction actionWithTitle:WQLocalizedNullable(@"Import Folder") image:[UIImage systemImageNamed:@"folder.fill.badge.plus"] identifier:nil
                               handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf importFolder]; }],
+            [UIAction actionWithTitle:WQLocalizedNullable(@"New File") image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil
+                              handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf promptNewFile]; }],
         ]];
-        UIButton *newBtn = wq_motion_dock_button(nil, @"plus", WQLocalized(@"New"));
-        newBtn.menu = createMenu;
-        newBtn.showsMenuAsPrimaryAction = YES;
-        [buttons addObject:newBtn];
+        UIButton *importBtn = wq_motion_dock_button(nil, @"square.and.arrow.down", WQLocalized(@"Import Files"));
+        importBtn.menu = importMenu;
+        importBtn.showsMenuAsPrimaryAction = YES;
+        [leftWingItems addObject:importBtn];
 
         _dockPasteButton = wq_motion_dock_button(nil, @"doc.on.clipboard", WQLocalized(@"Paste"));
         [_dockPasteButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
             [weakSelf pasteFromDock];
         }] forControlEvents:UIControlEventTouchUpInside];
-        [buttons addObject:_dockPasteButton];
+        _dockPasteButton.hidden = YES;
+        [leftWingItems addObject:_dockPasteButton];
 
         _dockCancelMoveButton = wq_motion_dock_button(nil, @"xmark.circle", WQLocalized(@"Cancel"));
         [_dockCancelMoveButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
@@ -1857,13 +1904,62 @@ static NSString *wq_info_date(struct timespec ts)
             [weakSelf cancelMove];
         }] forControlEvents:UIControlEventTouchUpInside];
         _dockCancelMoveButton.hidden = YES;
-        [buttons addObject:_dockCancelMoveButton];
+        [leftWingItems addObject:_dockCancelMoveButton];
     }
+
+    // Glowing central Core Action Trigger
+    UIButtonConfiguration *coreCfg = [UIButtonConfiguration filledButtonConfiguration];
+    UIImageSymbolConfiguration *coreSym = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightBold];
+    coreCfg.image = [UIImage systemImageNamed:editable ? @"plus" : @"command" withConfiguration:coreSym];
+    coreCfg.baseBackgroundColor = wq_theme_accent();
+    coreCfg.baseForegroundColor = wq_theme_cta_text();
+    coreCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    coreCfg.background.strokeColor = [UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.85];
+    coreCfg.background.strokeWidth = 1.1;
+    coreCfg.contentInsets = NSDirectionalEdgeInsetsZero;
+    _dockCoreButton = [UIButton buttonWithConfiguration:coreCfg primaryAction:nil];
+    _dockCoreButton.translatesAutoresizingMaskIntoConstraints = NO;
+    _dockCoreButton.accessibilityLabel = editable ? WQLocalized(@"New") : WQLocalized(@"Actions");
+    _dockCoreButton.layer.shadowColor = wq_theme_accent().CGColor;
+    _dockCoreButton.layer.shadowRadius = 10.0;
+    _dockCoreButton.layer.shadowOpacity = 0.55f;
+    _dockCoreButton.layer.shadowOffset = CGSizeZero;
+    wq_motion_add_holographic_tilt(_dockCoreButton, 0.08);
+    [NSLayoutConstraint activateConstraints:@[
+        [_dockCoreButton.widthAnchor constraintEqualToConstant:46],
+        [_dockCoreButton.heightAnchor constraintEqualToConstant:46],
+    ]];
+
+    NSMutableArray<UIMenuElement *> *coreActions = [NSMutableArray new];
+    if (editable) {
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"New Folder") image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil
+                                                 handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf promptNewFolder]; }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"New File") image:[UIImage systemImageNamed:@"doc.badge.plus"] identifier:nil
+                                                 handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf promptNewFile]; }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Import Files") image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil
+                                                 handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf importFile]; }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Import Folder") image:[UIImage systemImageNamed:@"folder.fill.badge.plus"] identifier:nil
+                                                 handler:^(UIAction *__unused a) { wq_haptic_impact(UIImpactFeedbackStyleLight); [weakSelf importFolder]; }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Paste") image:[UIImage systemImageNamed:@"doc.on.clipboard"] identifier:nil
+                                                 handler:^(UIAction *__unused a) { [weakSelf pasteFromDock]; }]];
+    }
+    [coreActions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Copy Path") image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
+                                             handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf copyPath]; }]];
+    if (!_labels) {
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalized(@"Search Inside Folders…") image:[UIImage systemImageNamed:@"magnifyingglass"] identifier:nil
+                                                 handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf promptFolderSearch]; }]];
+    }
+    _dockCoreButton.menu = [UIMenu menuWithTitle:WQLocalized(@"Command HUD") children:coreActions];
+    _dockCoreButton.showsMenuAsPrimaryAction = YES;
+
+    // Right tapered glass wing: Sort, Select & Search
+    NSMutableArray<UIView *> *rightWingItems = [NSMutableArray new];
     UIButton *sort = wq_motion_dock_button(nil, @"arrow.up.arrow.down", WQLocalized(@"Sort By"));
     sort.menu = [UIMenu menuWithChildren:@[sortElement]];
     sort.showsMenuAsPrimaryAction = YES;
-    [buttons addObject:sort];
-    if (_backupStorage ? (_selectItem != nil) : [self canEditHere]) {
+    [rightWingItems addObject:sort];
+
+    if (_backupStorage ? (_selectItem != nil) : editable) {
         _dockSelectButton = wq_motion_dock_button(nil, @"checkmark.circle", WQLocalized(@"Select"));
         [_dockSelectButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
             WQDirViewController *me = weakSelf;
@@ -1871,8 +1967,9 @@ static NSString *wq_info_date(struct timespec ts)
             wq_haptic_selection();
             if (me->_backupStorage) [me enterBackupSelection]; else [me enterFileSelection];
         }] forControlEvents:UIControlEventTouchUpInside];
-        [buttons addObject:_dockSelectButton];
+        [rightWingItems addObject:_dockSelectButton];
     }
+
     UIButton *search = wq_motion_dock_button(nil, @"magnifyingglass", WQLocalized(@"Search"));
     [search addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         wq_haptic_selection();
@@ -1880,13 +1977,85 @@ static NSString *wq_info_date(struct timespec ts)
         controller.active = YES;
         [controller.searchBar becomeFirstResponder];
     }] forControlEvents:UIControlEventTouchUpInside];
-    [buttons addObject:search];
-    for (UIView *b in buttons) {
-        [NSLayoutConstraint activateConstraints:@[[b.heightAnchor constraintEqualToConstant:44],
-                                                  [b.widthAnchor constraintGreaterThanOrEqualToConstant:44]]];
+    [rightWingItems addObject:search];
+
+    for (UIView *b in [leftWingItems arrayByAddingObjectsFromArray:rightWingItems]) {
+        [NSLayoutConstraint activateConstraints:@[
+            [b.heightAnchor constraintEqualToConstant:42],
+            [b.widthAnchor constraintGreaterThanOrEqualToConstant:40],
+        ]];
     }
-    _actionDock = wq_motion_make_dock(buttons, 4);
+
+    NSMutableArray<UIView *> *orbitalRow = [NSMutableArray new];
+    if (leftWingItems.count) {
+        UIStackView *leftWing = [[UIStackView alloc] initWithArrangedSubviews:leftWingItems];
+        leftWing.axis = UILayoutConstraintAxisHorizontal;
+        leftWing.alignment = UIStackViewAlignmentCenter;
+        leftWing.spacing = 2;
+        [orbitalRow addObject:wq_theme_glass_container(leftWing, 4)];
+    }
+    [orbitalRow addObject:_dockCoreButton];
+    UIStackView *rightWing = [[UIStackView alloc] initWithArrangedSubviews:rightWingItems];
+    rightWing.axis = UILayoutConstraintAxisHorizontal;
+    rightWing.alignment = UIStackViewAlignmentCenter;
+    rightWing.spacing = 2;
+    [orbitalRow addObject:wq_theme_glass_container(rightWing, 4)];
+
+    _dockWingsStack = [[UIStackView alloc] initWithArrangedSubviews:orbitalRow];
+    _dockWingsStack.axis = UILayoutConstraintAxisHorizontal;
+    _dockWingsStack.alignment = UIStackViewAlignmentCenter;
+    _dockWingsStack.spacing = 6;
+    _dockWingsStack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    // Compact Glacier Telemetry Pill shown when scrolling down; tap expands HUD.
+    UIButtonConfiguration *pillCfg = [UIButtonConfiguration plainButtonConfiguration];
+    UIImageSymbolConfiguration *pillSym = [UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightBold];
+    pillCfg.image = [UIImage systemImageNamed:@"chevron.up.circle.fill" withConfiguration:pillSym];
+    pillCfg.imagePlacement = NSDirectionalRectEdgeTrailing;
+    pillCfg.imagePadding = 6;
+    pillCfg.title = [NSString stringWithFormat:@"0 · %@", WQLocalized(@"HUD")];
+    pillCfg.baseForegroundColor = wq_theme_accent();
+    pillCfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 14, 6, 12);
+    pillCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
+        NSMutableDictionary *out = [incoming mutableCopy] ?: [NSMutableDictionary new];
+        out[NSFontAttributeName] = [UIFont monospacedDigitSystemFontOfSize:11.5 weight:UIFontWeightBold];
+        return out;
+    };
+    _dockTelemetryPill = [UIButton buttonWithConfiguration:pillCfg primaryAction:nil];
+    _dockTelemetryPill.translatesAutoresizingMaskIntoConstraints = NO;
+    _dockTelemetryPill.accessibilityLabel = WQLocalized(@"Expand Command HUD");
+    _dockTelemetryPill.hidden = YES;
+    [_dockTelemetryPill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        [weakSelf setActionDockCompact:NO animated:YES];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    wq_motion_add_press(_dockTelemetryPill);
+    [NSLayoutConstraint activateConstraints:@[
+        [_dockTelemetryPill.heightAnchor constraintEqualToConstant:30],
+    ]];
+
+    _actionDock = wq_motion_make_dock(@[_dockWingsStack, _dockTelemetryPill], 0);
+    wq_motion_add_hud_brackets(_actionDock, 5, 8);
     wq_motion_install_dock(_actionDock, self, self.tableView);
+}
+
+- (void)setActionDockCompact:(BOOL)compact animated:(BOOL)animated
+{
+    if (!_actionDock || _dockCompact == compact) return;
+    _dockCompact = compact;
+    void (^apply)(void) = ^{
+        self->_dockWingsStack.hidden = compact;
+        self->_dockTelemetryPill.hidden = !compact;
+        self->_actionDock.layer.cornerRadius = compact ? 21.0 : 30.0;
+        self->_actionDock.alpha = compact ? 0.86 : 1.0;
+    };
+    if (!animated) {
+        apply();
+        [_actionDock.superview layoutIfNeeded];
+        return;
+    }
+    wq_motion_spring_morph(_actionDock, apply, nil);
+    if (!compact) wq_motion_pulse_rim(_actionDock);
 }
 
 - (void)pasteFromDock
@@ -1901,30 +2070,97 @@ static NSString *wq_info_date(struct timespec ts)
     else [self moveHere];
 }
 
-// The Glacier Edge dock morphs fluidly with Bezier curves when actions expand/collapse.
+// The Orbital Command HUD morphs fluidly with spring curves when states change.
 - (void)refreshActionDock
 {
     if (!_actionDock) return;
     BOOL hasMove = gWQMovePaths.count > 0;
-    BOOL show = !_error && !_selectingFiles && !_selectingBackups && !hasMove;
+    BOOL show = !_error && !_selectingFiles && !_selectingBackups && !hasMove && !_searchPresenting;
     _dockSelectButton.enabled = !_error && _all.count > 0;
     if (_dockPasteButton) {
         BOOL canPaste = hasMove && [self canMoveHere];
         UIButtonConfiguration *cfg = [_dockPasteButton.configuration copy];
-        cfg.baseForegroundColor = canPaste ? wq_theme_accent() : wq_theme_primary_text();
+        cfg.baseForegroundColor = canPaste ? wq_theme_aurora_teal() : wq_theme_primary_text();
         _dockPasteButton.configuration = cfg;
         _dockPasteButton.enabled = !hasMove || canPaste;
         _dockPasteButton.accessibilityLabel = hasMove ? WQLocalized(gWQCopyPending ? @"Copy Here" : @"Move Here") : WQLocalized(@"Paste");
     }
     if (_dockCancelMoveButton && _dockCancelMoveButton.hidden != !hasMove) {
         UIButton *cancelBtn = _dockCancelMoveButton;
-        wq_motion_morph_layout(_actionDock, ^{
+        UIButton *pasteBtn = _dockPasteButton;
+        wq_motion_spring_morph(_actionDock, ^{
             cancelBtn.hidden = !hasMove;
-        });
+            pasteBtn.hidden = !hasMove;
+        }, nil);
     }
-    BOOL showing = !_actionDock.hidden && _actionDock.alpha > 0.99;
+    BOOL showing = !_actionDock.hidden && _actionDock.alpha > 0.5;
     if (show == showing) return;
+    if (show && _dockCompact) [self setActionDockCompact:NO animated:NO];
     wq_motion_set_visible(_actionDock, show, self.view.window != nil);
+}
+
+#pragma mark UISearchControllerDelegate & 120Hz Sci-Fi Scroll Choreography
+
+- (void)willPresentSearchController:(UISearchController *__unused)searchController
+{
+    _searchPresenting = YES;
+    wq_haptic_selection();
+    [self refreshActionDock];
+}
+
+- (void)willDismissSearchController:(UISearchController *__unused)searchController
+{
+    _searchPresenting = NO;
+    [self refreshActionDock];
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave(scrollView);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _pathCard);
+
+    // Tactile detent when crossing alphabet groups or major row buckets.
+    NSIndexPath *topRow = self.tableView.indexPathsForVisibleRows.firstObject;
+    if (topRow && topRow.row < (NSInteger)_items.count) {
+        NSInteger detent = topRow.row / 8;
+        if (_indexTitles.count && wq_sort_key() == WQSortName) {
+            WQItem *item = _items[(NSUInteger)topRow.row];
+            NSString *letter = wq_index_letter(item.label ?: item.name);
+            NSUInteger idx = [_indexTitles indexOfObject:letter];
+            if (idx != NSNotFound) detent = (NSInteger)idx;
+        }
+        wq_motion_scroll_detent(scrollView, detent);
+    }
+
+    // Morph Orbital Command HUD <-> Glacier Telemetry Pill on vertical scroll direction.
+    if (_actionDock && !_actionDock.hidden && !_selectingFiles && !_selectingBackups && !_searchPresenting) {
+        CGFloat y = scrollView.contentOffset.y;
+        CGFloat topRest = -scrollView.adjustedContentInset.top;
+        CGFloat dy = y - _lastScrollY;
+        _lastScrollY = y;
+        if (y <= topRest + 18.0) {
+            [self setActionDockCompact:NO animated:YES];
+        } else if (scrollView.dragging || scrollView.decelerating) {
+            if (dy > 14.0 && !_dockCompact) {
+                [self setActionDockCompact:YES animated:YES];
+            } else if (dy < -10.0 && _dockCompact) {
+                [self setActionDockCompact:NO animated:YES];
+            }
+        }
+    } else {
+        _lastScrollY = scrollView.contentOffset.y;
+    }
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 - (BOOL)wq_wantsToolbar
@@ -2557,8 +2793,9 @@ static NSString *wq_info_date(struct timespec ts)
             [self.refreshControl endRefreshing];
             [self updateHeader];
             [self.tableView reloadData];
+            if (!self->_error) wq_motion_trigger_scan_sweep(self->_pathCard);
             if (!self->_didCascade && items.count) {
-                // Rows rise in once per screen, 35 ms apart.
+                // Rows rise in once per screen, 30 ms apart.
                 self->_didCascade = YES;
                 [self.tableView layoutIfNeeded];
                 wq_motion_cascade_visible(self.tableView);
@@ -4752,7 +4989,7 @@ static UIView *WQPrismSectionHeaderView(NSString *title, NSString *detail)
 static BOOL wq_startup_checked;
 static void wq_apply_design(void);
 
-@interface WQPrismHomeViewController : UIViewController
+@interface WQPrismHomeViewController : UIViewController <UIScrollViewDelegate>
 @end
 
 @interface WQPrismSettingsViewController : UITableViewController
@@ -4766,6 +5003,7 @@ static void wq_apply_design(void);
     UIScrollView *_scroll;
     UIStackView *_contentStack;
     UIView *_topHeader;
+    UIView *_toolsGrid;
     UIStackView *_containersStack;
     UILabel *_containersNoteLabel;
     UIStackView *_favoritesStack;
@@ -4777,11 +5015,14 @@ static void wq_apply_design(void);
     UIView *_statusPill;
     UILabel *_statusLabel;
     UILabel *_heroSubtitle;
+    UILabel *_telemetryReadinessLabel;
+    UILabel *_telemetryZonesLabel;
     UIButton *_quickButton;
     UIButton *_fullScanButton;
     WQProgressRingView *_healthRing;
     UIImageView *_healthGlyph;
     NSString *_healthSymbol;
+    NSArray<UIView *> *_sectionAnchors;
     BOOL _hapticOnFinish;
     BOOL _homeCascaded;
     NSString *_appGroupName;
@@ -4843,11 +5084,6 @@ static void wq_apply_design(void);
             if (atTop) _scroll.contentOffset = CGPointMake(0, -(neededTop + self.view.safeAreaInsets.top));
         }
     }
-    if (_heroButtons) {
-        BOOL narrow = self.view.bounds.size.width < 360.0;
-        _heroButtons.axis = narrow ? UILayoutConstraintAxisVertical : UILayoutConstraintAxisHorizontal;
-        _heroButtons.alignment = narrow ? UIStackViewAlignmentLeading : UIStackViewAlignmentCenter;
-    }
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -4856,7 +5092,7 @@ static void wq_apply_design(void);
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     [self rebuildFavorites];
     if (!_homeCascaded && _topHeader) {
-        // Header, hero and bento sections rise in one after another (35 ms apart).
+        // Header, hero and bento sections rise in one after another (30 ms apart).
         _homeCascaded = YES;
         NSMutableArray<UIView *> *entrance = [NSMutableArray arrayWithObject:_topHeader];
         NSArray<UIView *> *sections = _contentStack.arrangedSubviews;
@@ -4923,6 +5159,7 @@ static void wq_apply_design(void);
     _scroll.translatesAutoresizingMaskIntoConstraints = NO;
     _scroll.alwaysBounceVertical = YES;
     _scroll.showsVerticalScrollIndicator = NO;
+    _scroll.delegate = self;
     _scroll.contentInset = UIEdgeInsetsMake(76, 0, 116, 0);
     _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(76, 0, 116, 0);
     [self.view addSubview:_scroll];
@@ -5046,14 +5283,15 @@ static void wq_apply_design(void);
     UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), @"2×2 Grid"));
     [_contentStack addArrangedSubview:toolsHeader];
     [_contentStack setCustomSpacing:10 afterView:toolsHeader];
-    [_contentStack addArrangedSubview:insetSection([self buildToolsRail])];
+    _toolsGrid = [self buildToolsRail];
+    [_contentStack addArrangedSubview:insetSection(_toolsGrid)];
     [_contentStack setCustomSpacing:18 afterView:[_contentStack.arrangedSubviews lastObject]];
 
     UIView *containersHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Containers"), @"Bento"));
     [_contentStack addArrangedSubview:containersHeader];
     [_contentStack setCustomSpacing:10 afterView:containersHeader];
 
-    // 2-Column Staggered Glass Bento Grid (replaces horizontal deck)
+    // 2-Column Staggered Glass Bento Grid
     _containersStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _containersStack.translatesAutoresizingMaskIntoConstraints = NO;
     _containersStack.axis = UILayoutConstraintAxisVertical;
@@ -5077,15 +5315,72 @@ static void wq_apply_design(void);
     [self buildSystemSectionWithWrapper:insetSection];
     [_contentStack addArrangedSubview:insetSection([self buildFooter])];
     [_contentStack setCustomSpacing:24 afterView:[_contentStack.arrangedSubviews lastObject]];
+
+    NSMutableArray<UIView *> *anchors = [NSMutableArray arrayWithArray:@[
+        _heroView.superview ?: _heroView,
+        toolsHeader,
+        containersHeader,
+        favoritesHeader,
+    ]];
+    if (_systemSection) [anchors addObject:_systemSection];
+    _sectionAnchors = anchors;
+}
+
+- (UIButton *)commandStripSegmentWithTitle:(NSString *)title symbol:(NSString *)symbol prominent:(BOOL)prominent action:(void (^)(void))handler
+{
+    UIButtonConfiguration *cfg = prominent
+        ? [UIButtonConfiguration filledButtonConfiguration]
+        : [UIButtonConfiguration plainButtonConfiguration];
+    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightBold];
+    cfg.image = [[UIImage systemImageNamed:symbol withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    cfg.title = title;
+    cfg.imagePlacement = NSDirectionalRectEdgeTop;
+    cfg.imagePadding = 3;
+    cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 6, 8, 6);
+    UIColor *fg = prominent ? wq_theme_cta_text() : UIColor.whiteColor;
+    if (prominent) {
+        cfg.baseBackgroundColor = UIColor.whiteColor;
+        cfg.background.backgroundColor = UIColor.whiteColor;
+        cfg.background.strokeColor = [wq_theme_accent() colorWithAlphaComponent:0.70];
+        cfg.background.strokeWidth = 0.85;
+    } else {
+        cfg.baseBackgroundColor = UIColor.clearColor;
+    }
+    cfg.baseForegroundColor = fg;
+    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
+        NSMutableDictionary *out = [incoming mutableCopy] ?: [NSMutableDictionary new];
+        out[NSForegroundColorAttributeName] = fg;
+        out[NSFontAttributeName] = [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold];
+        return out;
+    };
+    cfg.imageColorTransformer = ^UIColor *(UIColor *__unused c) { return fg; };
+    UIButton *btn = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
+    btn.translatesAutoresizingMaskIntoConstraints = NO;
+    btn.tintColor = fg;
+    btn.titleLabel.adjustsFontSizeToFitWidth = YES;
+    btn.titleLabel.minimumScaleFactor = 0.72;
+    btn.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    btn.configurationUpdateHandler = ^(UIButton *b) {
+        b.alpha = b.enabled ? 1.0 : 0.50;
+    };
+    [btn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        if (handler) handler();
+    }] forControlEvents:UIControlEventTouchUpInside];
+    wq_motion_add_press(btn);
+    return btn;
 }
 
 - (void)buildHeroWithWrapper:(UIView *(^)(UIView *))wrap
 {
+    // Home Cockpit Telemetry Module: Liquid Glass HUD card with 1pt corner brackets & scanline sweep.
     WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:28];
     wq_motion_add_holographic_tilt(glass, 0.032);
+    wq_motion_add_hud_brackets(glass, 10, 14);
+    wq_motion_add_scan_sweep(glass, YES);
     _heroView = glass;
 
-    // Frosted glacial aqua tag pill at top of Hero Status Card
+    // Frosted glacial aqua tag pill at top of HUD Telemetry Card
     UIView *tagPill = [UIView new];
     tagPill.translatesAutoresizingMaskIntoConstraints = NO;
     tagPill.backgroundColor = [UIColor colorWithRed:0.00 green:0.96 blue:1.00 alpha:0.12];
@@ -5101,7 +5396,7 @@ static void wq_apply_design(void);
 
     UILabel *eyebrow = [UILabel new];
     eyebrow.translatesAutoresizingMaskIntoConstraints = NO;
-    eyebrow.text = @"GLACIER · LIQUID GLASS";
+    eyebrow.text = @"GLACIER HUD · TELEMETRY";
     eyebrow.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightBold];
     eyebrow.textColor = wq_theme_secondary_text();
 
@@ -5118,9 +5413,27 @@ static void wq_apply_design(void);
         [eyebrow.trailingAnchor constraintEqualToAnchor:tagPill.trailingAnchor constant:-9],
     ]];
 
+    // Kinetic telemetry counters (readiness % and container zones)
+    _telemetryReadinessLabel = [UILabel new];
+    _telemetryReadinessLabel.font = [UIFont monospacedDigitSystemFontOfSize:10.5 weight:UIFontWeightBold];
+    _telemetryReadinessLabel.textColor = wq_theme_aurora_teal();
+    _telemetryReadinessLabel.text = @"SYNC 0%";
+
+    _telemetryZonesLabel = [UILabel new];
+    _telemetryZonesLabel.font = [UIFont monospacedDigitSystemFontOfSize:10.5 weight:UIFontWeightBold];
+    _telemetryZonesLabel.textColor = wq_theme_secondary_text();
+    _telemetryZonesLabel.text = @"0 ZONES";
+
+    UIView *topSpacer = [UIView new];
+    [topSpacer setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+    UIStackView *hudMetaRow = [[UIStackView alloc] initWithArrangedSubviews:@[tagPill, topSpacer, _telemetryReadinessLabel, _telemetryZonesLabel]];
+    hudMetaRow.axis = UILayoutConstraintAxisHorizontal;
+    hudMetaRow.alignment = UIStackViewAlignmentCenter;
+    hudMetaRow.spacing = 8;
+
     UILabel *title = [UILabel new];
     title.text = WQLocalizedNullable(@"All your containers, in one place.");
-    title.font = [UIFont systemFontOfSize:23 weight:UIFontWeightHeavy];
+    title.font = [UIFont systemFontOfSize:22 weight:UIFontWeightHeavy];
     title.adjustsFontForContentSizeCategory = YES;
     title.textColor = UIColor.whiteColor;
     title.numberOfLines = 0;
@@ -5149,39 +5462,11 @@ static void wq_apply_design(void);
         [_heroSubtitle.trailingAnchor constraintEqualToAnchor:specBar.trailingAnchor constant:-10],
     ]];
 
-    // Primary CTA: snow-white capsule with guaranteed #071A2B deep glacier navy foreground across all states
-    __weak typeof(self) weakSelf = self;
-    _quickButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    wq_theme_style_primary_button(_quickButton, WQLocalizedNullable(@"Quick Check"), @"checkmark.shield.fill");
-    [_quickButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [weakSelf quickCheckTapped];
-    }] forControlEvents:UIControlEventTouchUpInside];
-
-    // Full Scan: forget the cached folder listings and names, then re-check everything.
-    _fullScanButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    wq_theme_style_secondary_button(_fullScanButton, WQLocalizedNullable(@"Full Scan"), @"arrow.triangle.2.circlepath");
-    [_fullScanButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [weakSelf fullScanTapped];
-    }] forControlEvents:UIControlEventTouchUpInside];
-
-    // Secondary CTA: direct launch into Log
-    UIButton *logButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    wq_theme_style_secondary_button(logButton, WQLocalizedNullable(@"Log"), @"doc.plaintext");
-    [logButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        [weakSelf openLog];
-    }] forControlEvents:UIControlEventTouchUpInside];
-
-    _heroButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, _fullScanButton, logButton]];
-    _heroButtons.axis = UILayoutConstraintAxisHorizontal;
-    _heroButtons.spacing = 8;
-    _heroButtons.alignment = UIStackViewAlignmentCenter;
-    UIView *buttonGroup = wq_theme_glass_container(_heroButtons, 8);
-
     // Holographic aurora health ring: spins while checking, closes with an aurora
-    // glow and emits a spring micro-burst upon completion.
+    // glow and emits a spring micro-burst + scanline sweep upon completion.
     UIView *badge = [UIView new];
     badge.translatesAutoresizingMaskIntoConstraints = NO;
-    _healthRing = [[WQProgressRingView alloc] initWithFrame:CGRectMake(0, 0, 54, 54)];
+    _healthRing = [[WQProgressRingView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
     _healthRing.translatesAutoresizingMaskIntoConstraints = NO;
     _healthRing.lineWidth = 4.5;
     _healthRing.isAccessibilityElement = NO;
@@ -5194,8 +5479,8 @@ static void wq_apply_design(void);
     badge.isAccessibilityElement = YES;
     badge.accessibilityTraits = UIAccessibilityTraitImage;
     [NSLayoutConstraint activateConstraints:@[
-        [badge.widthAnchor constraintEqualToConstant:54],
-        [badge.heightAnchor constraintEqualToConstant:54],
+        [badge.widthAnchor constraintEqualToConstant:56],
+        [badge.heightAnchor constraintEqualToConstant:56],
         [_healthRing.topAnchor constraintEqualToAnchor:badge.topAnchor],
         [_healthRing.bottomAnchor constraintEqualToAnchor:badge.bottomAnchor],
         [_healthRing.leadingAnchor constraintEqualToAnchor:badge.leadingAnchor],
@@ -5210,22 +5495,50 @@ static void wq_apply_design(void);
     titleRow.alignment = UIStackViewAlignmentCenter;
     titleRow.spacing = 12;
 
-    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[tagPill, titleRow, specBar, buttonGroup]];
+    // Sculpted Segmented Glass Command Strip docked along the bottom edge of the hero card.
+    __weak typeof(self) weakSelf = self;
+    _quickButton = [self commandStripSegmentWithTitle:WQLocalizedNullable(@"Quick Check")
+                                               symbol:@"checkmark.shield.fill"
+                                            prominent:YES
+                                               action:^{ [weakSelf quickCheckTapped]; }];
+    _fullScanButton = [self commandStripSegmentWithTitle:WQLocalizedNullable(@"Full Scan")
+                                                  symbol:@"arrow.triangle.2.circlepath"
+                                               prominent:NO
+                                                  action:^{ [weakSelf fullScanTapped]; }];
+    UIButton *logButton = [self commandStripSegmentWithTitle:WQLocalizedNullable(@"Log")
+                                                      symbol:@"doc.plaintext"
+                                                   prominent:NO
+                                                      action:^{ wq_haptic_selection(); [weakSelf openLog]; }];
+
+    _heroButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, _fullScanButton, logButton]];
+    _heroButtons.axis = UILayoutConstraintAxisHorizontal;
+    _heroButtons.distribution = UIStackViewDistributionFillEqually;
+    _heroButtons.alignment = UIStackViewAlignmentFill;
+    _heroButtons.spacing = 6;
+    _heroButtons.layoutMargins = UIEdgeInsetsMake(5, 5, 5, 5);
+    _heroButtons.layoutMarginsRelativeArrangement = YES;
+
+    UIView *commandStrip = wq_theme_glass_container(_heroButtons, 6);
+    commandStrip.backgroundColor = [UIColor colorWithRed:0.02 green:0.07 blue:0.13 alpha:0.46];
+    commandStrip.layer.cornerRadius = 22;
+    commandStrip.layer.cornerCurve = kCACornerCurveContinuous;
+    commandStrip.layer.borderWidth = 0.75;
+    commandStrip.layer.borderColor = wq_theme_rim_teal().CGColor;
+    commandStrip.clipsToBounds = YES;
+
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[hudMetaRow, titleRow, specBar, commandStrip]];
     text.axis = UILayoutConstraintAxisVertical;
-    text.alignment = UIStackViewAlignmentLeading;
-    text.spacing = 10;
+    text.alignment = UIStackViewAlignmentFill;
+    text.spacing = 11;
     text.translatesAutoresizingMaskIntoConstraints = NO;
-    [NSLayoutConstraint activateConstraints:@[
-        [specBar.widthAnchor constraintEqualToAnchor:text.widthAnchor],
-        [titleRow.widthAnchor constraintEqualToAnchor:text.widthAnchor],
-    ]];
+    [text setCustomSpacing:14 afterView:specBar];
 
     [glass.contentView addSubview:text];
     [NSLayoutConstraint activateConstraints:@[
-        [text.topAnchor constraintEqualToAnchor:glass.contentView.topAnchor constant:18],
-        [text.bottomAnchor constraintEqualToAnchor:glass.contentView.bottomAnchor constant:-18],
-        [text.leadingAnchor constraintEqualToAnchor:glass.contentView.leadingAnchor constant:18],
-        [text.trailingAnchor constraintEqualToAnchor:glass.contentView.trailingAnchor constant:-18],
+        [text.topAnchor constraintEqualToAnchor:glass.contentView.topAnchor constant:16],
+        [text.bottomAnchor constraintEqualToAnchor:glass.contentView.bottomAnchor constant:-14],
+        [text.leadingAnchor constraintEqualToAnchor:glass.contentView.leadingAnchor constant:16],
+        [text.trailingAnchor constraintEqualToAnchor:glass.contentView.trailingAnchor constant:-16],
     ]];
 
     [_contentStack addArrangedSubview:wrap(glass)];
@@ -5274,6 +5587,7 @@ static void wq_apply_design(void);
     rail.translatesAutoresizingMaskIntoConstraints = NO;
     rail.showsHorizontalScrollIndicator = NO;
     rail.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+    wq_motion_attach_horizontal_detents(rail, 96.0);
     _favoritesStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _favoritesStack.translatesAutoresizingMaskIntoConstraints = NO;
     _favoritesStack.axis = UILayoutConstraintAxisHorizontal;
@@ -5731,6 +6045,7 @@ static void wq_apply_design(void);
     [self updateHealthUI];
     if (worst < WQHealthFailed && _appGroupName.length) {
         [_healthRing emitCompletionBurst];
+        wq_motion_trigger_scan_sweep(_heroView);
         if (_statusPill) wq_motion_pop(_statusPill);
     }
     if (_hapticOnFinish) {
@@ -5798,17 +6113,22 @@ static void wq_apply_design(void);
 - (void)updateHealthUI
 {
     UIColor *tint = wq_theme_aurora_teal();
+    double readinessPct = 100.0;
     if (_checkingAccess) {
         tint = wq_theme_accent();
+        readinessPct = 28.0;
         _statusLabel.text = WQLocalizedNullable(@"Checking…");
     } else if (!_appGroupName.length) {
         tint = [UIColor colorWithRed:0.56 green:0.83 blue:1.0 alpha:1.0];
+        readinessPct = 40.0;
         _statusLabel.text = WQLocalizedNullable(@"No App Group");
     } else if (_pendingHealthFailure.count) {
         tint = [UIColor colorWithRed:0.66 green:0.78 blue:1.0 alpha:1.0];
+        readinessPct = 60.0;
         _statusLabel.text = WQLocalizedNullable(@"Failed");
     } else {
         tint = wq_theme_aurora_teal();
+        readinessPct = 100.0;
         _statusLabel.text = WQLocalizedNullable(@"Active");
     }
     _statusLabel.textColor = tint;
@@ -5817,12 +6137,76 @@ static void wq_apply_design(void);
     _heroSubtitle.text = _appGroupName.length
         ? [NSString stringWithFormat:@"%@\n%@", wq_device_line(), _appGroupName]
         : [NSString stringWithFormat:@"%@\n%@", wq_device_line(), WQLocalizedNullable(@"No App Group")];
+    if (_telemetryReadinessLabel) {
+        _telemetryReadinessLabel.textColor = tint;
+        wq_motion_rollup_number(_telemetryReadinessLabel, readinessPct, 0.55, ^NSString *(double value) {
+            return [NSString stringWithFormat:@"SYNC %d%%", (int)lround(MAX(0.0, value))];
+        });
+    }
+    if (_telemetryZonesLabel) {
+        wq_motion_rollup_number(_telemetryZonesLabel, (double)_locations.count, 0.48, ^NSString *(double value) {
+            return [NSString stringWithFormat:@"%d ZONES", (int)lround(MAX(0.0, value))];
+        });
+    }
     _quickButton.enabled = !_checkingAccess;
     _fullScanButton.enabled = !_checkingAccess;
     [self updateHealthBadgeTint:tint];
-    wq_theme_style_primary_button(_quickButton,
-        _checkingAccess ? WQLocalizedNullable(@"Checking access…") : WQLocalizedNullable(@"Quick Check"),
-        @"checkmark.shield.fill");
+    if (_quickButton.configuration) {
+        UIButtonConfiguration *qCfg = [_quickButton.configuration copy];
+        qCfg.title = _checkingAccess ? WQLocalizedNullable(@"Checking…") : WQLocalizedNullable(@"Quick Check");
+        _quickButton.configuration = qCfg;
+    }
+}
+
+#pragma mark - 120Hz Sci-Fi Scroll Choreography
+
+- (NSArray<UIView *> *)homeScrollWaveTargets
+{
+    NSMutableArray<UIView *> *targets = [NSMutableArray new];
+    if ([_toolsGrid isKindOfClass:UIStackView.class]) {
+        for (UIView *row in ((UIStackView *)_toolsGrid).arrangedSubviews) {
+            if ([row isKindOfClass:UIStackView.class]) {
+                [targets addObjectsFromArray:((UIStackView *)row).arrangedSubviews];
+            }
+        }
+    }
+    for (UIView *row in _containersStack.arrangedSubviews) {
+        if ([row isKindOfClass:UIStackView.class]) {
+            [targets addObjectsFromArray:((UIStackView *)row).arrangedSubviews];
+        } else {
+            [targets addObject:row];
+        }
+    }
+    return targets;
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave_views(scrollView, [self homeScrollWaveTargets]);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _heroView);
+
+    if (_sectionAnchors.count) {
+        CGFloat topEdge = scrollView.contentOffset.y + scrollView.adjustedContentInset.top + 48.0;
+        NSInteger activeSection = 0;
+        for (NSUInteger i = 0; i < _sectionAnchors.count; i++) {
+            UIView *anchor = _sectionAnchors[i];
+            if (!anchor.superview) continue;
+            CGPoint pt = [anchor.superview convertPoint:anchor.frame.origin toView:scrollView];
+            if (topEdge >= pt.y) activeSection = (NSInteger)i;
+        }
+        wq_motion_scroll_detent(scrollView, activeSection);
+    }
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 - (BOOL)healthFailureCanPresent
@@ -6221,6 +6605,8 @@ static NSString *const kWQTroubleshootingFooter =
 #pragma mark - WQ Prism vault
 
 @implementation WQPrismVaultViewController {
+    UIVisualEffectView *_vaultHeaderCard;
+    UIVisualEffectView *_vaultCornerRail;
     UILabel *_vaultSummaryLabel;
     BOOL _cascaded;
 }
@@ -6238,6 +6624,48 @@ static NSString *const kWQTroubleshootingFooter =
     self.tableView.backgroundColor = [UIColor clearColor];
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
     self.tableView.tableHeaderView = [self buildVaultHeader];
+    [self buildVaultCornerRail];
+}
+
+- (void)buildVaultCornerRail
+{
+    __weak typeof(self) weakSelf = self;
+    UIMenu *jumpMenu = [UIMenu menuWithTitle:WQLocalized(@"Backups") children:@[
+        [UIAction actionWithTitle:WQLocalizedNullable(@"App Backups")
+                            image:[UIImage systemImageNamed:@"clock.arrow.circlepath"]
+                       identifier:nil
+                          handler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            [weakSelf openVaultRow:0];
+        }],
+        [UIAction actionWithTitle:WQLocalizedNullable(@"File Backups")
+                            image:[UIImage systemImageNamed:@"archivebox"]
+                       identifier:nil
+                          handler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            [weakSelf openVaultRow:1];
+        }],
+        [UIAction actionWithTitle:WQLocalizedNullable(@"Recently Deleted")
+                            image:[UIImage systemImageNamed:@"trash.circle"]
+                       identifier:nil
+                          handler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            [weakSelf openVaultRow:2];
+        }],
+    ]];
+    UIButton *jumpPill = wq_motion_dock_pill(WQLocalized(@"Backups"), @"externaldrive.fill.badge.timemachine", NO);
+    jumpPill.menu = jumpMenu;
+    jumpPill.showsMenuAsPrimaryAction = YES;
+
+    UIButton *refreshBtn = wq_motion_dock_button(nil, @"arrow.clockwise", WQLocalized(@"Refresh"));
+    [refreshBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [weakSelf reloadVaultCounts];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _vaultCornerRail = wq_motion_make_dock(@[jumpPill, refreshBtn], 6);
+    wq_motion_add_hud_brackets(_vaultCornerRail, 5, 8);
+    wq_motion_install_corner_rail(_vaultCornerRail, self, self.tableView, 14.0);
 }
 
 - (UIView *)buildVaultHeader
@@ -6246,7 +6674,10 @@ static NSString *const kWQTroubleshootingFooter =
     UIView *strip = wq_device_header(w);
     CGFloat stripH = strip.frame.size.height;
     UIVisualEffectView *card = wq_theme_make_glass_card(20, NO);
+    _vaultHeaderCard = card;
     wq_motion_add_holographic_tilt(card, 0.045);
+    wq_motion_add_hud_brackets(card, 7, 10);
+    wq_motion_add_scan_sweep(card, NO);
     WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:@"externaldrive.fill.badge.timemachine" tone:@"frost" size:38];
     UILabel *title = [UILabel new];
     title.text = WQLocalizedNullable(@"Backups");
@@ -6285,24 +6716,36 @@ static NSString *const kWQTroubleshootingFooter =
     return box;
 }
 
-- (void)viewWillAppear:(BOOL)animated
+- (void)reloadVaultCounts
 {
-    [super viewWillAppear:animated];
     __weak typeof(self) weakSelf = self;
     dispatch_async(wq_io(), ^{
         NSUInteger appCount = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:wq_app_backup_root() error:nil] count];
         NSUInteger fileCount = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:wq_backup_root() error:nil] count];
         NSUInteger delCount = [wq_recently_deleted_checked(nil) count];
-        NSString *summary = [NSString stringWithFormat:@"%@: %lu · %@: %lu · %@: %lu",
-            WQLocalized(@"App Backups"), (unsigned long)appCount,
-            WQLocalized(@"File Backups"), (unsigned long)fileCount,
-            WQLocalized(@"Recently Deleted"), (unsigned long)delCount];
+        NSString *appLbl = WQLocalized(@"App Backups");
+        NSString *fileLbl = WQLocalized(@"File Backups");
+        NSString *delLbl = WQLocalized(@"Recently Deleted");
+        NSUInteger total = appCount + fileCount + delCount;
         dispatch_async(dispatch_get_main_queue(), ^{
             WQPrismVaultViewController *me = weakSelf;
             if (!me) return;
-            wq_motion_cross_fade(me->_vaultSummaryLabel, ^{ me->_vaultSummaryLabel.text = summary; });
+            wq_motion_rollup_number(me->_vaultSummaryLabel, (double)total, 0.36, ^NSString *(double value) {
+                double frac = total > 0 ? MIN(1.0, MAX(0.0, value / (double)total)) : 1.0;
+                unsigned long a = (unsigned long)llround((double)appCount * frac);
+                unsigned long f = (unsigned long)llround((double)fileCount * frac);
+                unsigned long d = (unsigned long)llround((double)delCount * frac);
+                return [NSString stringWithFormat:@"%@: %lu · %@: %lu · %@: %lu", appLbl, a, fileLbl, f, delLbl, d];
+            });
+            if (me->_vaultHeaderCard) wq_motion_trigger_scan_sweep(me->_vaultHeaderCard);
         });
     });
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    [self reloadVaultCounts];
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -6311,6 +6754,21 @@ static NSString *const kWQTroubleshootingFooter =
     if (!_cascaded) {
         _cascaded = YES;
         wq_motion_cascade_visible(self.tableView);
+    }
+}
+
+- (void)openVaultRow:(NSInteger)row
+{
+    if (row == 0) {
+        [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
+        UIViewController *next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:WQLocalizedNullable(@"App Backups")];
+        [self.navigationController pushViewController:next animated:YES];
+    } else if (row == 1) {
+        [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
+        UIViewController *next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:WQLocalizedNullable(@"File Backups")];
+        [self.navigationController pushViewController:next animated:YES];
+    } else {
+        [self.navigationController pushViewController:[WQRecentlyDeletedViewController new] animated:YES];
     }
 }
 
@@ -6345,17 +6803,24 @@ static NSString *const kWQTroubleshootingFooter =
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     wq_haptic_selection();
-    if (indexPath.row == 0) {
-        [NSFileManager.defaultManager createDirectoryAtPath:wq_app_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
-        UIViewController *next = [[WQDirViewController alloc] initWithPath:wq_app_backup_root() title:WQLocalizedNullable(@"App Backups")];
-        [self.navigationController pushViewController:next animated:YES];
-    } else if (indexPath.row == 1) {
-        [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
-        UIViewController *next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:WQLocalizedNullable(@"File Backups")];
-        [self.navigationController pushViewController:next animated:YES];
-    } else {
-        [self.navigationController pushViewController:[WQRecentlyDeletedViewController new] animated:YES];
-    }
+    [self openVaultRow:indexPath.row];
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave(scrollView);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _vaultHeaderCard);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 @end

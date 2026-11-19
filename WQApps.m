@@ -39,7 +39,7 @@
 @implementation WQAppItem
 @end
 
-@interface WQAppsViewController () <UIDocumentPickerDelegate>
+@interface WQAppsViewController () <UIDocumentPickerDelegate, UISearchControllerDelegate>
 @end
 
 @implementation WQAppsViewController {
@@ -57,6 +57,8 @@
     WQAppItem *_importApp;
     NSTimeInterval _lastScanFinished;
     NSMutableArray<UIButton *> *_filterPills;
+    UIVisualEffectView *_summaryCard;
+    UIVisualEffectView *_appsCornerRail;
     UILabel *_summaryTitleLabel;
     UILabel *_summaryDetailLabel;
     BOOL _didCascade;
@@ -582,18 +584,49 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     }
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
+    search.delegate = self;
     search.obscuresBackgroundDuringPresentation = NO;
     search.searchBar.placeholder = WQLocalizedNullable(@"Search apps");
-    self.navigationItem.rightBarButtonItem = [self sortButton];
+    // Controls float in the bottom-trailing Glacier corner pill cluster.
+    self.navigationItem.rightBarButtonItem = nil;
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
     self.tableView.tableHeaderView = [self buildGlassAppsHeader];
     self.tableView.tableFooterView = [self buildAppsFooter];
+    [self buildAppsCornerRail];
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     [self scan];
+}
+
+- (void)buildAppsCornerRail
+{
+    __weak typeof(self) weakSelf = self;
+    UIButton *sortPill = wq_motion_dock_pill(WQLocalized(@"Sort"), @"line.3.horizontal.decrease.circle", NO);
+    sortPill.menu = [self appsSortMenu];
+    sortPill.showsMenuAsPrimaryAction = YES;
+
+    UIButton *searchBtn = wq_motion_dock_button(nil, @"magnifyingglass", WQLocalized(@"Search apps"));
+    [searchBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        WQAppsViewController *me = weakSelf;
+        if (!me) return;
+        wq_haptic_selection();
+        UISearchController *sc = me.navigationItem.searchController;
+        sc.active = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{ [sc.searchBar becomeFirstResponder]; });
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *rescanBtn = wq_motion_dock_button(nil, @"arrow.clockwise", WQLocalized(@"Rescan"));
+    [rescanBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [weakSelf userRefresh];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _appsCornerRail = wq_motion_make_dock(@[sortPill, searchBtn, rescanBtn], 6);
+    wq_motion_add_hud_brackets(_appsCornerRail, 5, 8);
+    wq_motion_install_corner_rail(_appsCornerRail, self, self.tableView, 14.0);
 }
 
 - (void)viewDidLayoutSubviews
@@ -633,7 +666,10 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     CGFloat stripHeight = strip.frame.size.height;
 
     UIVisualEffectView *summaryCard = wq_theme_make_glass_card(20, NO);
+    _summaryCard = summaryCard;
     wq_motion_add_holographic_tilt(summaryCard, 0.045);
+    wq_motion_add_hud_brackets(summaryCard, 7, 10);
+    wq_motion_add_scan_sweep(summaryCard, NO);
     _summaryTitleLabel = [UILabel new];
     _summaryTitleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
     _summaryTitleLabel.textColor = wq_theme_primary_text();
@@ -674,6 +710,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     pillScroll.showsHorizontalScrollIndicator = NO;
     pillScroll.alwaysBounceHorizontal = YES;
     pillScroll.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+    wq_motion_attach_horizontal_detents(pillScroll, 84.0);
 
     UIStackView *pillStack = [UIStackView new];
     pillStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -746,12 +783,23 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
         if (app.backups.count) backedUp++;
         if (app.sizeKnown) bytes += app.bytes;
     }
-    NSString *title = count ? [NSString stringWithFormat:@"%lu %@", (unsigned long)count, WQLocalized(@"Apps")] : WQLocalized(@"Apps");
-    NSString *detail = _scanning ? (_status ?: WQLocalizedNullable(@"Finding apps…"))
-        : [NSString stringWithFormat:@"%@ · %@: %lu",
-           wq_size_text(bytes), WQLocalized(@"Backed Up"), (unsigned long)backedUp];
-    wq_motion_cross_fade(_summaryTitleLabel, ^{ self->_summaryTitleLabel.text = title; });
-    _summaryDetailLabel.text = detail;
+    NSString *appsWord = WQLocalized(@"Apps");
+    if (count > 0) {
+        wq_motion_rollup_number(_summaryTitleLabel, (double)count, 0.34, ^NSString *(double value) {
+            return [NSString stringWithFormat:@"%lu %@", (unsigned long)llround(MAX(0.0, value)), appsWord];
+        });
+    } else {
+        _summaryTitleLabel.text = appsWord;
+    }
+    if (_scanning) {
+        _summaryDetailLabel.text = _status ?: WQLocalizedNullable(@"Finding apps…");
+    } else {
+        NSString *backedWord = WQLocalized(@"Backed Up");
+        wq_motion_rollup_number(_summaryDetailLabel, (double)bytes, 0.38, ^NSString *(double value) {
+            unsigned long long b = (unsigned long long)llround(MAX(0.0, value));
+            return [NSString stringWithFormat:@"%@ · %@: %lu", wq_size_text(b), backedWord, (unsigned long)backedUp];
+        });
+    }
 }
 
 - (void)syncFilterPills
@@ -818,10 +866,13 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     _status = status;
     [self updateAppsSummary];
     [self.tableView reloadData];
-    if (!busy && !_scanning && !_didCascade && self.visibleApps.count) {
-        _didCascade = YES;
-        [self.tableView layoutIfNeeded];
-        wq_motion_cascade_visible(self.tableView);
+    if (!busy && !_scanning) {
+        if (_summaryCard) wq_motion_trigger_scan_sweep(_summaryCard);
+        if (!_didCascade && self.visibleApps.count) {
+            _didCascade = YES;
+            [self.tableView layoutIfNeeded];
+            wq_motion_cascade_visible(self.tableView);
+        }
     }
 }
 
@@ -1067,7 +1118,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     return -1;   // already scrolled to the row; the list has one section
 }
 
-- (UIBarButtonItem *)sortButton
+- (UIMenu *)appsSortMenu
 {
     __weak typeof(self) weakSelf = self;
     UIDeferredMenuElement *items = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
@@ -1110,8 +1161,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         UIMenu *show = [UIMenu menuWithTitle:WQLocalizedNullable(@"Show") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:filters];
         completion(@[sort, show]);
     }];
-    return [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"]
-                                             menu:[UIMenu menuWithChildren:@[items]]];
+    return [UIMenu menuWithChildren:@[items]];
 }
 
 - (void)resortApps
@@ -1163,6 +1213,35 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     _query = [searchController.searchBar.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     [self rebuildVisibleApps];
     [self.tableView reloadData];
+}
+
+- (void)willPresentSearchController:(UISearchController *__unused)searchController
+{
+    if (_appsCornerRail) wq_motion_set_visible(_appsCornerRail, NO, YES);
+}
+
+- (void)willDismissSearchController:(UISearchController *__unused)searchController
+{
+    if (_appsCornerRail) wq_motion_set_visible(_appsCornerRail, YES, YES);
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave(scrollView);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _summaryCard);
+    NSIndexPath *top = self.tableView.indexPathsForVisibleRows.firstObject;
+    if (top) wq_motion_scroll_detent(scrollView, top.row / 8);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section

@@ -146,6 +146,7 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 @implementation WQPlistEditorViewController {
     NSArray *_sortedKeyCache;
     BOOL _keysDirty;
+    UIVisualEffectView *_headerCard;
     UIVisualEffectView *_plistDock;
     UIButton *_dockSaveButton;
     UIButton *_dockAddButton;
@@ -217,8 +218,9 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     _dockMoreButton = wq_motion_dock_button(nil, @"ellipsis.circle", WQLocalized(@"More"));
     _dockMoreButton.showsMenuAsPrimaryAction = YES;
 
-    _plistDock = wq_motion_make_dock(@[_dockAddButton, _dockSaveButton, _dockMoreButton], 8);
-    wq_motion_install_dock(_plistDock, self, self.tableView);
+    _plistDock = wq_motion_make_dock(@[_dockAddButton, _dockSaveButton, _dockMoreButton], 6);
+    wq_motion_add_hud_brackets(_plistDock, 5, 8);
+    wq_motion_install_corner_rail(_plistDock, self, self.tableView, 12.0);
 }
 
 - (UIView *)buildPlistHeader
@@ -227,6 +229,8 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 62)];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UIVisualEffectView *card = wq_theme_make_glass_card(16, NO);
+    _headerCard = card;
+    wq_motion_add_hud_brackets(card, 6, 8);
     [container addSubview:card];
 
     UILabel *label = [UILabel new];
@@ -332,17 +336,6 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
 
 - (void)updateBar
 {
-    NSMutableArray *items = [NSMutableArray array];
-    if (!self.doc.readOnly && self.container) {
-        UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Save") style:wq_primary_button_style()
-                                                                target:self action:@selector(save)];
-        save.enabled = self.doc.edit.dirty && !self.doc.edit.saving;
-        [items addObject:save];
-        UIBarButtonItem *add = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
-                                                                              target:self action:@selector(add)];
-        add.enabled = !self.doc.edit.saving;
-        [items addObject:add];
-    }
     NSMutableArray *menu = [NSMutableArray array];
     __weak typeof(self) weakSelf = self;
     if (self.isArray && !self.doc.readOnly && !self.doc.edit.saving && self.container) {
@@ -358,9 +351,8 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     if (self.openAsHex) [menu addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Open in Hex Viewer") image:[UIImage systemImageNamed:@"number"]
                                                         identifier:nil handler:^(UIAction *__unused a) { [weakSelf leaveThen:weakSelf.openAsHex]; }]];
     UIMenu *moreMenu = menu.count ? [UIMenu menuWithChildren:menu] : nil;
-    if (moreMenu)
-        [items addObject:[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:moreMenu]];
-    self.navigationItem.rightBarButtonItems = items;
+    // Controls float in the edge-docked Glacier corner pill cluster.
+    self.navigationItem.rightBarButtonItems = nil;
     if (_plistDock) {
         BOOL editable = !self.doc.readOnly && self.container != nil;
         _dockAddButton.hidden = !editable;
@@ -716,8 +708,13 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
         })];
     }
     [sheet addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
-    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.count > 1
-        ? self.navigationItem.rightBarButtonItems[1] : self.navigationItem.rightBarButtonItems.firstObject;
+    if (_dockAddButton && _dockAddButton.window) {
+        sheet.popoverPresentationController.sourceView = _dockAddButton;
+        sheet.popoverPresentationController.sourceRect = _dockAddButton.bounds;
+    } else {
+        sheet.popoverPresentationController.sourceView = self.view;
+        sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMaxX(self.view.bounds) - 44, CGRectGetMaxY(self.view.bounds) - 64, 1, 1);
+    }
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
@@ -822,6 +819,23 @@ static void wqp_alert(UIViewController *host, NSString *title, NSString *message
     [self.container insertObject:v atIndex:(NSUInteger)to.row];
     [self.doc.edit noteChange];
     dispatch_async(dispatch_get_main_queue(), ^{ [self refresh]; });
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave(scrollView);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _headerCard);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 @end

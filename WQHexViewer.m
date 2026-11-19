@@ -116,8 +116,10 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     NSString *_status;
     dispatch_queue_t _queue;         // initial snapshot, page reads, saves
     dispatch_queue_t _searchQueue;   // searches, so a long scan never blocks pages or saves
+    UIVisualEffectView *_headerCard;
     UIVisualEffectView *_hexDock;
     UIButton *_dockSaveButton;
+    UIButton *_dockToolsButton;
     BOOL _didCascade;
 }
 
@@ -194,7 +196,6 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         });
     });
     [self buildHexDock];
-    wq_theme_apply_scroll_insets(self.tableView, 96.0);
     [self updateBar];
 }
 
@@ -223,18 +224,16 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         [weakSelf save];
     }] forControlEvents:UIControlEventTouchUpInside];
 
-    UIButton *discardBtn = wq_motion_dock_button(nil, @"arrow.uturn.backward", WQLocalized(@"Discard Changes"));
-    [discardBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        wq_haptic_selection();
-        [weakSelf discard];
-    }] forControlEvents:UIControlEventTouchUpInside];
+    _dockToolsButton = wq_motion_dock_button(nil, @"ellipsis.circle", WQLocalized(@"More"));
+    _dockToolsButton.showsMenuAsPrimaryAction = YES;
 
-    for (UIView *b in @[offsetBtn, findBtn, discardBtn]) {
+    for (UIView *b in @[offsetBtn, findBtn, _dockToolsButton]) {
         [NSLayoutConstraint activateConstraints:@[[b.heightAnchor constraintEqualToConstant:44],
                                                   [b.widthAnchor constraintGreaterThanOrEqualToConstant:44]]];
     }
-    _hexDock = wq_motion_make_dock(@[offsetBtn, findBtn, _dockSaveButton, discardBtn], 6);
-    wq_motion_install_dock(_hexDock, self, self.tableView);
+    _hexDock = wq_motion_make_dock(@[offsetBtn, findBtn, _dockSaveButton, _dockToolsButton], 6);
+    wq_motion_add_hud_brackets(_hexDock, 5, 8);
+    wq_motion_install_corner_rail(_hexDock, self, self.tableView, 12.0);
 }
 
 - (void)viewDidDisappear:(BOOL)animated
@@ -264,6 +263,8 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 44)];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UIVisualEffectView *card = wq_theme_make_glass_card(14, NO);
+    _headerCard = card;
+    wq_motion_add_hud_brackets(card, 5, 8);
     [container addSubview:card];
 
     UILabel *label = [UILabel new];
@@ -329,32 +330,26 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
                                    _edits.count ? WQLocalizedFormat(@" · %lu changed", (unsigned long)_edits.count) : @"",
                                    _editState.saving ? WQLocalized(@" · Saving…") : @"");
     self.navigationItem.prompt = prompt;
-    NSMutableArray *items = [NSMutableArray array];
-    if (!_readOnly) {
-        UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Save") style:wq_primary_button_style()
-                                                                target:self action:@selector(save)];
-        save.enabled = _edits.count > 0 && !_editState.saving;
-        [items addObject:save];
-    }
     __weak typeof(self) weakSelf = self;
     UIAction *discard = [UIAction actionWithTitle:WQLocalizedNullable(@"Discard Changes") image:[UIImage systemImageNamed:@"arrow.uturn.backward"] identifier:nil
-                                      handler:^(UIAction *__unused a) { [weakSelf discard]; }];
-    if (_editState.saving) discard.attributes = UIMenuElementAttributesDisabled;
+                                      handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf discard]; }];
+    if (_editState.saving || !_edits.count) discard.attributes = UIMenuElementAttributesDisabled;
     UIMenu *menu = [UIMenu menuWithChildren:@[
         [UIAction actionWithTitle:WQLocalizedNullable(@"Go to Offset…") image:[UIImage systemImageNamed:@"arrow.right.to.line"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf goToOffset]; }],
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf goToOffset]; }],
         [UIAction actionWithTitle:WQLocalizedNullable(@"Find Hex Bytes…") image:[UIImage systemImageNamed:@"magnifyingglass"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf promptFindHex:YES]; }],
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf promptFindHex:YES]; }],
         [UIAction actionWithTitle:WQLocalizedNullable(@"Find Text…") image:[UIImage systemImageNamed:@"text.magnifyingglass"] identifier:nil
-                          handler:^(UIAction *__unused a) { [weakSelf promptFindHex:NO]; }],
+                          handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf promptFindHex:NO]; }],
         discard,
     ]];
-    [items addObject:[[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"] menu:menu]];
-    self.navigationItem.rightBarButtonItems = items;
+    // Controls float in the edge-docked Glacier corner pill cluster.
+    self.navigationItem.rightBarButtonItems = nil;
     if (_dockSaveButton) {
         _dockSaveButton.hidden = _readOnly;
         _dockSaveButton.enabled = _edits.count > 0 && !_editState.saving;
     }
+    if (_dockToolsButton) _dockToolsButton.menu = menu;
 }
 
 #pragma mark Data
@@ -728,6 +723,24 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
             [self scrollToOffset:found];
         });
     });
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _headerCard);
+    NSIndexPath *top = self.tableView.indexPathsForVisibleRows.firstObject;
+    if (top) wq_motion_scroll_detent(scrollView, top.row / 64);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 @end

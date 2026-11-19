@@ -380,10 +380,15 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             [stack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:14],
             [stack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-14],
         ]];
+        wq_motion_add_hud_brackets(self.contentView, 7, 10);
+        wq_motion_add_scan_sweep(self.contentView, NO);
     }
     return self;
 }
 
+@end
+
+@interface WQCacheCleanerViewController () <UISearchControllerDelegate>
 @end
 
 @implementation WQCacheCleanerViewController {
@@ -404,6 +409,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     unsigned long long _scanBytes;   // found so far while scanning
     NSInteger _filterMode;   // 0 All, 1 Selected, 2 Large (50 MB+)
     NSMutableArray<UIButton *> *_filterPills;
+    UIScrollView *_headerPillScroll;
+    UIVisualEffectView *_cacheCornerRail;
     UIButton *_cleanPillButton;
     UIButton *_selectPillButton;
     BOOL _didCascade;
@@ -422,8 +429,10 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }
     self.tableView.tableHeaderView = [self buildGlassCacheHeader];
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
+    [self buildCacheCornerRail];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
+    search.delegate = self;
     search.obscuresBackgroundDuringPresentation = NO;
     search.searchBar.placeholder = WQLocalizedNullable(@"Search apps");
     self.navigationItem.searchController = search;
@@ -432,6 +441,31 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     [self scan];
+}
+
+- (void)buildCacheCornerRail
+{
+    __weak typeof(self) weakSelf = self;
+    _cleanPillButton = wq_motion_dock_pill(WQLocalized(@"Clean"), @"sparkles", YES);
+    [_cleanPillButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        typeof(self) me = weakSelf;
+        if (!me) return;
+        wq_haptic_impact(UIImpactFeedbackStyleMedium);
+        if (me->_cleaning) [me stopClean]; else [me confirmClean];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _selectPillButton = wq_motion_dock_pill(WQLocalized(@"Select"), @"checklist", NO);
+    _selectPillButton.showsMenuAsPrimaryAction = YES;
+
+    UIButton *rescanBtn = wq_motion_dock_button(nil, @"arrow.clockwise", WQLocalized(@"Rescan"));
+    [rescanBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [weakSelf userRefresh];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _cacheCornerRail = wq_motion_make_dock(@[_cleanPillButton, _selectPillButton, rescanBtn], 6);
+    wq_motion_add_hud_brackets(_cacheCornerRail, 5, 8);
+    wq_motion_install_corner_rail(_cacheCornerRail, self, self.tableView, 14.0);
 }
 
 - (UIView *)buildGlassCacheHeader
@@ -445,6 +479,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     pillScroll.showsHorizontalScrollIndicator = NO;
     pillScroll.alwaysBounceHorizontal = YES;
     pillScroll.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+    _headerPillScroll = pillScroll;
+    wq_motion_attach_horizontal_detents(pillScroll, 76.0);
 
     UIStackView *pillStack = [UIStackView new];
     pillStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -489,38 +525,10 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         [pillStack addArrangedSubview:pill];
     }];
 
-    // Grouped glass action toolbar directly below the filter pills (thumb-accessible without colliding with the floating tab bar).
-    _cleanPillButton = wq_motion_dock_pill(WQLocalized(@"Clean"), @"sparkles", YES);
-    [_cleanPillButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        typeof(self) me = weakSelf;
-        if (!me) return;
-        wq_haptic_impact(UIImpactFeedbackStyleMedium);
-        if (me->_cleaning) [me stopClean]; else [me confirmClean];
-    }] forControlEvents:UIControlEventTouchUpInside];
-    _selectPillButton = wq_motion_dock_pill(WQLocalized(@"Select"), @"checklist", NO);
-    _selectPillButton.showsMenuAsPrimaryAction = YES;
-    UIButton *rescanPill = wq_motion_dock_pill(WQLocalized(@"Rescan"), @"arrow.clockwise", NO);
-    [rescanPill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        wq_haptic_impact(UIImpactFeedbackStyleLight);
-        [weakSelf userRefresh];
-    }] forControlEvents:UIControlEventTouchUpInside];
-    UIStackView *actionRow = [[UIStackView alloc] initWithArrangedSubviews:@[_cleanPillButton, _selectPillButton, rescanPill]];
-    actionRow.axis = UILayoutConstraintAxisHorizontal;
-    actionRow.spacing = 8;
-    actionRow.alignment = UIStackViewAlignmentCenter;
-    UIView *actionGroup = wq_theme_glass_container(actionRow, 8);
-
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 96)];
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 48)];
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:strip];
     [header addSubview:pillScroll];
-    [header addSubview:actionGroup];
-    [NSLayoutConstraint activateConstraints:@[
-        [actionGroup.topAnchor constraintEqualToAnchor:pillScroll.bottomAnchor constant:2],
-        [actionGroup.leadingAnchor constraintEqualToAnchor:header.leadingAnchor constant:16],
-        [actionGroup.trailingAnchor constraintLessThanOrEqualToAnchor:header.trailingAnchor constant:-16],
-        [actionGroup.heightAnchor constraintEqualToConstant:40],
-    ]];
     return header;
 }
 
@@ -590,6 +598,16 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     [self updateButtons];
 }
 
+- (void)willPresentSearchController:(UISearchController *__unused)searchController
+{
+    if (_cacheCornerRail) wq_motion_set_visible(_cacheCornerRail, NO, YES);
+}
+
+- (void)willDismissSearchController:(UISearchController *__unused)searchController
+{
+    if (_cacheCornerRail) wq_motion_set_visible(_cacheCornerRail, YES, YES);
+}
+
 // While scanning, the bar shows how far the scan is; otherwise how much of
 // the reclaimable space is selected.
 - (void)setStatus:(NSString *)status progress:(float)progress
@@ -629,9 +647,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }
     NSUInteger n = 0;
     for (WQCacheItem *it in _items) if (it.selected) n++;
-    UIBarButtonItem *clean = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Clean") style:wq_primary_button_style()
-                                                             target:self action:@selector(confirmClean)];
-    clean.enabled = n > 0 && !_cleanRequiresRescan;
+    BOOL cleanEnabled = n > 0 && !_cleanRequiresRescan;
     NSArray *visible = self.visibleItems;
     BOOL allVisible = visible.count > 0;
     for (WQCacheItem *it in visible) if (it.limited || !it.selected) { allVisible = NO; break; }
@@ -646,17 +662,15 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }];
     all.state = allVisible ? UIMenuElementStateOn : UIMenuElementStateOff;
     UIMenu *selectMenu = [UIMenu menuWithChildren:@[all, none, large]];
-    UIBarButtonItem *select = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Select")
-                                                                menu:selectMenu];
-    select.enabled = visible.count > 0;
-    self.navigationItem.rightBarButtonItems = @[clean, select];
+    // Controls float in the bottom-trailing Glacier corner pill cluster.
+    self.navigationItem.rightBarButtonItems = nil;
     if (_cleanPillButton) {
         wq_theme_style_primary_button(_cleanPillButton, WQLocalizedNullable(@"Clean"), @"sparkles");
-        _cleanPillButton.enabled = clean.enabled;
+        _cleanPillButton.enabled = cleanEnabled;
     }
     if (_selectPillButton) {
         _selectPillButton.menu = selectMenu;
-        _selectPillButton.enabled = select.enabled;
+        _selectPillButton.enabled = visible.count > 0;
     }
 }
 
@@ -906,9 +920,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             self->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
             [self.refreshControl endRefreshing];
             [self.tableView reloadData];
+            [self.tableView layoutIfNeeded];
+            UITableViewCell *summaryCell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+            if (summaryCell) wq_motion_trigger_scan_sweep(summaryCell.contentView);
             if (!self->_didCascade && self.visibleItems.count) {
                 self->_didCascade = YES;
-                [self.tableView layoutIfNeeded];
                 wq_motion_cascade_visible(self.tableView);
             }
             [self updateButtons];
@@ -955,8 +971,9 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         BOOL busy = _scanning || _cleaning;
         cell.captionLabel.text = busy ? (_cleaning ? WQLocalized(@"Cleaning") : WQLocalized(@"Scanning")) : WQLocalized(@"Reclaimable");
         if (busy) [cell.spinner startAnimating]; else [cell.spinner stopAnimating];
-        // While the first scan runs, the total found so far counts up.
-        cell.totalLabel.text = wq_size_text((_scanning && !_items.count) ? _scanBytes : total);
+        // While the first scan runs, the total found so far rolls up smoothly.
+        unsigned long long shownBytes = (_scanning && !_items.count) ? _scanBytes : total;
+        wq_motion_rollup_bytes(cell.totalLabel, shownBytes, busy ? 0.16 : 0.36);
         float shown = _scanning ? _scanProgress : total ? (float)((double)selected / (double)total) : 0;
         [cell.bar setProgress:shown animated:YES];
         cell.bar.hidden = NO;
@@ -1173,9 +1190,30 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                 [self rescanAfterClean:YES];
                 self->_result = WQLocalizedFormat(@"Freed %@.%@", wq_size_text(freed),
                                  allOk ? @"" : WQLocalized(@" Some items could not be removed (see Log)."));
+                UITableViewCell *summaryCell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+                if (summaryCell) wq_motion_trigger_scan_sweep(summaryCell.contentView);
             }
         });
     });
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave(scrollView);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _headerPillScroll);
+    NSIndexPath *top = self.tableView.indexPathsForVisibleRows.firstObject;
+    if (top) wq_motion_scroll_detent(scrollView, top.section == 0 ? -1 : (top.row / 6));
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 @end

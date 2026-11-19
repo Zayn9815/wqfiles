@@ -41,17 +41,50 @@ void wq_motion_cascade_visible(UIScrollView *scrollView);
 UIVisualEffectView *wq_motion_make_dock(NSArray<UIView *> *views, CGFloat spacing);
 // Pins `dock` to the bottom safe area of `host`, centred, and adds the scroll inset.
 void wq_motion_install_dock(UIView *dock, UIViewController *host, UIScrollView *_Nullable scroll);
+// Pin a compact edge-docked Glass Pill Cluster at the bottom-trailing edge above content.
+void wq_motion_install_corner_rail(UIView *rail, UIViewController *host, UIScrollView *_Nullable scroll, CGFloat bottomOffset);
 // Expand/collapse: the glass shape morphs smoothly with Bezier/spring interpolation.
 void wq_motion_set_visible(UIVisualEffectView *glass, BOOL visible, BOOL animated);
 // Animates container layout changes (e.g. dock item expansion/collapse) using a
 // fluid cubic-Bezier interpolation curve.
 void wq_motion_morph_layout(UIView *container, void (^changes)(void));
+// Spring morph specifically tuned for search bar & selection HUD transitions
+// (Response: 0.32s, Damping: 0.72). Falls back to opacity/instant layout under Reduce Motion.
+void wq_motion_spring_morph(UIView *container, void (^changes)(void), void (^_Nullable completion)(void));
 // A glass icon/title button suitable for a dock.
 UIButton *wq_motion_dock_button(NSString *_Nullable title, NSString *symbolName, NSString *a11yLabel);
 // A capsule pill button (snow-white primary or frosted glacier glass) for grouped action docks.
 UIButton *wq_motion_dock_pill(NSString *title, NSString *_Nullable symbolName, BOOL prominent);
 // Animates filter pill state transitions cleanly.
 void wq_motion_set_pill_active(UIButton *button, BOOL active);
+
+#pragma mark - 120Hz Sci-Fi Scrolling Choreography
+// 3D Perspective Viewport Wave: scales visible cells/cards (0.96 -> 1.0), applies
+// subtle 3D X-axis perspective pitch (max 3.5°), and brightens icy cyan/silver rims
+// near the focal center. Disabled cleanly under Reduce Motion.
+void wq_motion_apply_scroll_wave(UIScrollView *scrollView);
+void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView *> *views);
+// Velocity-reactive top/bottom aurora edge glows tied to scroll velocity.
+void wq_motion_update_scroll_aurora(UIScrollView *scrollView, UIView *hostView);
+void wq_motion_settle_scroll_aurora(UIScrollView *scrollView, UIView *hostView);
+// 0.35x vertical parallax depth for top headers as content scrolls beneath them.
+void wq_motion_apply_header_parallax(UIScrollView *scrollView, UIView *_Nullable headerView);
+// Rate-limited tactile UISelectionFeedbackGenerator micro-tick across scroll boundaries.
+void wq_motion_scroll_detent(UIScrollView *scrollView, NSInteger detentIndex);
+// Attaches horizontal scroll detents (e.g. horizontal filter pill rails).
+void wq_motion_attach_horizontal_detents(UIScrollView *scrollView, CGFloat stepWidth);
+
+#pragma mark - Holographic HUD & Kinetic Telemetry
+// Subtle 1pt sci-fi corner-bracket hairlines (#00F5FF / #4FFFB0 at low opacity).
+void wq_motion_add_hud_brackets(UIView *view, CGFloat inset, CGFloat armLength);
+// Masked CAGradientLayer holographic light-beam sweep across a HUD card or ring.
+// Disabled automatically under Reduce Motion.
+void wq_motion_add_scan_sweep(UIView *view, BOOL repeating);
+void wq_motion_trigger_scan_sweep(UIView *view);
+// 120Hz ProMotion cubic ease-out numeric & byte counter roll-up.
+void wq_motion_rollup_number(UILabel *label, double targetValue, NSTimeInterval duration,
+                             NSString *(^formatter)(double value));
+void wq_motion_rollup_bytes(UILabel *label, unsigned long long targetBytes, NSTimeInterval duration);
 
 #pragma mark - Status Transitions
 void wq_motion_pop(UIView *view);                 // elastic badge/state-change bounce

@@ -480,19 +480,18 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    wq_theme_apply_scroll_insets(self.tableView, _exportName ? 96.0 : 28.0);
+    wq_theme_apply_scroll_insets(self.tableView, 28.0);
+    self.navigationItem.rightBarButtonItem = nil;
     if (_exportName) {
-        UIBarButtonItem *csvItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"CSV") style:UIBarButtonItemStylePlain
-                                                                   target:self action:@selector(exportCSV:)];
-        self.navigationItem.rightBarButtonItem = csvItem;
         __weak typeof(self) weakSelf = self;
         _csvPill = wq_motion_dock_pill(WQLocalized(@"CSV"), @"square.and.arrow.up", NO);
         [_csvPill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
             wq_haptic_selection();
-            [weakSelf exportCSV:weakSelf.navigationItem.rightBarButtonItem];
+            [weakSelf exportCSV:nil];
         }] forControlEvents:UIControlEventTouchUpInside];
-        UIVisualEffectView *dock = wq_motion_make_dock(@[_csvPill], 8);
-        wq_motion_install_dock(dock, self, self.tableView);
+        UIVisualEffectView *dock = wq_motion_make_dock(@[_csvPill], 6);
+        wq_motion_add_hud_brackets(dock, 5, 8);
+        wq_motion_install_corner_rail(dock, self, self.tableView, 12.0);
     }
     [self loadMore];
 }
@@ -722,6 +721,22 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     });
 }
 
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave(scrollView);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
 @end
 
 #pragma mark - Query
@@ -925,6 +940,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     BOOL _loading, _saving;
     NSUInteger _shownGeneration;
     WQScanCancellation *_counting;      // the running row count, if any
+    UIVisualEffectView *_headerCard;
     UIVisualEffectView *_sqliteDock;
     UIButton *_dockActionButton;
     UIButton *_dockSQLButton;
@@ -980,8 +996,9 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         [weakSelf openQuery];
     }] forControlEvents:UIControlEventTouchUpInside];
 
-    _sqliteDock = wq_motion_make_dock(@[_dockActionButton, _dockSQLButton], 8);
-    wq_motion_install_dock(_sqliteDock, self, self.tableView);
+    _sqliteDock = wq_motion_make_dock(@[_dockActionButton, _dockSQLButton], 6);
+    wq_motion_add_hud_brackets(_sqliteDock, 5, 8);
+    wq_motion_install_corner_rail(_sqliteDock, self, self.tableView, 12.0);
 }
 
 - (UIView *)buildSQLiteHeader
@@ -990,6 +1007,8 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, 62)];
     container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     UIVisualEffectView *card = wq_theme_make_glass_card(16, NO);
+    _headerCard = card;
+    wq_motion_add_hud_brackets(card, 6, 8);
     [container addSubview:card];
 
     UILabel *label = [UILabel new];
@@ -1086,23 +1105,8 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
 // Edit (when the database may be changed), or Save while editing; SQL.
 - (void)updateButtons
 {
-    UIBarButtonItem *sql = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"SQL") style:UIBarButtonItemStylePlain
-                                                           target:self action:@selector(openQuery)];
-    sql.enabled = _snapshot != nil && !_saving;
-    NSMutableArray *items = [NSMutableArray new];
-    if (_snapshot.editing) {
-        UIBarButtonItem *save = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Save") style:UIBarButtonItemStyleProminent
-                                                                target:self action:@selector(confirmSave)];
-        save.enabled = _snapshot.dirty && !_saving;
-        [items addObject:save];
-    } else if (!_readOnly) {
-        UIBarButtonItem *edit = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Edit") style:UIBarButtonItemStylePlain
-                                                                target:self action:@selector(startEditing)];
-        edit.enabled = _snapshot != nil;
-        [items addObject:edit];
-    }
-    [items addObject:sql];
-    self.navigationItem.rightBarButtonItems = items;
+    // Controls float in the edge-docked Glacier corner pill cluster.
+    self.navigationItem.rightBarButtonItems = nil;
     if (_sqliteDock) {
         _dockSQLButton.enabled = _snapshot != nil && !_saving;
         if (_snapshot.editing) {
@@ -1296,6 +1300,23 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         : [[WQSQLiteRowsViewController alloc] initWithSnapshot:_snapshot sql:[@"SELECT * FROM " stringByAppendingString:wq_sqlite_quote_identifier(name)]
                                                          title:name exportName:name limit:0];
     [self.navigationController pushViewController:rows animated:YES];
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    wq_motion_apply_scroll_wave(scrollView);
+    wq_motion_update_scroll_aurora(scrollView, self.view);
+    wq_motion_apply_header_parallax(scrollView, _headerCard);
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+{
+    wq_motion_settle_scroll_aurora(scrollView, self.view);
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+{
+    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 @end
