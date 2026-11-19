@@ -633,6 +633,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     CGFloat stripHeight = strip.frame.size.height;
 
     UIVisualEffectView *summaryCard = wq_theme_make_glass_card(20, NO);
+    wq_motion_add_holographic_tilt(summaryCard, 0.045);
     _summaryTitleLabel = [UILabel new];
     _summaryTitleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
     _summaryTitleLabel.textColor = wq_theme_primary_text();
@@ -709,6 +710,8 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
             [NSUserDefaults.standardUserDefaults setInteger:sender.tag forKey:kWQAppsFilterPref];
             [strongSelf syncFilterPills];
             [strongSelf resortApps];
+            [strongSelf.tableView layoutIfNeeded];
+            wq_motion_cascade_visible(strongSelf.tableView);
         }] forControlEvents:UIControlEventTouchUpInside];
         [self->_filterPills addObject:pill];
         [pillStack addArrangedSubview:pill];

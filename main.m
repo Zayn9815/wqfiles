@@ -167,13 +167,13 @@ static NSString *wq_file_hex_dump(NSData *data, BOOL truncated)
 static UIColor *wq_syntax_color(WQSyntaxKind kind)
 {
     switch (kind) {
-        case WQSyntaxComment: return [wq_theme_secondary_text() colorWithAlphaComponent:0.72];
-        case WQSyntaxString: return [UIColor colorWithRed:1.0 green:0.78 blue:0.76 alpha:1.0];
-        case WQSyntaxKey: return [UIColor colorWithRed:0.64 green:0.93 blue:0.90 alpha:1.0];
-        case WQSyntaxKeyword: return [UIColor colorWithRed:1.0 green:0.65 blue:0.82 alpha:1.0];
-        case WQSyntaxNumber: return [UIColor colorWithRed:0.84 green:0.75 blue:1.0 alpha:1.0];
-        case WQSyntaxTag: return [UIColor colorWithRed:0.68 green:0.85 blue:1.0 alpha:1.0];
-        case WQSyntaxAttribute: return [UIColor colorWithRed:1.0 green:0.84 blue:0.56 alpha:1.0];
+        case WQSyntaxComment: return [wq_theme_secondary_text() colorWithAlphaComponent:0.68];
+        case WQSyntaxString: return [UIColor colorWithRed:0.31 green:1.00 blue:0.69 alpha:1.0];   // #4FFFB0 aurora teal
+        case WQSyntaxKey: return [UIColor colorWithRed:0.00 green:0.96 blue:1.00 alpha:1.0];      // #00F5FF glacial aqua
+        case WQSyntaxKeyword: return [UIColor colorWithRed:0.50 green:0.91 blue:1.00 alpha:1.0];  // #80E8FF frosted cyan
+        case WQSyntaxNumber: return [UIColor colorWithRed:0.62 green:0.78 blue:1.00 alpha:1.0];   // #9DC7FF arctic periwinkle
+        case WQSyntaxTag: return [UIColor colorWithRed:0.69 green:0.89 blue:1.00 alpha:1.0];      // #B0E2FF polar blue
+        case WQSyntaxAttribute: return [UIColor colorWithRed:0.82 green:0.91 blue:0.98 alpha:1.0]; // #D1E8FA ice silver
         case WQSyntaxPreprocessor: return wq_theme_secondary_text();
     }
     return wq_theme_primary_text();
@@ -237,7 +237,7 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.clearColor;
     _textView = [UITextView new];
-    _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
+    _textView.backgroundColor = UIColor.clearColor;   // glacier canvas shows through
     _textView.textColor = wq_theme_primary_text();
     _textView.translatesAutoresizingMaskIntoConstraints = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
@@ -1742,7 +1742,7 @@ static NSString *wq_info_date(struct timespec ts)
                                                        target:self action:@selector(exitBackupSelection)];
         _deleteItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Delete") style:UIBarButtonItemStylePlain
                                                        target:self action:@selector(deleteSelectedBackups)];
-        _deleteItem.tintColor = UIColor.systemRedColor;
+        _deleteItem.tintColor = [UIColor colorWithRed:0.62 green:0.86 blue:1.0 alpha:1.0];
         _allItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle"]
                                                      style:UIBarButtonItemStylePlain
                                                     target:self action:@selector(selectAllBackups)];
@@ -1901,7 +1901,7 @@ static NSString *wq_info_date(struct timespec ts)
     else [self moveHere];
 }
 
-// The dock gives way to the selection / move toolbar and morphs back afterwards.
+// The Glacier Edge dock morphs fluidly with Bezier curves when actions expand/collapse.
 - (void)refreshActionDock
 {
     if (!_actionDock) return;
@@ -1916,7 +1916,12 @@ static NSString *wq_info_date(struct timespec ts)
         _dockPasteButton.enabled = !hasMove || canPaste;
         _dockPasteButton.accessibilityLabel = hasMove ? WQLocalized(gWQCopyPending ? @"Copy Here" : @"Move Here") : WQLocalized(@"Paste");
     }
-    if (_dockCancelMoveButton) _dockCancelMoveButton.hidden = !hasMove;
+    if (_dockCancelMoveButton && _dockCancelMoveButton.hidden != !hasMove) {
+        UIButton *cancelBtn = _dockCancelMoveButton;
+        wq_motion_morph_layout(_actionDock, ^{
+            cancelBtn.hidden = !hasMove;
+        });
+    }
     BOOL showing = !_actionDock.hidden && _actionDock.alpha > 0.99;
     if (show == showing) return;
     wq_motion_set_visible(_actionDock, show, self.view.window != nil);
@@ -1951,7 +1956,7 @@ static NSString *wq_info_date(struct timespec ts)
                                                                target:self action:@selector(compressSelectedFiles)];
         UIBarButtonItem *del = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Delete") style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(deleteSelectedFiles)];
-        del.tintColor = UIColor.systemRedColor;
+        del.tintColor = [UIColor colorWithRed:0.62 green:0.86 blue:1.0 alpha:1.0];
         UIBarButtonItem *rename = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Rename") style:UIBarButtonItemStylePlain
                                                                   target:self action:@selector(renameSelectedFile)];
         move.enabled = zip.enabled = del.enabled = any;
@@ -2616,6 +2621,7 @@ static NSString *wq_info_date(struct timespec ts)
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"item"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"item"];
     cell.backgroundColor = wq_prism_enabled() ? [UIColor clearColor] : nil;
+    cell.accessoryView = nil;
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
     if (_error) {
         c.text = WQLocalizedNullable(@"Cannot open this folder");
@@ -2624,6 +2630,7 @@ static NSString *wq_info_date(struct timespec ts)
             : WQLocalizedFormat(@"%@\n\nThis method only opens containers. Use App Data, App Groups, Extension Data, Internal Daemons or System Groups for the folders inside /private/var.", _error);
         c.secondaryTextProperties.numberOfLines = 0;
         c.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
+        c.imageProperties.tintColor = wq_theme_accent();
         cell.contentConfiguration = c;
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
@@ -2647,16 +2654,32 @@ static NSString *wq_info_date(struct timespec ts)
     c.secondaryTextProperties.color = wq_theme_secondary_text();
     UIImage *appIcon = item.bundleID ? wq_app_icon(item.bundleID) : nil;
     c.image = appIcon ?: [UIImage systemImageNamed:item.isDir ? @"folder.fill" : (item.isLink ? @"link" : @"doc")];
-    if (appIcon) c.imageProperties.maximumSize = CGSizeMake(36, 36);
+    if (appIcon) {
+        c.imageProperties.maximumSize = CGSizeMake(36, 36);
+    } else {
+        c.imageProperties.tintColor = item.isDir ? wq_theme_accent() : (item.isLink ? wq_theme_aurora_teal() : wq_theme_detail_text());
+    }
     cell.contentConfiguration = c;
-    if (_selectingFiles) {
-        cell.accessoryType = [_selectedFiles containsObject:item.path]
-            ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    } else if (_selectingBackups) {
-        BOOL selectable = wq_backup_unit_deletable(item.path);
-        cell.accessoryType = selectable && [_selectedBackups containsObject:item.path]
-            ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    if (_selectingFiles || _selectingBackups) {
+        BOOL selectable = _selectingFiles || wq_backup_unit_deletable(item.path);
+        BOOL checked = selectable && (_selectingFiles
+            ? [_selectedFiles containsObject:item.path]
+            : [_selectedBackups containsObject:item.path]);
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        if (selectable) {
+            UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:20 weight:UIImageSymbolWeightSemibold];
+            UIImageView *badge = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:checked ? @"checkmark.circle.fill" : @"circle"
+                                                                            withConfiguration:sym]];
+            badge.tintColor = checked ? wq_theme_accent() : [wq_theme_secondary_text() colorWithAlphaComponent:0.55];
+            if (checked) {
+                badge.layer.shadowColor = wq_theme_accent().CGColor;
+                badge.layer.shadowRadius = 7.0;
+                badge.layer.shadowOpacity = 0.65;
+                badge.layer.shadowOffset = CGSizeZero;
+            }
+            [badge sizeToFit];
+            cell.accessoryView = badge;
+        }
         cell.selectionStyle = selectable ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
     } else {
         cell.accessoryType = item.isDir ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
@@ -2681,7 +2704,10 @@ static NSString *wq_info_date(struct timespec ts)
         NSString *path = _items[(NSUInteger)indexPath.row].path;
         if ([_selectedFiles containsObject:path]) [_selectedFiles removeObject:path];
         else [_selectedFiles addObject:path];
+        wq_haptic_selection();
         [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+        UIView *badge = [tableView cellForRowAtIndexPath:indexPath].accessoryView;
+        if (badge) wq_motion_pop(badge);
         [self updateFileSelectionTitle];
         return;
     }
@@ -2690,7 +2716,10 @@ static NSString *wq_info_date(struct timespec ts)
         WQItem *selected = _items[(NSUInteger)indexPath.row];
         if (!wq_backup_unit_deletable(selected.path)) return;
         [_selectedBackups addObject:selected.path];
+        wq_haptic_selection();
         [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+        UIView *badge = [tableView cellForRowAtIndexPath:indexPath].accessoryView;
+        if (badge) wq_motion_pop(badge);
         [self updateBackupSelectionBar];
         return;
     }
@@ -3504,7 +3533,7 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     self.title = WQLocalizedNullable(@"Log");
     self.view.backgroundColor = UIColor.clearColor;
     _textView = [[UITextView alloc] initWithFrame:self.view.bounds];
-    _textView.backgroundColor = UIColor.clearColor;   // crimson canvas shows through
+    _textView.backgroundColor = UIColor.clearColor;   // glacier canvas shows through
     _textView.textColor = wq_theme_primary_text();
     _textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     _textView.editable = NO;
@@ -3557,8 +3586,8 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
     self.delegate = self;
     self.interactivePopGestureRecognizer.delegate = self;
     if (wq_prism_enabled()) self.navigationBar.prefersLargeTitles = YES;
-    // Crimson Liquid Glass: the bar itself stays clear so iOS 26 floats its
-    // glass bar buttons over the canvas; titles are white.
+    // Glacier Liquid Glass: the bar itself stays clear so iOS 26 floats its
+    // glass bar buttons over the arctic canvas; titles are snow-white.
     UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
     [appearance configureWithDefaultBackground];
     appearance.backgroundColor = [UIColor clearColor];
@@ -3689,7 +3718,7 @@ static NSString *wq_deleted_place(NSString *original)
     if (!_items.count || !wq_deleting_allowed()) { self.navigationItem.rightBarButtonItem = nil; return; }
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Delete Backups…")
         style:UIBarButtonItemStylePlain target:self action:@selector(confirmDeleteAll)];
-    self.navigationItem.rightBarButtonItem.tintColor = UIColor.systemRedColor;
+    self.navigationItem.rightBarButtonItem.tintColor = [UIColor colorWithRed:0.62 green:0.86 blue:1.0 alpha:1.0];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
@@ -4107,17 +4136,21 @@ static UIImage *wq_language_flag(NSString *code)
 
 static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 {
-    if ([tone isEqualToString:@"violet"]) return @[[UIColor colorWithRed:0.71 green:0.61 blue:1.00 alpha:1], [UIColor colorWithRed:0.43 green:0.31 blue:0.91 alpha:1]];
-    if ([tone isEqualToString:@"mint"])   return @[[UIColor colorWithRed:0.38 green:0.92 blue:0.80 alpha:1], [UIColor colorWithRed:0.04 green:0.67 blue:0.55 alpha:1]];
-    if ([tone isEqualToString:@"amber"])  return @[[UIColor colorWithRed:1.00 green:0.84 blue:0.54 alpha:1], [UIColor colorWithRed:0.88 green:0.55 blue:0.09 alpha:1]];
-    if ([tone isEqualToString:@"pink"])   return @[[UIColor colorWithRed:1.00 green:0.62 blue:0.80 alpha:1], [UIColor colorWithRed:0.87 green:0.23 blue:0.53 alpha:1]];
-    if ([tone isEqualToString:@"sky"])    return @[[UIColor colorWithRed:0.54 green:0.85 blue:1.00 alpha:1], [UIColor colorWithRed:0.17 green:0.58 blue:0.91 alpha:1]];
-    if ([tone isEqualToString:@"orange"]) return @[[UIColor colorWithRed:1.00 green:0.73 blue:0.49 alpha:1], [UIColor colorWithRed:0.89 green:0.42 blue:0.12 alpha:1]];
-    if ([tone isEqualToString:@"indigo"]) return @[[UIColor colorWithRed:0.55 green:0.55 blue:1.00 alpha:1], [UIColor colorWithRed:0.26 green:0.25 blue:0.79 alpha:1]];
-    if ([tone isEqualToString:@"gray"])    return @[[UIColor colorWithRed:0.67 green:0.71 blue:0.80 alpha:1], [UIColor colorWithRed:0.35 green:0.40 blue:0.49 alpha:1]];
-    if ([tone isEqualToString:@"crimson"]) return @[[UIColor colorWithRed:0.94 green:0.39 blue:0.37 alpha:1], [UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:1]];
-    // Default tone: crimson-rose, matching the Liquid Glass canvas.
-    return @[[UIColor colorWithRed:0.95 green:0.52 blue:0.48 alpha:1], [UIColor colorWithRed:0.62 green:0.17 blue:0.16 alpha:1]];
+    if ([tone isEqualToString:@"violet"])  return @[[UIColor colorWithRed:0.44 green:0.74 blue:1.00 alpha:1], [UIColor colorWithRed:0.14 green:0.35 blue:0.72 alpha:1]];
+    if ([tone isEqualToString:@"mint"] || [tone isEqualToString:@"aurora"])
+        return @[[UIColor colorWithRed:0.31 green:1.00 blue:0.69 alpha:1], [UIColor colorWithRed:0.04 green:0.56 blue:0.54 alpha:1]];
+    if ([tone isEqualToString:@"amber"] || [tone isEqualToString:@"frost"])
+        return @[[UIColor colorWithRed:0.72 green:0.91 blue:1.00 alpha:1], [UIColor colorWithRed:0.20 green:0.49 blue:0.68 alpha:1]];
+    if ([tone isEqualToString:@"pink"] || [tone isEqualToString:@"ice"])
+        return @[[UIColor colorWithRed:0.54 green:0.94 blue:1.00 alpha:1], [UIColor colorWithRed:0.10 green:0.48 blue:0.66 alpha:1]];
+    if ([tone isEqualToString:@"sky"])     return @[[UIColor colorWithRed:0.24 green:0.86 blue:1.00 alpha:1], [UIColor colorWithRed:0.07 green:0.45 blue:0.74 alpha:1]];
+    if ([tone isEqualToString:@"orange"] || [tone isEqualToString:@"arctic"])
+        return @[[UIColor colorWithRed:0.42 green:0.98 blue:0.92 alpha:1], [UIColor colorWithRed:0.06 green:0.50 blue:0.62 alpha:1]];
+    if ([tone isEqualToString:@"indigo"] || [tone isEqualToString:@"polar"])
+        return @[[UIColor colorWithRed:0.40 green:0.68 blue:0.98 alpha:1], [UIColor colorWithRed:0.11 green:0.28 blue:0.58 alpha:1]];
+    if ([tone isEqualToString:@"gray"])    return @[[UIColor colorWithRed:0.72 green:0.84 blue:0.94 alpha:1], [UIColor colorWithRed:0.26 green:0.39 blue:0.52 alpha:1]];
+    // Default ("glacier" / aqua): luminous glacial aqua to deep arctic cyan.
+    return @[[UIColor colorWithRed:0.00 green:0.96 blue:1.00 alpha:1], [UIColor colorWithRed:0.07 green:0.43 blue:0.62 alpha:1]];
 }
 
 @interface WQPrismGlassView : UIView
@@ -4140,7 +4173,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         self.clipsToBounds = YES;
         self.backgroundColor = [UIColor clearColor];
 
-        // Native iOS 26 Liquid Glass, tinted crimson crystal.
+        // Native iOS 26 Liquid Glass, tinted frosty glacier ice-blue.
         _effect = [[UIVisualEffectView alloc] initWithEffect:nil];
         _effect.translatesAutoresizingMaskIntoConstraints = NO;
         _effect.userInteractionEnabled = NO;
@@ -4154,25 +4187,25 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             [_effect.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         ]];
 
-        // Layered diagonal crystal refraction sheen across the prism face.
+        // Layered diagonal snow-silver & icy-teal refraction sheen across the prism face.
         _sheen = [CAGradientLayer layer];
         _sheen.startPoint = CGPointMake(0.0, 0.0);
         _sheen.endPoint = CGPointMake(0.95, 0.90);
         _sheen.colors = @[
-            (id)[UIColor colorWithRed:1.0 green:0.93 blue:0.95 alpha:0.24].CGColor,
-            (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.90 alpha:0.07].CGColor,
-            (id)[UIColor colorWithRed:1.0 green:0.86 blue:0.90 alpha:0.0].CGColor,
+            (id)[UIColor colorWithRed:0.88 green:1.00 blue:1.00 alpha:0.22].CGColor,
+            (id)[UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.06].CGColor,
+            (id)[UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.0].CGColor,
         ];
         _sheen.locations = @[@0.0, @0.34, @0.72];
         [self.layer addSublayer:_sheen];
 
-        // Secondary bottom-edge optical rim reflection.
+        // Secondary bottom-edge optical rim reflection in icy-teal.
         _bottomRim = [CAGradientLayer layer];
         _bottomRim.startPoint = CGPointMake(0.5, 1.0);
         _bottomRim.endPoint = CGPointMake(0.5, 0.72);
         _bottomRim.colors = @[
-            (id)[UIColor colorWithRed:1.0 green:0.78 blue:0.84 alpha:0.14].CGColor,
-            (id)[UIColor colorWithRed:1.0 green:0.78 blue:0.84 alpha:0.0].CGColor,
+            (id)[UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.18].CGColor,
+            (id)[UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.0].CGColor,
         ];
         [self.layer addSublayer:_bottomRim];
 
@@ -4196,7 +4229,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     return self;
 }
 
-// Reduce Transparency: an opaque crimson surface instead of glass.
+// Reduce Transparency: an opaque glacier slate surface instead of glass.
 - (void)updateMaterial
 {
     UIVisualEffect *glass = wq_theme_glass_effect(NO);
@@ -4215,7 +4248,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
 - (void)updateBorder
 {
-    // Crisp crystal specular rim.
+    // Crisp crystalline snow-silver specular rim.
     CGFloat scale = self.traitCollection.displayScale;
     if (scale <= 0) scale = 3.0;
     self.layer.borderWidth = MAX(0.75, 2.0 / scale);
@@ -4224,7 +4257,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
 @end
 
-// Circular frosted crystal orb icon badge.
+// Circular frosted glacier orb icon badge.
 @interface WQPrismIconTile : UIView
 - (instancetype)initWithSymbol:(NSString *)symbol tone:(NSString *)tone size:(CGFloat)size;
 @end
@@ -4242,7 +4275,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         self.userInteractionEnabled = NO;
         self.layer.cornerRadius = size * 0.5;
         self.layer.borderWidth = 0.9;
-        self.layer.borderColor = [UIColor colorWithRed:1.0 green:0.92 blue:0.94 alpha:0.55].CGColor;
+        self.layer.borderColor = [UIColor colorWithRed:0.88 green:1.00 blue:1.00 alpha:0.52].CGColor;
         self.clipsToBounds = YES;
         NSArray<UIColor *> *colors = WQPrismTone(tone);
         _gradient = [CAGradientLayer layer];
@@ -4353,14 +4386,14 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         _titleLabel.userInteractionEnabled = NO;
         [self addSubview:_titleLabel];
 
-        // Frosted capsule around path metadata.
+        // Frosted ice capsule around path metadata.
         UIView *metaPill = [UIView new];
         metaPill.translatesAutoresizingMaskIntoConstraints = NO;
-        metaPill.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.10];
+        metaPill.backgroundColor = [UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.10];
         metaPill.layer.cornerRadius = 8;
         metaPill.layer.cornerCurve = kCACornerCurveContinuous;
         metaPill.layer.borderWidth = 0.5;
-        metaPill.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.22].CGColor;
+        metaPill.layer.borderColor = wq_theme_rim_teal().CGColor;
         metaPill.userInteractionEnabled = NO;
         [self addSubview:metaPill];
 
@@ -4368,7 +4401,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         _metaLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _metaLabel.font = metaFont;
         _metaLabel.adjustsFontForContentSizeCategory = YES;
-        _metaLabel.textColor = wq_theme_secondary_text();
+        _metaLabel.textColor = wq_theme_detail_text();
         _metaLabel.text = meta;
         _metaLabel.numberOfLines = 1;
         _metaLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
@@ -4386,7 +4419,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             _moreButton.translatesAutoresizingMaskIntoConstraints = NO;
             UIButtonConfiguration *mcfg = [UIButtonConfiguration glassButtonConfiguration];
             mcfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-            mcfg.baseBackgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.14];
+            mcfg.baseBackgroundColor = [UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.14];
             mcfg.baseForegroundColor = wq_theme_secondary_text();
             mcfg.contentInsets = NSDirectionalEdgeInsetsZero;
             UIImageSymbolConfiguration *msym = [UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightBold];
@@ -4403,10 +4436,10 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
             _chevronOrb = [UIView new];
             _chevronOrb.translatesAutoresizingMaskIntoConstraints = NO;
-            _chevronOrb.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.14];
+            _chevronOrb.backgroundColor = [UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.14];
             _chevronOrb.layer.cornerRadius = 12;
             _chevronOrb.layer.borderWidth = 0.6;
-            _chevronOrb.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.28].CGColor;
+            _chevronOrb.layer.borderColor = wq_theme_rim().CGColor;
             _chevronOrb.userInteractionEnabled = NO;
             [self addSubview:_chevronOrb];
 
@@ -4460,19 +4493,19 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 - (void)setHighlighted:(BOOL)highlighted
 {
     [super setHighlighted:highlighted];
-    [UIView animateWithDuration:0.16 animations:^{ self.alpha = highlighted ? 0.86 : 1.0; }];
+    [UIView animateWithDuration:0.16 animations:^{ self.alpha = highlighted ? 0.88 : 1.0; }];
 }
 
-// Scale/rebound/rim-pulse physics live in WQMotion (UIViewPropertyAnimator springs).
+// 3D holographic touch, dynamic ice reflection, and elastic spring rebound (WQMotion).
 - (void)didMoveToSuperview
 {
     [super didMoveToSuperview];
-    wq_motion_add_press(self);
+    wq_motion_add_holographic_tilt(self, 0.065);
 }
 
 @end
 
-// Crimson Crystal Prism "Z" monogram badge for header & about cards.
+// Glacier Crystal Prism "Z" monogram badge for header & about cards.
 @interface WQZMonogramBadge : UIView
 - (instancetype)initWithSize:(CGFloat)size;
 @end
@@ -4491,15 +4524,15 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         self.layer.cornerRadius = size * 0.30;
         self.layer.cornerCurve = kCACornerCurveContinuous;
         self.layer.borderWidth = 1.0;
-        self.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.93 alpha:0.65].CGColor;
+        self.layer.borderColor = [UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.68].CGColor;
         self.clipsToBounds = YES;
 
         _grad = [CAGradientLayer layer];
         _grad.startPoint = CGPointMake(0, 0);
         _grad.endPoint = CGPointMake(1, 1);
         _grad.colors = @[
-            (id)[UIColor colorWithRed:0.61 green:0.15 blue:0.15 alpha:1].CGColor,
-            (id)[UIColor colorWithRed:0.29 green:0.08 blue:0.07 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.10 green:0.34 blue:0.48 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.04 green:0.11 blue:0.20 alpha:1].CGColor,
         ];
         [self.layer addSublayer:_grad];
 
@@ -4507,8 +4540,8 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         _sheen.startPoint = CGPointMake(0, 0);
         _sheen.endPoint = CGPointMake(0.85, 0.85);
         _sheen.colors = @[
-            (id)[UIColor colorWithWhite:1.0 alpha:0.28].CGColor,
-            (id)[UIColor colorWithWhite:1.0 alpha:0.0].CGColor,
+            (id)[UIColor colorWithRed:0.88 green:1.00 blue:1.00 alpha:0.32].CGColor,
+            (id)[UIColor colorWithRed:0.88 green:1.00 blue:1.00 alpha:0.0].CGColor,
         ];
         _sheen.locations = @[@0.0, @0.55];
         [self.layer addSublayer:_sheen];
@@ -4603,10 +4636,10 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
         } else {
             UIView *orb = [UIView new];
             orb.translatesAutoresizingMaskIntoConstraints = NO;
-            orb.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.14];
+            orb.backgroundColor = [UIColor colorWithRed:0.50 green:0.94 blue:1.00 alpha:0.14];
             orb.layer.cornerRadius = 12;
             orb.layer.borderWidth = 0.6;
-            orb.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.28].CGColor;
+            orb.layer.borderColor = wq_theme_rim().CGColor;
             orb.userInteractionEnabled = NO;
             UIImageSymbolConfiguration *symCfg = [UIImageSymbolConfiguration configurationWithPointSize:9.5 weight:UIImageSymbolWeightBold];
             UIImageView *arrow = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.right" withConfiguration:symCfg]];
@@ -4674,14 +4707,14 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 - (void)setHighlighted:(BOOL)highlighted
 {
     [super setHighlighted:highlighted];
-    [UIView animateWithDuration:0.16 animations:^{ self.alpha = highlighted ? 0.86 : 1.0; }];
+    [UIView animateWithDuration:0.16 animations:^{ self.alpha = highlighted ? 0.88 : 1.0; }];
 }
 
-// Scale/rebound/rim-pulse physics live in WQMotion (UIViewPropertyAnimator springs).
+// 3D holographic touch, dynamic ice reflection, and elastic spring rebound (WQMotion).
 - (void)didMoveToSuperview
 {
     [super didMoveToSuperview];
-    wq_motion_add_press(self);
+    wq_motion_add_holographic_tilt(self, 0.065);
 }
 
 @end
@@ -4863,7 +4896,7 @@ static void wq_apply_design(void);
     btn.translatesAutoresizingMaskIntoConstraints = NO;
     UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    cfg.baseBackgroundColor = [UIColor colorWithRed:0.82 green:0.36 blue:0.34 alpha:0.26];
+    cfg.baseBackgroundColor = [UIColor colorWithRed:0.06 green:0.16 blue:0.27 alpha:0.46];
     cfg.baseForegroundColor = UIColor.whiteColor;
     UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:13.5 weight:UIImageSymbolWeightSemibold];
     cfg.image = [[UIImage systemImageNamed:symbol withConfiguration:sym] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
@@ -4913,7 +4946,7 @@ static void wq_apply_design(void);
         [_contentStack.widthAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.widthAnchor],
     ]];
 
-    // Floating Crimson Liquid Glass Capsule Header
+    // Floating Glacier Liquid Glass Capsule Header
     WQPrismGlassView *headerGlass = [[WQPrismGlassView alloc] initWithRadius:26];
     _topHeader = headerGlass;
     [self.view addSubview:headerGlass];
@@ -4930,7 +4963,7 @@ static void wq_apply_design(void);
     brandTitle.minimumScaleFactor = 0.82;
 
     UILabel *verPill = [UILabel new];
-    verPill.text = [NSString stringWithFormat:@"v%@ · CRYSTAL", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"4.0"];
+    verPill.text = [NSString stringWithFormat:@"v%@ · GLACIER", NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"] ?: @"4.0"];
     verPill.font = [UIFont monospacedSystemFontOfSize:9.5 weight:UIFontWeightBold];
     verPill.textColor = wq_theme_secondary_text();
 
@@ -4944,12 +4977,12 @@ static void wq_apply_design(void);
     _statusPill.layer.cornerRadius = 11;
     _statusPill.layer.cornerCurve = kCACornerCurveContinuous;
     _statusPill.layer.borderWidth = 0.6;
-    _statusPill.layer.borderColor = [UIColor colorWithRed:1.0 green:0.90 blue:0.92 alpha:0.25].CGColor;
+    _statusPill.layer.borderColor = wq_theme_rim().CGColor;
 
     _statusLabel = [UILabel new];
     _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _statusLabel.font = [UIFont systemFontOfSize:10 weight:UIFontWeightBold];
-    _statusLabel.textColor = UIColor.systemGreenColor;
+    _statusLabel.textColor = wq_theme_aurora_teal();
     _statusLabel.adjustsFontSizeToFitWidth = YES;
     _statusLabel.minimumScaleFactor = 0.78;
     _statusLabel.text = WQLocalizedNullable(@"Checking access…");
@@ -5049,16 +5082,17 @@ static void wq_apply_design(void);
 - (void)buildHeroWithWrapper:(UIView *(^)(UIView *))wrap
 {
     WQPrismGlassView *glass = [[WQPrismGlassView alloc] initWithRadius:28];
+    wq_motion_add_holographic_tilt(glass, 0.032);
     _heroView = glass;
 
-    // Frosted glass tag pill at top of Hero Spotlight
+    // Frosted glacial aqua tag pill at top of Hero Status Card
     UIView *tagPill = [UIView new];
     tagPill.translatesAutoresizingMaskIntoConstraints = NO;
-    tagPill.backgroundColor = [UIColor colorWithRed:1.0 green:0.88 blue:0.91 alpha:0.12];
+    tagPill.backgroundColor = [UIColor colorWithRed:0.00 green:0.96 blue:1.00 alpha:0.12];
     tagPill.layer.cornerRadius = 11;
     tagPill.layer.cornerCurve = kCACornerCurveContinuous;
     tagPill.layer.borderWidth = 0.6;
-    tagPill.layer.borderColor = wq_theme_rim().CGColor;
+    tagPill.layer.borderColor = wq_theme_rim_teal().CGColor;
 
     UIView *tagDot = [UIView new];
     tagDot.translatesAutoresizingMaskIntoConstraints = NO;
@@ -5067,7 +5101,7 @@ static void wq_apply_design(void);
 
     UILabel *eyebrow = [UILabel new];
     eyebrow.translatesAutoresizingMaskIntoConstraints = NO;
-    eyebrow.text = @"CRIMSON · LIQUID GLASS";
+    eyebrow.text = @"GLACIER · LIQUID GLASS";
     eyebrow.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightBold];
     eyebrow.textColor = wq_theme_secondary_text();
 
@@ -5091,10 +5125,10 @@ static void wq_apply_design(void);
     title.textColor = UIColor.whiteColor;
     title.numberOfLines = 0;
 
-    // Hardware telemetry tucked inside a translucent glass inset bar
+    // Hardware telemetry tucked inside a deep glacier ice inset bar
     UIView *specBar = [UIView new];
     specBar.translatesAutoresizingMaskIntoConstraints = NO;
-    specBar.backgroundColor = [UIColor colorWithRed:0.20 green:0.05 blue:0.05 alpha:0.28];
+    specBar.backgroundColor = [UIColor colorWithRed:0.02 green:0.04 blue:0.07 alpha:0.38];
     specBar.layer.cornerRadius = 12;
     specBar.layer.cornerCurve = kCACornerCurveContinuous;
     specBar.layer.borderWidth = 0.5;
@@ -5104,7 +5138,7 @@ static void wq_apply_design(void);
     _heroSubtitle.translatesAutoresizingMaskIntoConstraints = NO;
     _heroSubtitle.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     _heroSubtitle.adjustsFontForContentSizeCategory = YES;
-    _heroSubtitle.textColor = wq_theme_secondary_text();
+    _heroSubtitle.textColor = wq_theme_detail_text();
     _heroSubtitle.numberOfLines = 0;
     _heroSubtitle.text = wq_device_line();
     [specBar addSubview:_heroSubtitle];
@@ -5115,7 +5149,7 @@ static void wq_apply_design(void);
         [_heroSubtitle.trailingAnchor constraintEqualToAnchor:specBar.trailingAnchor constant:-10],
     ]];
 
-    // Primary CTA: white capsule with guaranteed #5A0D1B dark ruby foreground across all states
+    // Primary CTA: snow-white capsule with guaranteed #071A2B deep glacier navy foreground across all states
     __weak typeof(self) weakSelf = self;
     _quickButton = [UIButton buttonWithType:UIButtonTypeSystem];
     wq_theme_style_primary_button(_quickButton, WQLocalizedNullable(@"Quick Check"), @"checkmark.shield.fill");
@@ -5143,8 +5177,8 @@ static void wq_apply_design(void);
     _heroButtons.alignment = UIStackViewAlignmentCenter;
     UIView *buttonGroup = wq_theme_glass_container(_heroButtons, 8);
 
-    // Animated health badge: a ring that spins while checking, closes when healthy
-    // and swaps its glyph with a spring pop.
+    // Holographic aurora health ring: spins while checking, closes with an aurora
+    // glow and emits a spring micro-burst upon completion.
     UIView *badge = [UIView new];
     badge.translatesAutoresizingMaskIntoConstraints = NO;
     _healthRing = [[WQProgressRingView alloc] initWithFrame:CGRectMake(0, 0, 54, 54)];
@@ -5206,9 +5240,9 @@ static void wq_apply_design(void);
 
     NSArray<NSArray<NSString *> *> *tools = @[
         @[@"Apps", @"App data backups, restores & info", @"square.grid.3x3.fill", @"sky", @""],
-        @[@"Cache Cleaner", @"Clean Library/Caches, tmp & crash logs", @"sparkles", @"mint", @""],
-        @[@"Go to Path…", @"Jump directly to any file or container", @"arrow.right.circle.fill", @"violet", @""],
-        @[@"Backups", @"App backups, File backups & deleted", @"clock.arrow.circlepath", @"amber", @""],
+        @[@"Cache Cleaner", @"Clean Library/Caches, tmp & crash logs", @"sparkles", @"aurora", @""],
+        @[@"Go to Path…", @"Jump directly to any file or container", @"arrow.right.circle.fill", @"glacier", @""],
+        @[@"Backups", @"App backups, File backups & deleted", @"clock.arrow.circlepath", @"frost", @""],
     ];
     NSMutableArray<WQPrismToolRow *> *pads = [NSMutableArray new];
     for (NSUInteger i = 0; i < tools.count; i++) {
@@ -5357,13 +5391,13 @@ static void wq_apply_design(void);
 
 - (NSString *)toneForContainer:(NSString *)title
 {
-    if ([title isEqualToString:@"App Data"]) return @"crimson";
+    if ([title isEqualToString:@"App Data"]) return @"glacier";
     if ([title isEqualToString:@"App Groups"]) return @"violet";
-    if ([title isEqualToString:@"Extension Data"]) return @"orange";
-    if ([title isEqualToString:@"Internal Daemons"]) return @"mint";
+    if ([title isEqualToString:@"Extension Data"]) return @"arctic";
+    if ([title isEqualToString:@"Internal Daemons"]) return @"aurora";
     if ([title isEqualToString:@"App Bundles"]) return @"sky";
-    if ([title isEqualToString:@"System Data"]) return @"indigo";
-    return @"blue";
+    if ([title isEqualToString:@"System Data"]) return @"polar";
+    return @"ice";
 }
 
 - (UIMenu *)containerMenuForIndex:(NSUInteger)index
@@ -5695,6 +5729,10 @@ static void wq_apply_design(void);
     WQHealthState worst = wq_health_worst(checks);
     if (worst >= WQHealthFailed) _pendingHealthFailure = checks;
     [self updateHealthUI];
+    if (worst < WQHealthFailed && _appGroupName.length) {
+        [_healthRing emitCompletionBurst];
+        if (_statusPill) wq_motion_pop(_statusPill);
+    }
     if (_hapticOnFinish) {
         _hapticOnFinish = NO;
         wq_haptic_notify(worst >= WQHealthFailed ? UINotificationFeedbackTypeError
@@ -5759,22 +5797,23 @@ static void wq_apply_design(void);
 
 - (void)updateHealthUI
 {
-    UIColor *tint = UIColor.systemGreenColor;
+    UIColor *tint = wq_theme_aurora_teal();
     if (_checkingAccess) {
-        tint = UIColor.systemOrangeColor;
+        tint = wq_theme_accent();
         _statusLabel.text = WQLocalizedNullable(@"Checking…");
     } else if (!_appGroupName.length) {
-        tint = UIColor.systemOrangeColor;
+        tint = [UIColor colorWithRed:0.56 green:0.83 blue:1.0 alpha:1.0];
         _statusLabel.text = WQLocalizedNullable(@"No App Group");
     } else if (_pendingHealthFailure.count) {
-        tint = UIColor.systemRedColor;
+        tint = [UIColor colorWithRed:0.66 green:0.78 blue:1.0 alpha:1.0];
         _statusLabel.text = WQLocalizedNullable(@"Failed");
     } else {
-        tint = UIColor.systemGreenColor;
+        tint = wq_theme_aurora_teal();
         _statusLabel.text = WQLocalizedNullable(@"Active");
     }
     _statusLabel.textColor = tint;
     _statusPill.backgroundColor = [tint colorWithAlphaComponent:0.16];
+    _statusPill.layer.borderColor = [tint colorWithAlphaComponent:0.42].CGColor;
     _heroSubtitle.text = _appGroupName.length
         ? [NSString stringWithFormat:@"%@\n%@", wq_device_line(), _appGroupName]
         : [NSString stringWithFormat:@"%@\n%@", wq_device_line(), WQLocalizedNullable(@"No App Group")];
@@ -6207,7 +6246,8 @@ static NSString *const kWQTroubleshootingFooter =
     UIView *strip = wq_device_header(w);
     CGFloat stripH = strip.frame.size.height;
     UIVisualEffectView *card = wq_theme_make_glass_card(20, NO);
-    WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:@"externaldrive.fill.badge.timemachine" tone:@"amber" size:38];
+    wq_motion_add_holographic_tilt(card, 0.045);
+    WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:@"externaldrive.fill.badge.timemachine" tone:@"frost" size:38];
     UILabel *title = [UILabel new];
     title.text = WQLocalizedNullable(@"Backups");
     title.font = [UIFont systemFontOfSize:16 weight:UIFontWeightBold];
@@ -6352,12 +6392,12 @@ static NSString *const kWQTroubleshootingFooter =
     self.viewControllers = @[homeNav, appsNav, cleanNav, vaultNav];
     self.selectedIndex = 0;
     self.delegate = self;
-    // iOS 26 floating Liquid Glass tab bar: glowing crimson active selection
-    // pill (#9B2627) with pure white active tab and blush (#E6B8B5) inactive
-    // tabs; shrinks while scrolling down so crystal content refracts beneath.
+    // iOS 26 floating Glacier Liquid Glass tab bar: luminous arctic teal active
+    // selection pill (#0E5A74) with snow-white active tab and polar-blue (#B0E2FF)
+    // inactive tabs; shrinks while scrolling down so glacial content refracts beneath.
     UITabBarAppearance *tabAppearance = [UITabBarAppearance new];
     [tabAppearance configureWithDefaultBackground];
-    tabAppearance.backgroundColor = [UIColor colorWithRed:0.36 green:0.11 blue:0.11 alpha:0.35];
+    tabAppearance.backgroundColor = [UIColor colorWithRed:0.04 green:0.10 blue:0.18 alpha:0.46];
     tabAppearance.selectionIndicatorTintColor = [wq_theme_active_pill() colorWithAlphaComponent:0.94];
     for (UITabBarItemAppearance *item in @[
         tabAppearance.stackedLayoutAppearance,
@@ -7014,7 +7054,12 @@ static NSString *const kWQTroubleshootingFooter =
     } else if (indexPath.section == 0) {
         WQHealthCheck *check = _checks[(NSUInteger)indexPath.row];
         NSArray *symbols = @[@"checkmark.circle.fill", @"minus.circle", @"exclamationmark.triangle.fill", @"xmark.octagon.fill"];
-        NSArray *colors = @[UIColor.systemGreenColor, wq_theme_secondary_text(), UIColor.systemOrangeColor, UIColor.systemRedColor];
+        NSArray *colors = @[
+            wq_theme_aurora_teal(),
+            wq_theme_secondary_text(),
+            [UIColor colorWithRed:0.56 green:0.83 blue:1.0 alpha:1.0],
+            [UIColor colorWithRed:0.66 green:0.78 blue:1.0 alpha:1.0],
+        ];
         c.text = check.title;
         c.secondaryText = check.detail;
         c.secondaryTextProperties.numberOfLines = 0;
@@ -7026,7 +7071,7 @@ static NSString *const kWQTroubleshootingFooter =
         NSUInteger action = self.actions[(NSUInteger)indexPath.row].unsignedIntegerValue;
         c = [UIListContentConfiguration cellConfiguration];
         c.text = WQLocalized(titles[action]);
-        c.textProperties.color = action == 2 ? UIColor.systemRedColor : self.view.tintColor;
+        c.textProperties.color = action == 2 ? [UIColor colorWithRed:0.62 green:0.86 blue:1.0 alpha:1.0] : self.view.tintColor;
         cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     }
     cell.contentConfiguration = c;
@@ -7187,7 +7232,7 @@ static NSString *wq_count_text(int64_t n)
     [hide addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [self dismissViewControllerAnimated:YES completion:nil];
     }] forControlEvents:UIControlEventTouchUpInside];
-    UIColor *stopColor = [UIColor colorWithRed:1.0 green:0.46 blue:0.44 alpha:1.0];
+    UIColor *stopColor = [UIColor colorWithRed:0.62 green:0.86 blue:1.0 alpha:1.0];
     UIButtonConfiguration *stopConfig = wq_theme_secondary_button_configuration();
     stopConfig.baseForegroundColor = stopColor;
     stopConfig.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {

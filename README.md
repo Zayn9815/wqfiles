@@ -1,6 +1,6 @@
 # WQ Glass
 
-**WQ Glass** is a crimson Liquid Glass file browser, app data manager and cache cleaner for iOS 26
+**WQ Glass** is an arctic Glacier Liquid Glass file browser, app data manager and cache cleaner for iOS 26
 and 27, built on the `worse_query` sandbox technique. It
 reaches other apps' and system containers with no jailbreak and no kernel
 exploit. Tested on iOS 26.7.1, 27.0.1, 27.2.1 and the 27.3 beta.

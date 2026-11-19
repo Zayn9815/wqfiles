@@ -61,7 +61,7 @@ APP_GROUP=$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-gr
 [[ "$EXPECTED_MINIMUM_OS" == "$MINIMUM_IOS_VERSION" ]] || \
     fail "Info.plist minimum OS $EXPECTED_MINIMUM_OS does not match build policy $MINIMUM_IOS_VERSION"
 
-# Refresh the crimson Liquid Glass Z-monogram icon set during macOS builds.
+# Refresh the arctic Glacier Liquid Glass Z-monogram icon set during macOS builds.
 if command -v swift >/dev/null 2>&1 && command -v sips >/dev/null 2>&1 && [[ -f "$ROOT/scripts/generate_icons.swift" ]]; then
     swift "$ROOT/scripts/generate_icons.swift" "$ROOT/icons"
 fi
@@ -83,7 +83,7 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 \
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
     -isysroot "$SDK" -Wall -Wextra -Werror -O2 \
-    -framework UIKit -framework Foundation -framework Security -framework UniformTypeIdentifiers \
+    -framework UIKit -framework QuartzCore -framework Foundation -framework Security -framework UniformTypeIdentifiers \
     WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQTheme.m WQMotion.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*.png "$APP/"

@@ -8,6 +8,7 @@
 #import "WQTheme.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
+#import <QuartzCore/QuartzCore.h>
 #import <fcntl.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
@@ -42,7 +43,7 @@ NSString *wq_app_version_line(void)
 
 const CGFloat kWQDeviceStripHeight = 52;
 
-// Frosted crimson Liquid Glass telemetry pill with status dot, version and device/iOS line.
+// Frosted Glacier Liquid Glass telemetry pill with aqua dot, version and device/iOS line.
 UIView *wq_device_header(CGFloat width)
 {
     CGFloat useWidth = width > 0 ? width : 360.0;
@@ -56,8 +57,8 @@ UIView *wq_device_header(CGFloat width)
     dot.backgroundColor = wq_theme_accent();
     dot.layer.cornerRadius = 3.5;
     dot.layer.shadowColor = wq_theme_accent().CGColor;
-    dot.layer.shadowOpacity = 0.85;
-    dot.layer.shadowRadius = 4.0;
+    dot.layer.shadowOpacity = 0.90;
+    dot.layer.shadowRadius = 5.0;
     dot.layer.shadowOffset = CGSizeZero;
 
     UILabel *header = [UILabel new];
@@ -66,7 +67,7 @@ UIView *wq_device_header(CGFloat width)
     header.lineBreakMode = NSLineBreakByWordWrapping;
     header.textAlignment = NSTextAlignmentCenter;
     header.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
-    header.textColor = wq_theme_secondary_text();
+    header.textColor = wq_theme_detail_text();
     header.backgroundColor = [UIColor clearColor];
     header.text = [NSString stringWithFormat:@"%@\n%@", wq_app_version_line(), wq_device_line()];
     [pill.contentView addSubview:dot];
@@ -220,9 +221,16 @@ static UIImage *wq_service_tile(NSString *bundleID)
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         tiles = [NSCache new];
-        UIColor *blue = UIColor.systemBlueColor, *green = UIColor.systemGreenColor, *red = UIColor.systemRedColor,
-                *orange = UIColor.systemOrangeColor, *purple = UIColor.systemPurpleColor, *indigo = UIColor.systemIndigoColor,
-                *teal = UIColor.systemTealColor, *pink = UIColor.systemPinkColor, *gray = UIColor.systemGrayColor;
+        // Arctic Glacier palette for fallback service tiles (zero warm/red hues).
+        UIColor *blue   = [UIColor colorWithRed:0.12 green:0.44 blue:0.68 alpha:1.0];
+        UIColor *green  = [UIColor colorWithRed:0.10 green:0.56 blue:0.54 alpha:1.0];
+        UIColor *red    = [UIColor colorWithRed:0.15 green:0.35 blue:0.56 alpha:1.0];
+        UIColor *orange = [UIColor colorWithRed:0.18 green:0.50 blue:0.64 alpha:1.0];
+        UIColor *purple = [UIColor colorWithRed:0.20 green:0.36 blue:0.62 alpha:1.0];
+        UIColor *indigo = [UIColor colorWithRed:0.14 green:0.30 blue:0.54 alpha:1.0];
+        UIColor *teal   = [UIColor colorWithRed:0.08 green:0.54 blue:0.66 alpha:1.0];
+        UIColor *pink   = [UIColor colorWithRed:0.22 green:0.46 blue:0.68 alpha:1.0];
+        UIColor *gray   = [UIColor colorWithRed:0.24 green:0.36 blue:0.48 alpha:1.0];
         // keywords (lower case, any match), symbol, colour
         rules = @[
             @[@[@"emoji"], @"face.smiling.inverse", orange],
@@ -398,12 +406,13 @@ NSString *wq_size_text(unsigned long long size)
     return [NSByteCountFormatter stringFromByteCount:(long long)size countStyle:NSByteCountFormatterCountStyleFile];
 }
 
-// WQ Prism: a soft layered backdrop shared by the redesigned screens.
+// WQ Prism: arctic Glacier Liquid Glass backdrop with drifting polar-glow shimmers.
 @interface WQPrismBackgroundView : UIView
 @end
 
 @implementation WQPrismBackgroundView {
     CAGradientLayer *_base;
+    CAGradientLayer *_polarBand;
     NSArray<CAGradientLayer *> *_glows;
 }
 
@@ -413,9 +422,16 @@ NSString *wq_size_text(unsigned long long size)
         self.userInteractionEnabled = NO;
         self.clipsToBounds = YES;
         _base = [CAGradientLayer layer];
-        _base.startPoint = CGPointMake(0.5, 0.0);
-        _base.endPoint = CGPointMake(0.5, 1.0);
+        _base.startPoint = CGPointMake(0.35, 0.0);
+        _base.endPoint = CGPointMake(0.65, 1.0);
         [self.layer addSublayer:_base];
+
+        // Subtle sweeping polar-glow ribbon drifting across the sub-zero backdrop.
+        _polarBand = [CAGradientLayer layer];
+        _polarBand.startPoint = CGPointMake(0.0, 0.25);
+        _polarBand.endPoint = CGPointMake(1.0, 0.75);
+        [self.layer addSublayer:_polarBand];
+
         NSMutableArray *glows = [NSMutableArray new];
         for (NSInteger i = 0; i < 4; i++) {
             CAGradientLayer *g = [CAGradientLayer layer];
@@ -428,34 +444,108 @@ NSString *wq_size_text(unsigned long long size)
         _glows = glows;
         [self updateColors];
         [self registerForTraitChanges:@[UITraitUserInterfaceStyle.class] withAction:@selector(updateColors)];
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(updateShimmerAnimations)
+                                                   name:UIAccessibilityReduceMotionStatusDidChangeNotification
+                                                 object:nil];
     }
     return self;
 }
 
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)didMoveToWindow
+{
+    [super didMoveToWindow];
+    [self updateShimmerAnimations];
+}
+
 - (void)updateColors
 {
-    // Crimson Liquid Glass canvas (same in light and dark: the window is dark).
-    // #5C1D1B at the top, #782623 through the middle, deepening to #4A1412.
+    // Glacier Liquid Glass canvas: deep sub-zero night-blue (#091524 -> #122B43)
+    // into arctic cyan (#1F4D62) and dark glacial ice (#04090E).
     _base.colors = @[(id)wq_theme_canvas_top().CGColor,
                      (id)wq_theme_canvas_mid().CGColor,
+                     (id)wq_theme_canvas_cyan().CGColor,
                      (id)wq_theme_canvas_edge().CGColor];
-    _base.locations = @[@0.0, @0.45, @1.0];
-    // Warm terracotta and blush light pools; the last one darkens the lower edge.
-    _glows[0].colors = @[(id)[UIColor colorWithRed:0.80 green:0.33 blue:0.29 alpha:0.42].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[1].colors = @[(id)[UIColor colorWithRed:0.91 green:0.52 blue:0.47 alpha:0.26].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[2].colors = @[(id)[UIColor colorWithRed:0.62 green:0.20 blue:0.18 alpha:0.36].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[3].colors = @[(id)[UIColor colorWithRed:0.20 green:0.05 blue:0.05 alpha:0.45].CGColor, (id)[UIColor clearColor].CGColor];
+    _base.locations = @[@0.0, @0.32, @0.64, @1.0];
+
+    _polarBand.colors = @[
+        (id)[UIColor clearColor].CGColor,
+        (id)[wq_theme_accent() colorWithAlphaComponent:0.10].CGColor,
+        (id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.08].CGColor,
+        (id)[UIColor clearColor].CGColor,
+    ];
+    _polarBand.locations = @[@0.0, @0.35, @0.65, @1.0];
+
+    // Sub-zero aqua, aurora teal, arctic cyan, and deep glacial ice light pools.
+    _glows[0].colors = @[(id)[wq_theme_accent() colorWithAlphaComponent:0.20].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[1].colors = @[(id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.15].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[2].colors = @[(id)[wq_theme_canvas_cyan() colorWithAlphaComponent:0.46].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[3].colors = @[(id)[wq_theme_canvas_edge() colorWithAlphaComponent:0.60].CGColor, (id)[UIColor clearColor].CGColor];
+}
+
+- (void)updateShimmerAnimations
+{
+    static NSString *const kBandKey = @"wq.polar.band";
+    static NSString *const kDriftKey = @"wq.polar.drift";
+    static NSString *const kPulseKey = @"wq.polar.pulse";
+    if (!self.window || UIAccessibilityIsReduceMotionEnabled()) {
+        [_polarBand removeAnimationForKey:kBandKey];
+        for (CAGradientLayer *g in _glows) {
+            [g removeAnimationForKey:kDriftKey];
+            [g removeAnimationForKey:kPulseKey];
+        }
+        return;
+    }
+    if (![_polarBand animationForKey:kBandKey]) {
+        CABasicAnimation *sweep = [CABasicAnimation animationWithKeyPath:@"locations"];
+        sweep.fromValue = @[@(-0.35), @(0.05), @(0.35), @(0.70)];
+        sweep.toValue = @[@(0.30), @(0.65), @(0.95), @(1.35)];
+        sweep.duration = 11.5;
+        sweep.autoreverses = YES;
+        sweep.repeatCount = HUGE_VALF;
+        sweep.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [_polarBand addAnimation:sweep forKey:kBandKey];
+    }
+    for (NSUInteger i = 0; i < 2; i++) {
+        CAGradientLayer *g = _glows[i];
+        if (![g animationForKey:kDriftKey]) {
+            CABasicAnimation *drift = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
+            drift.fromValue = @(i == 0 ? -18.0 : 18.0);
+            drift.toValue = @(i == 0 ? 22.0 : -22.0);
+            drift.duration = i == 0 ? 9.5 : 12.5;
+            drift.autoreverses = YES;
+            drift.repeatCount = HUGE_VALF;
+            drift.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            [g addAnimation:drift forKey:kDriftKey];
+        }
+        if (![g animationForKey:kPulseKey]) {
+            CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"opacity"];
+            pulse.fromValue = @(0.72);
+            pulse.toValue = @(1.0);
+            pulse.duration = i == 0 ? 7.0 : 8.5;
+            pulse.autoreverses = YES;
+            pulse.repeatCount = HUGE_VALF;
+            pulse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+            [g addAnimation:pulse forKey:kPulseKey];
+        }
+    }
 }
 
 - (void)layoutSubviews
 {
     [super layoutSubviews];
     _base.frame = self.bounds;
+    _polarBand.frame = self.bounds;
     CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
-    _glows[0].frame = CGRectMake(-w * 0.34, -h * 0.08, w * 0.92, w * 0.92);
-    _glows[1].frame = CGRectMake(w * 0.42, -h * 0.10, w * 0.82, w * 0.82);
-    _glows[2].frame = CGRectMake(w * 0.26, h * 0.56, w * 0.94, w * 0.94);
-    _glows[3].frame = CGRectMake(-w * 0.30, h * 0.70, w * 0.72, w * 0.72);
+    _glows[0].frame = CGRectMake(-w * 0.34, -h * 0.08, w * 0.94, w * 0.94);
+    _glows[1].frame = CGRectMake(w * 0.40, -h * 0.12, w * 0.86, w * 0.86);
+    _glows[2].frame = CGRectMake(w * 0.24, h * 0.54, w * 0.96, w * 0.96);
+    _glows[3].frame = CGRectMake(-w * 0.30, h * 0.68, w * 0.78, w * 0.78);
 }
 
 @end

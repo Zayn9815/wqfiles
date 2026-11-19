@@ -481,6 +481,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             [strongSelf syncFilterPills];
             [strongSelf rebuildVisibleItems];
             [strongSelf.tableView reloadData];
+            [strongSelf.tableView layoutIfNeeded];
+            wq_motion_cascade_visible(strongSelf.tableView);
             [strongSelf updateButtons];
         }] forControlEvents:UIControlEventTouchUpInside];
         [self->_filterPills addObject:pill];
@@ -983,7 +985,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         ?: [UIImage systemImageNamed:item.bundleID ? @"app.dashed" : @"exclamationmark.triangle"];
     cell.iconView.tintColor = wq_theme_secondary_text();
     cell.checkView.image = [UIImage systemImageNamed:item.selected ? @"checkmark.circle.fill" : @"circle"];
-    cell.checkView.tintColor = item.selected ? wq_theme_accent() : UIColor.tertiaryLabelColor;
+    cell.checkView.tintColor = item.selected ? wq_theme_accent() : [wq_theme_secondary_text() colorWithAlphaComponent:0.55];
+    cell.checkView.layer.shadowColor = item.selected ? wq_theme_accent().CGColor : nil;
+    cell.checkView.layer.shadowRadius = item.selected ? 6.0 : 0.0;
+    cell.checkView.layer.shadowOpacity = item.selected ? 0.65f : 0.0f;
+    cell.checkView.layer.shadowOffset = CGSizeZero;
     return cell;
 }
 
@@ -998,8 +1004,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         return;
     }
     item.selected = !item.selected;
+    wq_haptic_selection();
     [tableView reloadRowsAtIndexPaths:@[indexPath, [NSIndexPath indexPathForRow:0 inSection:0]]
                      withRowAnimation:UITableViewRowAnimationNone];
+    WQCleanerCell *updated = (WQCleanerCell *)[tableView cellForRowAtIndexPath:indexPath];
+    if ([updated isKindOfClass:WQCleanerCell.class]) wq_motion_pop(updated.checkView);
     [self updateButtons];
 }
 

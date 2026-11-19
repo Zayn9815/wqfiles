@@ -592,7 +592,7 @@ static void wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
     if (_error || !_rows.count) {
         c.text = _error ?: WQLocalized(@"No rows");
-        c.textProperties.color = _error ? UIColor.systemRedColor : wq_theme_secondary_text();
+        c.textProperties.color = _error ? [UIColor colorWithRed:0.62 green:0.86 blue:1.0 alpha:1.0] : wq_theme_secondary_text();
         c.textProperties.numberOfLines = 0;
         cell.contentConfiguration = c;
         cell.accessoryType = UITableViewCellAccessoryNone;
@@ -1267,7 +1267,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         c.text = WQLocalizedNullable(@"Copying and opening…");
     } else if (_error) {
         c.text = [WQLocalized(@"Cannot open this database: ") stringByAppendingString:_error];
-        c.textProperties.color = UIColor.systemRedColor;
+        c.textProperties.color = [UIColor colorWithRed:0.62 green:0.86 blue:1.0 alpha:1.0];
         c.textProperties.numberOfLines = 0;
     } else if (!_tables.count) {
         c.text = WQLocalizedNullable(@"No tables");

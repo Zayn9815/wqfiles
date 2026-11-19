@@ -437,9 +437,9 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         UIColor *color = wq_theme_primary_text();
         BOOL edited = _edits[@(off)] != nil;
         BOOL match = _matchLength && off >= _matchOffset && off < _matchOffset + _matchLength;
-        if (edited) color = UIColor.systemOrangeColor;
+        if (edited) color = wq_theme_accent();
         NSMutableDictionary *attrs = [@{ NSFontAttributeName: font, NSForegroundColorAttributeName: color } mutableCopy];
-        if (match) attrs[NSBackgroundColorAttributeName] = [UIColor.systemYellowColor colorWithAlphaComponent:0.45];
+        if (match) attrs[NSBackgroundColorAttributeName] = [wq_theme_aurora_teal() colorWithAlphaComponent:0.32];
         NSString *hex = b < 0 ? @"·· " : [NSString stringWithFormat:@"%02x ", b];
         [line appendAttributedString:[[NSAttributedString alloc] initWithString:hex attributes:attrs]];
         if (edited || match) [asciiMarks addObject:[NSValue valueWithRange:NSMakeRange(ascii.length, 1)]];
@@ -449,7 +449,7 @@ static void wqh_alert(UIViewController *host, NSString *title, NSString *message
         attributes:@{ NSFontAttributeName: font, NSForegroundColorAttributeName: wq_theme_secondary_text() }];
     for (NSValue *v in asciiMarks) {
         NSRange r = v.rangeValue;
-        [asc addAttribute:NSForegroundColorAttributeName value:UIColor.systemOrangeColor range:NSMakeRange(r.location + 1, 1)];
+        [asc addAttribute:NSForegroundColorAttributeName value:wq_theme_accent() range:NSMakeRange(r.location + 1, 1)];
     }
     [line appendAttributedString:asc];
     UIListContentConfiguration *c = [UIListContentConfiguration cellConfiguration];
