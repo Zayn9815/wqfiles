@@ -5344,7 +5344,7 @@ static void wq_apply_design(void);
     cfg.imagePadding = 3;
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 6, 8, 6);
-    UIColor *fg = prominent ? wq_theme_cta_text() : UIColor.whiteColor;
+    UIColor *fg = prominent ? [UIColor colorWithRed:0.035 green:0.039 blue:0.051 alpha:1.0] : UIColor.whiteColor;
     if (prominent) {
         cfg.baseBackgroundColor = UIColor.whiteColor;
         cfg.background.backgroundColor = UIColor.whiteColor;
@@ -5354,6 +5354,12 @@ static void wq_apply_design(void);
         cfg.baseBackgroundColor = UIColor.clearColor;
     }
     cfg.baseForegroundColor = fg;
+    if (title.length) {
+        cfg.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
+            NSForegroundColorAttributeName: fg,
+            NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],
+        }];
+    }
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy] ?: [NSMutableDictionary new];
         out[NSForegroundColorAttributeName] = fg;
@@ -5364,6 +5370,9 @@ static void wq_apply_design(void);
     UIButton *btn = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
     btn.translatesAutoresizingMaskIntoConstraints = NO;
     btn.tintColor = fg;
+    [btn setTitleColor:fg forState:UIControlStateNormal];
+    [btn setTitleColor:fg forState:UIControlStateHighlighted];
+    [btn setTitleColor:[fg colorWithAlphaComponent:0.55] forState:UIControlStateDisabled];
     btn.titleLabel.adjustsFontSizeToFitWidth = YES;
     btn.titleLabel.minimumScaleFactor = 0.72;
     btn.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -6145,8 +6154,19 @@ static void wq_apply_design(void);
     _fullScanButton.enabled = !_checkingAccess;
     [self updateHealthBadgeTint:tint];
     if (_quickButton.configuration) {
+        UIColor *darkFg = [UIColor colorWithRed:0.035 green:0.039 blue:0.051 alpha:1.0];
+        NSString *qTitle = _checkingAccess ? WQLocalizedNullable(@"Checking…") : WQLocalizedNullable(@"Quick Check");
         UIButtonConfiguration *qCfg = [_quickButton.configuration copy];
-        qCfg.title = _checkingAccess ? WQLocalizedNullable(@"Checking…") : WQLocalizedNullable(@"Quick Check");
+        qCfg.title = qTitle;
+        qCfg.baseForegroundColor = darkFg;
+        if (qTitle.length) {
+            qCfg.attributedTitle = [[NSAttributedString alloc] initWithString:qTitle attributes:@{
+                NSForegroundColorAttributeName: darkFg,
+                NSFontAttributeName: [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold],
+            }];
+        }
+        qCfg.imageColorTransformer = ^UIColor *(UIColor *__unused c) { return darkFg; };
+        _quickButton.tintColor = darkFg;
         _quickButton.configuration = qCfg;
     }
 }

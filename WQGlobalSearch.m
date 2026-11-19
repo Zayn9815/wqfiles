@@ -234,6 +234,31 @@ static void wq_spotlight_warm_apps_on_io(void)
     _panel.transform = wq_motion_reduced() ? CGAffineTransformIdentity : CGAffineTransformMakeScale(0.94, 0.94);
     [self.view addSubview:_panel];
 
+    // Top grabber pill for swipe-down dismissal hint.
+    UIView *grabber = [UIView new];
+    grabber.translatesAutoresizingMaskIntoConstraints = NO;
+    grabber.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.28];
+    grabber.layer.cornerRadius = 2.0;
+    [_panel.contentView addSubview:grabber];
+
+    // Sleek frosted Duo glass circular Back / Close button (36x36pt) beside the search bar.
+    UIButton *backBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    backBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButtonConfiguration *backCfg = [UIButtonConfiguration plainButtonConfiguration];
+    UIImageSymbolConfiguration *backSym = [UIImageSymbolConfiguration configurationWithPointSize:15 weight:UIImageSymbolWeightSemibold];
+    backCfg.image = [UIImage systemImageNamed:@"chevron.left" withConfiguration:backSym];
+    backCfg.baseForegroundColor = wq_theme_primary_text();
+    backCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    backCfg.background.backgroundColor = wq_theme_glass_tint();
+    backCfg.background.strokeColor = wq_theme_rim();
+    backCfg.background.strokeWidth = 0.5;
+    backCfg.contentInsets = NSDirectionalEdgeInsetsZero;
+    backBtn.configuration = backCfg;
+    backBtn.accessibilityLabel = WQLocalized(@"Back");
+    [backBtn addTarget:self action:@selector(dismissSpotlight) forControlEvents:UIControlEventTouchUpInside];
+    wq_theme_add_spring_tap(backBtn);
+    wq_motion_add_interactive_hold(backBtn, nil);
+
     // Top Spotlight search capsule wrapped in UIGlassContainerEffect.
     UIImageView *mag = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"magnifyingglass"]];
     mag.tintColor = wq_theme_accent();
@@ -242,7 +267,7 @@ static void wq_spotlight_warm_apps_on_io(void)
 
     _searchField = [UITextField new];
     _searchField.translatesAutoresizingMaskIntoConstraints = NO;
-    _searchField.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    _searchField.font = [UIFont systemFontOfSize:15.5 weight:UIFontWeightMedium];
     _searchField.textColor = wq_theme_primary_text();
     _searchField.tintColor = wq_theme_accent();
     _searchField.autocorrectionType = UITextAutocorrectionTypeNo;
@@ -251,34 +276,48 @@ static void wq_spotlight_warm_apps_on_io(void)
     _searchField.returnKeyType = UIReturnKeySearch;
     _searchField.delegate = self;
     _searchField.attributedPlaceholder = [[NSAttributedString alloc]
-        initWithString:WQLocalized(@"Search files, apps, caches, commands…")
+        initWithString:WQLocalized(@"Search files, apps, caches…")
             attributes:@{NSForegroundColorAttributeName: wq_theme_secondary_text()}];
+    [_searchField setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
     [_searchField addTarget:self action:@selector(queryChanged) forControlEvents:UIControlEventEditingChanged];
 
-    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    closeBtn.translatesAutoresizingMaskIntoConstraints = NO;
-    UIButtonConfiguration *closeCfg = [UIButtonConfiguration plainButtonConfiguration];
-    closeCfg.title = WQLocalized(@"Done");
-    closeCfg.baseForegroundColor = wq_theme_accent();
-    closeCfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 10, 6, 10);
-    closeBtn.configuration = closeCfg;
-    [closeBtn addTarget:self action:@selector(dismissSpotlight) forControlEvents:UIControlEventTouchUpInside];
-    wq_motion_add_interactive_hold(closeBtn, nil);
-
-    UIStackView *searchRow = [[UIStackView alloc] initWithArrangedSubviews:@[mag, _searchField, closeBtn]];
+    UIStackView *searchRow = [[UIStackView alloc] initWithArrangedSubviews:@[mag, _searchField]];
     searchRow.axis = UILayoutConstraintAxisHorizontal;
     searchRow.alignment = UIStackViewAlignmentCenter;
-    searchRow.spacing = 10;
-    searchRow.layoutMargins = UIEdgeInsetsMake(8, 12, 8, 8);
+    searchRow.spacing = 8;
+    searchRow.layoutMargins = UIEdgeInsetsMake(7, 12, 7, 10);
     searchRow.layoutMarginsRelativeArrangement = YES;
 
     UIView *searchCapsule = wq_theme_glass_container(searchRow, 6);
     searchCapsule.backgroundColor = [UIColor colorWithRed:0.086 green:0.098 blue:0.125 alpha:0.65];
-    searchCapsule.layer.cornerRadius = 22.0;
+    searchCapsule.layer.cornerRadius = 18.0;
     searchCapsule.layer.cornerCurve = kCACornerCurveContinuous;
     searchCapsule.layer.borderWidth = 0.5;
     searchCapsule.layer.borderColor = wq_theme_rim().CGColor;
     searchCapsule.clipsToBounds = YES;
+
+    UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    closeBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButtonConfiguration *closeCfg = [UIButtonConfiguration plainButtonConfiguration];
+    UIImageSymbolConfiguration *closeSym = [UIImageSymbolConfiguration configurationWithPointSize:13.5 weight:UIImageSymbolWeightSemibold];
+    closeCfg.image = [UIImage systemImageNamed:@"xmark" withConfiguration:closeSym];
+    closeCfg.baseForegroundColor = wq_theme_primary_text();
+    closeCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    closeCfg.background.backgroundColor = wq_theme_glass_tint();
+    closeCfg.background.strokeColor = wq_theme_rim();
+    closeCfg.background.strokeWidth = 0.5;
+    closeCfg.contentInsets = NSDirectionalEdgeInsetsZero;
+    closeBtn.configuration = closeCfg;
+    closeBtn.accessibilityLabel = WQLocalized(@"Close");
+    [closeBtn addTarget:self action:@selector(dismissSpotlight) forControlEvents:UIControlEventTouchUpInside];
+    wq_theme_add_spring_tap(closeBtn);
+    wq_motion_add_interactive_hold(closeBtn, nil);
+
+    UIStackView *topBar = [[UIStackView alloc] initWithArrangedSubviews:@[backBtn, searchCapsule, closeBtn]];
+    topBar.translatesAutoresizingMaskIntoConstraints = NO;
+    topBar.axis = UILayoutConstraintAxisHorizontal;
+    topBar.alignment = UIStackViewAlignmentCenter;
+    topBar.spacing = 8;
 
     _hintLabel = [UILabel new];
     _hintLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -299,11 +338,15 @@ static void wq_spotlight_warm_apps_on_io(void)
     _tableView.contentInset = UIEdgeInsetsMake(4, 0, 36, 0);
     [_tableView registerClass:WQSpotlightCell.class forCellReuseIdentifier:@"spot"];
 
-    [_panel.contentView addSubview:searchCapsule];
+    [_panel.contentView addSubview:topBar];
     [_panel.contentView addSubview:_hintLabel];
     [_panel.contentView addSubview:_tableView];
 
     wq_motion_install_edge_blur(_tableView, _tableView);
+
+    // Interactive swipe-down dismissal on the panel header / overlay.
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipeDismiss:)];
+    [_panel addGestureRecognizer:pan];
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -315,12 +358,21 @@ static void wq_spotlight_warm_apps_on_io(void)
         [_panel.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-10],
         [_panel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12],
         [_panel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12],
-        [mag.widthAnchor constraintEqualToConstant:18],
-        [mag.heightAnchor constraintEqualToConstant:18],
-        [searchCapsule.topAnchor constraintEqualToAnchor:_panel.contentView.topAnchor constant:12],
-        [searchCapsule.leadingAnchor constraintEqualToAnchor:_panel.contentView.leadingAnchor constant:12],
-        [searchCapsule.trailingAnchor constraintEqualToAnchor:_panel.contentView.trailingAnchor constant:-12],
-        [_hintLabel.topAnchor constraintEqualToAnchor:searchCapsule.bottomAnchor constant:8],
+        [grabber.topAnchor constraintEqualToAnchor:_panel.contentView.topAnchor constant:7],
+        [grabber.centerXAnchor constraintEqualToAnchor:_panel.contentView.centerXAnchor],
+        [grabber.widthAnchor constraintEqualToConstant:36],
+        [grabber.heightAnchor constraintEqualToConstant:4],
+        [backBtn.widthAnchor constraintEqualToConstant:36],
+        [backBtn.heightAnchor constraintEqualToConstant:36],
+        [closeBtn.widthAnchor constraintEqualToConstant:36],
+        [closeBtn.heightAnchor constraintEqualToConstant:36],
+        [searchCapsule.heightAnchor constraintEqualToConstant:36],
+        [mag.widthAnchor constraintEqualToConstant:16],
+        [mag.heightAnchor constraintEqualToConstant:16],
+        [topBar.topAnchor constraintEqualToAnchor:grabber.bottomAnchor constant:8],
+        [topBar.leadingAnchor constraintEqualToAnchor:_panel.contentView.leadingAnchor constant:12],
+        [topBar.trailingAnchor constraintEqualToAnchor:_panel.contentView.trailingAnchor constant:-12],
+        [_hintLabel.topAnchor constraintEqualToAnchor:topBar.bottomAnchor constant:8],
         [_hintLabel.leadingAnchor constraintEqualToAnchor:_panel.contentView.leadingAnchor constant:18],
         [_hintLabel.trailingAnchor constraintEqualToAnchor:_panel.contentView.trailingAnchor constant:-18],
         [_tableView.topAnchor constraintEqualToAnchor:_hintLabel.bottomAnchor constant:4],
@@ -331,6 +383,28 @@ static void wq_spotlight_warm_apps_on_io(void)
 
     [self loadEmptyState];
     dispatch_async(wq_io(), ^{ wq_spotlight_warm_apps_on_io(); });
+}
+
+- (void)handleSwipeDismiss:(UIPanGestureRecognizer *)pan
+{
+    CGPoint translation = [pan translationInView:self.view];
+    CGPoint velocity = [pan velocityInView:self.view];
+    if (pan.state == UIGestureRecognizerStateChanged) {
+        CGFloat dy = MAX(0.0, translation.y);
+        CGFloat progress = MIN(1.0, dy / 220.0);
+        _panel.transform = CGAffineTransformMakeTranslation(0, dy);
+        _backdrop.alpha = 1.0 - progress * 0.55;
+    } else if (pan.state == UIGestureRecognizerStateEnded || pan.state == UIGestureRecognizerStateCancelled) {
+        if (translation.y > 80.0 || velocity.y > 650.0) {
+            [self dismissSpotlight];
+        } else {
+            UIViewPropertyAnimator *snap = [[UIViewPropertyAnimator alloc] initWithDuration:0.28 dampingRatio:0.84 animations:^{
+                self->_panel.transform = CGAffineTransformIdentity;
+                self->_backdrop.alpha = 1.0;
+            }];
+            [snap startAnimation];
+        }
+    }
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -619,26 +693,30 @@ void wq_global_search_present(UIViewController *host, BOOL showRecentsFirst)
 
 UIButton *wq_global_search_pill_button(UIViewController *host)
 {
+    // Compact 34x34pt circular frosted Duo glass pill matching adjacent header icon buttons
+    // so the Home header bar never squeezes or wraps "Search" onto multiple lines.
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
     btn.translatesAutoresizingMaskIntoConstraints = NO;
     UIButtonConfiguration *cfg = [UIButtonConfiguration glassButtonConfiguration];
-    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:12.5 weight:UIImageSymbolWeightSemibold];
+    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
     cfg.image = [UIImage systemImageNamed:@"magnifyingglass" withConfiguration:sym];
-    cfg.title = WQLocalized(@"Search");
-    cfg.imagePadding = 5.0;
     cfg.baseForegroundColor = wq_theme_primary_text();
     cfg.baseBackgroundColor = wq_theme_glass_tint();
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 10, 6, 11);
+    cfg.contentInsets = NSDirectionalEdgeInsetsZero;
+    cfg.titleLineBreakMode = NSLineBreakByClipping;
     cfg.background.strokeColor = wq_theme_rim();
     cfg.background.strokeWidth = 0.5;
-    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *inAttr) {
-        NSMutableDictionary *outAttr = [inAttr mutableCopy] ?: [NSMutableDictionary new];
-        outAttr[NSFontAttributeName] = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
-        return outAttr;
-    };
     btn.configuration = cfg;
+    btn.titleLabel.numberOfLines = 1;
+    btn.titleLabel.lineBreakMode = NSLineBreakByClipping;
     btn.accessibilityLabel = WQLocalized(@"Universal Search");
+    [btn setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [btn setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [NSLayoutConstraint activateConstraints:@[
+        [btn.widthAnchor constraintEqualToConstant:34.0],
+        [btn.heightAnchor constraintEqualToConstant:34.0],
+    ]];
 
     __weak UIViewController *weakHost = host;
     [btn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
