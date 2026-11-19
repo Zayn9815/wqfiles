@@ -8,11 +8,11 @@ NS_ASSUME_NONNULL_BEGIN
 // Motion (no 3D tilt, no elastic overshoot, no stagger, no shimmer) and Reduce
 // Transparency.
 
-extern const CGFloat kWQMotionPressScale;           // 0.96
+extern const CGFloat kWQMotionPressScale;           // 0.97
 extern const CGFloat kWQMotionEntranceOffset;       // 16 pt
 extern const NSTimeInterval kWQMotionStagger;       // 0.030 s (30 ms)
-extern const CGFloat kWQMotionSpringResponse;       // 0.32 s
-extern const CGFloat kWQMotionSpringDamping;        // 0.45
+extern const CGFloat kWQMotionSpringResponse;       // 0.28 s
+extern const CGFloat kWQMotionSpringDamping;        // 0.84
 
 BOOL wq_motion_reduced(void);
 

@@ -43,7 +43,7 @@ NSString *wq_app_version_line(void)
 
 const CGFloat kWQDeviceStripHeight = 56;
 
-// Frosted Glacier Liquid Glass telemetry pill with aqua dot, version and device/iOS line.
+// Frosted iPhone Duo Liquid Glass telemetry pill with aqua dot, version and device/iOS line.
 UIView *wq_device_header(CGFloat width)
 {
     CGFloat useWidth = width > 0 ? width : 360.0;
@@ -223,15 +223,15 @@ static UIImage *wq_service_tile(NSString *bundleID)
     dispatch_once(&once, ^{
         tiles = [NSCache new];
         // Arctic Glacier palette for fallback service tiles (zero warm/red hues).
-        UIColor *blue   = [UIColor colorWithRed:0.12 green:0.44 blue:0.68 alpha:1.0];
-        UIColor *green  = [UIColor colorWithRed:0.10 green:0.56 blue:0.54 alpha:1.0];
-        UIColor *red    = [UIColor colorWithRed:0.15 green:0.35 blue:0.56 alpha:1.0];
-        UIColor *orange = [UIColor colorWithRed:0.18 green:0.50 blue:0.64 alpha:1.0];
-        UIColor *purple = [UIColor colorWithRed:0.20 green:0.36 blue:0.62 alpha:1.0];
-        UIColor *indigo = [UIColor colorWithRed:0.14 green:0.30 blue:0.54 alpha:1.0];
-        UIColor *teal   = [UIColor colorWithRed:0.08 green:0.54 blue:0.66 alpha:1.0];
-        UIColor *pink   = [UIColor colorWithRed:0.22 green:0.46 blue:0.68 alpha:1.0];
-        UIColor *gray   = [UIColor colorWithRed:0.24 green:0.36 blue:0.48 alpha:1.0];
+        UIColor *blue   = [UIColor colorWithRed:0.204 green:0.452 blue:0.680 alpha:1.0];
+        UIColor *green  = [UIColor colorWithRed:0.169 green:0.372 blue:0.560 alpha:1.0];
+        UIColor *red    = [UIColor colorWithRed:0.212 green:0.393 blue:0.560 alpha:1.0];
+        UIColor *orange = [UIColor colorWithRed:0.249 green:0.452 blue:0.640 alpha:1.0];
+        UIColor *purple = [UIColor colorWithRed:0.263 green:0.449 blue:0.620 alpha:1.0];
+        UIColor *indigo = [UIColor colorWithRed:0.200 green:0.377 blue:0.540 alpha:1.0];
+        UIColor *teal   = [UIColor colorWithRed:0.167 green:0.423 blue:0.660 alpha:1.0];
+        UIColor *pink   = [UIColor colorWithRed:0.289 green:0.492 blue:0.680 alpha:1.0];
+        UIColor *gray   = [UIColor colorWithRed:0.276 green:0.382 blue:0.480 alpha:1.0];
         // keywords (lower case, any match), symbol, colour
         rules = @[
             @[@[@"emoji"], @"face.smiling.inverse", orange],
@@ -281,7 +281,7 @@ static UIImage *wq_service_tile(NSString *bundleID)
     });
     NSString *key = bundleID.lowercaseString;
     NSString *symbol = @"cube.transparent.fill";
-    UIColor *color = [UIColor colorWithRed:0.09 green:0.22 blue:0.35 alpha:1.0];
+    UIColor *color = [UIColor colorWithRed:0.232 green:0.250 blue:0.297 alpha:1.0];
     for (NSArray *rule in rules) {
         BOOL hit = NO;
         for (NSString *word in rule[0]) if ([key containsString:word]) { hit = YES; break; }
@@ -313,13 +313,13 @@ static UIImage *wq_service_tile(NSString *bundleID)
         // Specular icy-silver rim inside the rounded square.
         UIBezierPath *rim = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(rect, 0.75, 0.75) cornerRadius:radius - 0.75];
         rim.lineWidth = 1.0;
-        [[UIColor colorWithRed:0.80 green:0.96 blue:1.0 alpha:0.34] setStroke];
+        [[UIColor colorWithRed:0.830 green:0.918 blue:1.000 alpha:0.34] setStroke];
         [rim stroke];
 
         UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
         UIImage *sym = [UIImage systemImageNamed:symbol withConfiguration:cfg]
                     ?: [UIImage systemImageNamed:@"cube.transparent.fill" withConfiguration:cfg];
-        UIImage *g = [sym imageWithTintColor:[UIColor colorWithRed:0.88 green:0.98 blue:1.0 alpha:1.0]
+        UIImage *g = [sym imageWithTintColor:[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:1.0]
                                renderingMode:UIImageRenderingModeAlwaysOriginal];
         [g drawInRect:CGRectMake((s - g.size.width) / 2.0, (s - g.size.height) / 2.0, g.size.width, g.size.height)];
     }];
@@ -346,8 +346,8 @@ UIImage *wq_glacier_symbol_badge(NSString *symbolName, CGFloat size)
         [clip addClip];
         CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
         NSArray *colors = @[
-            (id)[UIColor colorWithRed:0.086 green:0.220 blue:0.345 alpha:0.96].CGColor,
-            (id)[UIColor colorWithRed:0.043 green:0.114 blue:0.196 alpha:0.98].CGColor,
+            (id)[UIColor colorWithRed:0.229 green:0.247 blue:0.293 alpha:0.96].CGColor,
+            (id)[UIColor colorWithRed:0.130 green:0.140 blue:0.167 alpha:0.98].CGColor,
         ];
         CGGradientRef grad = CGGradientCreateWithColors(cs, (__bridge CFArrayRef)colors, NULL);
         CGContextDrawLinearGradient(ctx.CGContext, grad, CGPointMake(0, 0), CGPointMake(s, s), 0);
@@ -356,14 +356,14 @@ UIImage *wq_glacier_symbol_badge(NSString *symbolName, CGFloat size)
 
         UIBezierPath *rim = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(rect, 0.75, 0.75) cornerRadius:radius - 0.75];
         rim.lineWidth = 1.0;
-        [[UIColor colorWithRed:0.50 green:0.94 blue:1.0 alpha:0.36] setStroke];
+        [[UIColor colorWithRed:0.575 green:0.796 blue:1.000 alpha:0.36] setStroke];
         [rim stroke];
 
         UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:s * 0.48
                                                                                           weight:UIImageSymbolWeightSemibold];
         UIImage *raw = [UIImage systemImageNamed:sym withConfiguration:cfg]
                     ?: [UIImage systemImageNamed:@"cube.transparent.fill" withConfiguration:cfg];
-        UIImage *tinted = [raw imageWithTintColor:[UIColor colorWithRed:0.65 green:0.96 blue:1.0 alpha:1.0]
+        UIImage *tinted = [raw imageWithTintColor:[UIColor colorWithRed:0.703 green:0.857 blue:1.000 alpha:1.0]
                                     renderingMode:UIImageRenderingModeAlwaysOriginal];
         [tinted drawInRect:CGRectMake((s - tinted.size.width) / 2.0, (s - tinted.size.height) / 2.0,
                                       tinted.size.width, tinted.size.height)];
@@ -474,7 +474,7 @@ NSString *wq_size_text(unsigned long long size)
     return [NSByteCountFormatter stringFromByteCount:(long long)size countStyle:NSByteCountFormatterCountStyleFile];
 }
 
-// WQ Prism: arctic Glacier Liquid Glass backdrop with drifting polar-glow shimmers.
+// WQ Prism: iPhone Duo Liquid Glass backdrop with drifting polar-glow shimmers.
 @interface WQPrismBackgroundView : UIView
 @end
 
@@ -533,7 +533,7 @@ NSString *wq_size_text(unsigned long long size)
 
 - (void)updateColors
 {
-    // Glacier Liquid Glass canvas: deep sub-zero night-blue (#091524 -> #122B43)
+    // iPhone Duo Liquid Glass canvas: deep sub-zero night-blue (#091524 -> #122B43)
     // into arctic cyan (#1F4D62) and dark glacial ice (#04090E).
     _base.colors = @[(id)wq_theme_canvas_top().CGColor,
                      (id)wq_theme_canvas_mid().CGColor,
@@ -551,7 +551,7 @@ NSString *wq_size_text(unsigned long long size)
 
     // Sub-zero aqua, aurora teal, arctic cyan, and deep glacial ice light pools.
     _glows[0].colors = @[(id)[wq_theme_accent() colorWithAlphaComponent:0.20].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[1].colors = @[(id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.15].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[1].colors = @[(id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.08].CGColor, (id)[UIColor clearColor].CGColor];
     _glows[2].colors = @[(id)[wq_theme_canvas_cyan() colorWithAlphaComponent:0.46].CGColor, (id)[UIColor clearColor].CGColor];
     _glows[3].colors = @[(id)[wq_theme_canvas_edge() colorWithAlphaComponent:0.60].CGColor, (id)[UIColor clearColor].CGColor];
 }
@@ -679,9 +679,9 @@ void wq_set_prism_enabled(BOOL enabled)
 
         _backdrop = [CAGradientLayer layer];
         _backdrop.colors = @[
-            (id)[UIColor colorWithRed:0.035 green:0.082 blue:0.141 alpha:0.98].CGColor,
-            (id)[UIColor colorWithRed:0.051 green:0.122 blue:0.200 alpha:0.95].CGColor,
-            (id)[UIColor colorWithRed:0.035 green:0.082 blue:0.141 alpha:0.90].CGColor,
+            (id)[UIColor colorWithRed:0.093 green:0.101 blue:0.120 alpha:0.98].CGColor,
+            (id)[UIColor colorWithRed:0.133 green:0.143 blue:0.170 alpha:0.95].CGColor,
+            (id)[UIColor colorWithRed:0.093 green:0.101 blue:0.120 alpha:0.90].CGColor,
         ];
         _backdrop.locations = @[@0.0, @0.72, @1.0];
         [self.layer addSublayer:_backdrop];
@@ -728,6 +728,8 @@ void wq_install_header_shield(UIViewController *vc)
     WQGlacierHeaderShieldView *shield = [[WQGlacierHeaderShieldView alloc] initWithFrame:CGRectZero];
     shield.tag = kShieldTag;
     shield.translatesAutoresizingMaskIntoConstraints = NO;
+    // Rows slide cleanly underneath the fixed Duo header instead of bleeding over it.
+    if ([vc.view isKindOfClass:UIScrollView.class]) vc.view.clipsToBounds = YES;
     [vc.view addSubview:shield];
 
     NSLayoutYAxisAnchor *topAnchor = vc.view.topAnchor;
@@ -748,7 +750,7 @@ void wq_install_header_shield(UIViewController *vc)
     ]];
 }
 
-#pragma mark - Glacier Liquid Glass Confirmation Modal
+#pragma mark - iPhone Duo Liquid Glass Confirmation Modal
 
 @interface WQGlassConfirmViewController : UIViewController
 - (instancetype)initWithTitle:(NSString *)title
@@ -793,7 +795,7 @@ void wq_install_header_shield(UIViewController *vc)
 
     _dimView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
     _dimView.translatesAutoresizingMaskIntoConstraints = NO;
-    _dimView.backgroundColor = [UIColor colorWithRed:0.02 green:0.05 blue:0.09 alpha:0.58];
+    _dimView.backgroundColor = [UIColor colorWithRed:0.060 green:0.064 blue:0.076 alpha:0.58];
     _dimView.alpha = 0.0;
     [self.view addSubview:_dimView];
 
@@ -801,9 +803,9 @@ void wq_install_header_shield(UIViewController *vc)
     [_dimView addGestureRecognizer:tap];
 
     _cardView = wq_theme_make_glass_card(24.0, NO);
-    _cardView.layer.borderColor = [UIColor colorWithRed:0.88 green:0.99 blue:1.0 alpha:0.42].CGColor;
+    _cardView.layer.borderColor = [UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:0.42].CGColor;
     _cardView.layer.borderWidth = 1.0;
-    _cardView.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.96 blue:1.0 alpha:0.22].CGColor;
+    _cardView.layer.shadowColor = [UIColor colorWithRed:0.150 green:0.592 blue:1.000 alpha:0.22].CGColor;
     _cardView.layer.shadowRadius = 24.0;
     _cardView.layer.shadowOpacity = 1.0;
     _cardView.layer.shadowOffset = CGSizeMake(0, 12);
@@ -816,7 +818,7 @@ void wq_install_header_shield(UIViewController *vc)
     // Top icy-aqua specular hairline accent.
     UIView *topAccent = [UIView new];
     topAccent.translatesAutoresizingMaskIntoConstraints = NO;
-    topAccent.backgroundColor = _destructive ? wq_theme_accent() : wq_theme_aurora_teal();
+    topAccent.backgroundColor = _destructive ? [UIColor colorWithRed:0.878 green:0.192 blue:0.294 alpha:1.0] : wq_theme_accent();
     topAccent.layer.cornerRadius = 1.5;
     topAccent.layer.shadowColor = topAccent.backgroundColor.CGColor;
     topAccent.layer.shadowRadius = 6.0;
@@ -850,7 +852,7 @@ void wq_install_header_shield(UIViewController *vc)
         outAttr[NSFontAttributeName] = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
         return outAttr;
     };
-    cancelCfg.background.backgroundColor = [UIColor colorWithRed:0.09 green:0.20 blue:0.32 alpha:0.65];
+    cancelCfg.background.backgroundColor = [UIColor colorWithRed:0.212 green:0.229 blue:0.272 alpha:0.65];
     cancelCfg.background.strokeColor = wq_theme_rim();
     cancelCfg.background.strokeWidth = 0.75;
     cancelBtn.configuration = cancelCfg;
@@ -860,8 +862,8 @@ void wq_install_header_shield(UIViewController *vc)
     confirmBtn.translatesAutoresizingMaskIntoConstraints = NO;
     UIButtonConfiguration *confirmCfg = [UIButtonConfiguration filledButtonConfiguration];
     confirmCfg.title = _confirmTitle;
-    confirmCfg.baseBackgroundColor = _destructive ? wq_theme_accent() : wq_theme_aurora_teal();
-    confirmCfg.baseForegroundColor = [UIColor colorWithRed:0.02 green:0.07 blue:0.12 alpha:1.0];
+    confirmCfg.baseBackgroundColor = _destructive ? [UIColor colorWithRed:0.878 green:0.192 blue:0.294 alpha:1.0] : wq_theme_accent();
+    confirmCfg.baseForegroundColor = UIColor.whiteColor;
     confirmCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     confirmCfg.contentInsets = NSDirectionalEdgeInsetsMake(12, 16, 12, 16);
     confirmCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *inAttr) {
@@ -922,8 +924,8 @@ void wq_install_header_shield(UIViewController *vc)
         }];
         return;
     }
-    UISpringTimingParameters *spring = [[UISpringTimingParameters alloc] initWithDampingRatio:0.74 initialVelocity:CGVectorMake(0.4, 0.4)];
-    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:spring];
+    UISpringTimingParameters *spring = [[UISpringTimingParameters alloc] initWithDampingRatio:0.84 initialVelocity:CGVectorMake(0.3, 0.3)];
+    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.28 timingParameters:spring];
     [anim addAnimations:^{
         self->_dimView.alpha = 1.0;
         self->_cardView.alpha = 1.0;

@@ -4,11 +4,11 @@
 #import <math.h>
 #import <objc/runtime.h>
 
-const CGFloat kWQMotionPressScale = 0.96;
+const CGFloat kWQMotionPressScale = 0.97;
 const CGFloat kWQMotionEntranceOffset = 16.0;
 const NSTimeInterval kWQMotionStagger = 0.030;
-const CGFloat kWQMotionSpringResponse = 0.32;
-const CGFloat kWQMotionSpringDamping = 0.45;
+const CGFloat kWQMotionSpringResponse = 0.28;
+const CGFloat kWQMotionSpringDamping = 0.84;
 
 static const void *kWQMotionPressKey = &kWQMotionPressKey;
 static const void *kWQMotionAnimatorKey = &kWQMotionAnimatorKey;
@@ -100,7 +100,7 @@ static UIViewPropertyAnimator *wq_motion_bezier(NSTimeInterval duration, void (^
         sheen.startPoint = CGPointMake(0.5, 0.5);
         sheen.endPoint = CGPointMake(1.0, 1.0);
         sheen.colors = @[
-            (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.34].CGColor,
+            (id)[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:0.34].CGColor,
             (id)[wq_theme_accent() colorWithAlphaComponent:0.16].CGColor,
             (id)[UIColor clearColor].CGColor,
         ];
@@ -397,7 +397,7 @@ void wq_motion_spring_morph(UIView *container, void (^changes)(void), void (^com
         if (completion) completion();
         return;
     }
-    UIViewPropertyAnimator *a = wq_motion_spring_physics(0.32, 0.72, 0, ^{
+    UIViewPropertyAnimator *a = wq_motion_spring_physics(kWQMotionSpringResponse, kWQMotionSpringDamping, 0, ^{
         if (changes) changes();
         [target layoutIfNeeded];
     });
@@ -424,7 +424,7 @@ void wq_motion_spring_morph(UIView *container, void (^changes)(void), void (^com
         _glaze.startPoint = CGPointMake(0.0, 0.0);
         _glaze.endPoint = CGPointMake(1.0, 1.0);
         _glaze.colors = @[
-            (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.20].CGColor,
+            (id)[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:0.20].CGColor,
             (id)[wq_theme_accent() colorWithAlphaComponent:0.06].CGColor,
             (id)[UIColor clearColor].CGColor,
         ];
@@ -542,7 +542,7 @@ void wq_motion_set_visible(UIVisualEffectView *glass, BOOL visible, BOOL animate
     if (visible) glass.hidden = NO;
     if (!animated) { apply(); glass.hidden = !visible; return; }
     UIViewPropertyAnimator *a = visible
-        ? wq_motion_spring_physics(0.32, 0.72, 0, apply)
+        ? wq_motion_spring_physics(kWQMotionSpringResponse, kWQMotionSpringDamping, 0, apply)
         : wq_motion_bezier(0.24, apply);
     [a addCompletion:^(UIViewAnimatingPosition __unused p) { if (!visible) glass.hidden = YES; }];
     [a startAnimation];
@@ -736,9 +736,9 @@ void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView 
         CGFloat norm = MAX(-1.0, MIN(1.0, dist / halfSpan));
         CGFloat focus = 1.0 - fabs(norm);
 
-        // Safe 2D scale (0.985 -> 1.0) + subtle opacity (0.90 -> 1.0) with zero 3D
+        // Safe 2D scale (0.988 -> 1.0) + edge fade (0.90 -> 1.0) with zero 3D
         // X-axis pitch rotation so adjacent cells never slice or clip in Z-space.
-        CGFloat scale = 0.985 + 0.015 * focus;
+        CGFloat scale = 0.988 + 0.012 * focus;
         v.transform3D = CATransform3DMakeScale(scale, scale, 1.0);
         v.alpha = isCell ? (0.90 + 0.10 * focus) : (0.94 + 0.06 * focus);
 
@@ -808,17 +808,27 @@ void wq_motion_apply_header_parallax(UIScrollView *scrollView, UIView *headerVie
         if (!CGAffineTransformIsIdentity(headerView.transform)) {
             headerView.transform = CGAffineTransformIdentity;
         }
+        headerView.alpha = 1.0;
         return;
     }
+    // Elastic collapsing Duo header: scrolling up glides and cross-fades the
+    // large header away (the frosted nav pill takes over); pulling down at the
+    // top stretches it with rubber-band elasticity.
     CGFloat scrollY = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
-    CGFloat shift = 0;
+    CGFloat h = MAX(1.0, headerView.bounds.size.height);
     if (scrollY > 0) {
-        // 0.35x vertical parallax depth as content glides over/past the header.
-        shift = MIN(36.0, scrollY * 0.35);
-    } else if (scrollY < 0) {
-        shift = MAX(-14.0, scrollY * 0.20);
+        CGFloat shift = MIN(48.0, scrollY * 0.45);
+        headerView.transform = CGAffineTransformMakeTranslation(0, shift);
+        headerView.alpha = MAX(0.0, 1.0 - scrollY / (h * 0.9));
+    } else {
+        CGFloat pull = -scrollY;
+        // Rubber-band: diminishing returns toward a 10% stretch.
+        CGFloat stretch = 0.10 * (1.0 - 1.0 / (1.0 + pull / 90.0));
+        CGFloat sc = 1.0 + stretch;
+        headerView.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(sc, sc),
+                                                       CGAffineTransformMakeTranslation(0, (sc - 1.0) * h * 0.5));
+        headerView.alpha = 1.0;
     }
-    headerView.transform = CGAffineTransformMakeTranslation(0, shift);
 }
 
 void wq_motion_scroll_detent(UIScrollView *scrollView, NSInteger detentIndex)
@@ -940,6 +950,11 @@ void wq_motion_attach_horizontal_detents(UIScrollView *scrollView, CGFloat stepW
 
 void wq_motion_add_hud_brackets(UIView *view, CGFloat inset, CGFloat armLength)
 {
+    // iPhone Duo is a minimal optical-glass design: the old HUD corner
+    // brackets are intentionally not drawn. The API is kept for call sites.
+    (void)inset; (void)armLength;
+    static const BOOL kDrawBrackets = NO;
+    if (!kDrawBrackets) return;
     if (!view) return;
     UIView *host = [view isKindOfClass:UIVisualEffectView.class] ? ((UIVisualEffectView *)view).contentView : view;
     if (objc_getAssociatedObject(host, kWQMotionBracketsKey)) return;
@@ -980,7 +995,7 @@ void wq_motion_add_hud_brackets(UIView *view, CGFloat inset, CGFloat armLength)
         _beam.colors = @[
             (id)[UIColor clearColor].CGColor,
             (id)[wq_theme_accent() colorWithAlphaComponent:0.14].CGColor,
-            (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.28].CGColor,
+            (id)[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:0.28].CGColor,
             (id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.14].CGColor,
             (id)[UIColor clearColor].CGColor,
         ];
@@ -1251,7 +1266,7 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
         _scanBeam.endPoint = CGPointMake(0.5, 1.0);
         _scanBeam.colors = @[
             (id)[UIColor clearColor].CGColor,
-            (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.65].CGColor,
+            (id)[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:0.65].CGColor,
             (id)[UIColor clearColor].CGColor,
         ];
         _scanBeam.locations = @[@(-0.4), @(-0.2), @(0.0)];
@@ -1334,7 +1349,7 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
     _aurora.colors = @[
         (id)base.CGColor,
         (id)wq_theme_aurora_teal().CGColor,
-        (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:1.0].CGColor,
+        (id)[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:1.0].CGColor,
         (id)base.CGColor,
     ];
     _aurora.locations = @[@0.0, @0.38, @0.70, @1.0];
@@ -1547,7 +1562,7 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
         _shimmer.endPoint = CGPointMake(1.0, 0.5);
         _shimmer.colors = @[
             (id)[UIColor clearColor].CGColor,
-            (id)[UIColor colorWithRed:0.88 green:1.0 blue:1.0 alpha:0.65].CGColor,
+            (id)[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:0.65].CGColor,
             (id)[UIColor clearColor].CGColor,
         ];
         _shimmer.locations = @[@(-0.4), @(-0.2), @(0.0)];

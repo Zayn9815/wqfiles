@@ -1,6 +1,6 @@
 //
 //  WQTheme.m
-//  WQ Glass arctic Glacier Liquid Glass theme (iOS 26)
+//  WQ Glass iPhone Duo Liquid Glass theme (iOS 26)
 //
 
 #import "WQTheme.h"
@@ -20,25 +20,25 @@ static UIColor *wq_rgb(uint32_t rgb, CGFloat alpha)
 
 #pragma mark - Glacier Palette
 
-UIColor *wq_theme_canvas_top(void)     { return wq_rgb(0x091524, 1.0); }
-UIColor *wq_theme_canvas_mid(void)     { return wq_rgb(0x122B43, 1.0); }
-UIColor *wq_theme_canvas_cyan(void)    { return wq_rgb(0x1F4D62, 1.0); }
-UIColor *wq_theme_canvas_edge(void)    { return wq_rgb(0x04090E, 1.0); }
-UIColor *wq_theme_glass_tint(void)     { return wq_rgb(0x102A45, 0.48); }
-UIColor *wq_theme_rim(void)            { return wq_rgb(0xE0FFFF, 0.32); }
-UIColor *wq_theme_rim_teal(void)       { return wq_rgb(0x80F0FF, 0.22); }
+UIColor *wq_theme_canvas_top(void)     { return wq_rgb(0x090A0D, 1.0); }
+UIColor *wq_theme_canvas_mid(void)     { return wq_rgb(0x12151B, 1.0); }
+UIColor *wq_theme_canvas_cyan(void)    { return wq_rgb(0x1A1E26, 1.0); }
+UIColor *wq_theme_canvas_edge(void)    { return wq_rgb(0x050608, 1.0); }
+UIColor *wq_theme_glass_tint(void)     { return wq_rgb(0x161920, 0.72); }
+UIColor *wq_theme_rim(void)            { return wq_rgb(0xFFFFFF, 0.30); }
+UIColor *wq_theme_rim_teal(void)       { return wq_rgb(0x5AC8FA, 0.24); }
 UIColor *wq_theme_primary_text(void)   { return UIColor.whiteColor; }
-UIColor *wq_theme_secondary_text(void) { return wq_rgb(0xB0E2FF, 1.0); }
-UIColor *wq_theme_detail_text(void)    { return wq_rgb(0xD1E8FA, 1.0); }
-UIColor *wq_theme_hairline(void)       { return wq_rgb(0xD1E8FA, 0.16); }
-UIColor *wq_theme_cta_text(void)       { return wq_rgb(0x071A2B, 1.0); }
-UIColor *wq_theme_active_pill(void)    { return wq_rgb(0x0E5A74, 1.0); }
-UIColor *wq_theme_accent(void)         { return wq_rgb(0x00F5FF, 1.0); }
-UIColor *wq_theme_aurora_teal(void)    { return wq_rgb(0x4FFFB0, 1.0); }
-UIColor *wq_theme_solid_surface(void)  { return wq_rgb(0x11283F, 1.0); }
+UIColor *wq_theme_secondary_text(void) { return wq_rgb(0x9BA3B0, 1.0); }
+UIColor *wq_theme_detail_text(void)    { return wq_rgb(0xC3C9D3, 1.0); }
+UIColor *wq_theme_hairline(void)       { return wq_rgb(0xFFFFFF, 0.10); }
+UIColor *wq_theme_cta_text(void)       { return wq_rgb(0xFFFFFF, 1.0); }
+UIColor *wq_theme_active_pill(void)    { return wq_rgb(0x0A84FF, 1.0); }
+UIColor *wq_theme_accent(void)         { return wq_rgb(0x0A84FF, 1.0); }
+UIColor *wq_theme_aurora_teal(void)    { return wq_rgb(0x5AC8FA, 1.0); }
+UIColor *wq_theme_solid_surface(void)  { return wq_rgb(0x161920, 1.0); }
 
-static UIColor *wq_theme_pressed(void)     { return wq_rgb(0x00F5FF, 0.18); }
-static UIColor *wq_theme_plain_cell(void)  { return wq_rgb(0x102A45, 0.34); }
+static UIColor *wq_theme_pressed(void)     { return wq_rgb(0x0A84FF, 0.22); }
+static UIColor *wq_theme_plain_cell(void)  { return wq_rgb(0x161920, 0.55); }
 
 #pragma mark - Spring interaction
 
@@ -46,28 +46,25 @@ static UIColor *wq_theme_plain_cell(void)  { return wq_rgb(0x102A45, 0.34); }
 @end
 
 @implementation WQThemeSpringTarget
-- (void)down:(UIControl *)sender
+- (void)animate:(UIControl *)sender pressed:(BOOL)pressed
 {
     BOOL reduced = UIAccessibilityIsReduceMotionEnabled();
-    [UIView animateWithDuration:0.14 delay:0
-         usingSpringWithDamping:reduced ? 1.0 : 0.78 initialSpringVelocity:0.6
-                        options:UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{
-        CGFloat s = reduced ? 0.99 : 0.955;
-        sender.transform = CGAffineTransformMakeScale(s, s);
-        sender.alpha = 0.92;
-    } completion:nil];
+    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.28 dampingRatio:reduced ? 1.0 : 0.84 animations:^{
+        CGFloat k = reduced ? 0.99 : 0.97;
+        sender.transform = pressed ? CGAffineTransformMakeScale(k, k) : CGAffineTransformIdentity;
+        sender.alpha = pressed ? 0.94 : 1.0;
+    }];
+    anim.interruptible = YES;
+    [anim startAnimation];
+}
+- (void)down:(UIControl *)sender
+{
+    [[UISelectionFeedbackGenerator new] selectionChanged];
+    [self animate:sender pressed:YES];
 }
 - (void)up:(UIControl *)sender
 {
-    BOOL reduced = UIAccessibilityIsReduceMotionEnabled();
-    [UIView animateWithDuration:0.32 delay:0
-         usingSpringWithDamping:reduced ? 1.0 : 0.45 initialSpringVelocity:0.85
-                        options:UIViewAnimationOptionAllowUserInteraction | UIViewAnimationOptionBeginFromCurrentState
-                     animations:^{
-        sender.transform = CGAffineTransformIdentity;
-        sender.alpha = 1.0;
-    } completion:nil];
+    [self animate:sender pressed:NO];
 }
 @end
 
@@ -99,10 +96,18 @@ UIVisualEffectView *wq_theme_make_glass_card(CGFloat cornerRadius, BOOL interact
     card.translatesAutoresizingMaskIntoConstraints = NO;
     card.layer.cornerRadius = cornerRadius;
     card.layer.cornerCurve = kCACornerCurveContinuous;
-    card.layer.borderWidth = 0.75;
+    card.layer.borderWidth = 0.5;
     card.layer.borderColor = wq_theme_rim().CGColor;
     card.clipsToBounds = YES;
     if (!effect) card.backgroundColor = wq_theme_solid_surface();
+    // Dual-tone Duo surface: brushed-titanium sheen rgba(255,255,255,0.07)
+    // over the smoked graphite glass.
+    UIView *sheen = [UIView new];
+    sheen.userInteractionEnabled = NO;
+    sheen.frame = card.contentView.bounds;
+    sheen.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    sheen.backgroundColor = wq_rgb(0xFFFFFF, 0.07);
+    [card.contentView insertSubview:sheen atIndex:0];
     return card;
 }
 
@@ -112,10 +117,10 @@ UIButtonConfiguration *wq_theme_primary_button_configuration(void)
     // glacier navy (#071A2B) text & SF Symbol across iOS 26/27 Liquid Glass UI.
     UIButtonConfiguration *cfg = [UIButtonConfiguration filledButtonConfiguration];
     UIColor *cta = wq_theme_cta_text();
-    cfg.baseBackgroundColor = UIColor.whiteColor;
+    cfg.baseBackgroundColor = wq_theme_accent();
     cfg.baseForegroundColor = cta;
-    cfg.background.backgroundColor = UIColor.whiteColor;
-    cfg.background.strokeColor = wq_rgb(0x80F0FF, 0.65);
+    cfg.background.backgroundColor = wq_theme_accent();
+    cfg.background.strokeColor = wq_rgb(0x5AC8FA, 0.65);
     cfg.background.strokeWidth = 0.85;
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
@@ -221,11 +226,11 @@ void wq_theme_update_pill_button(UIButton *button, BOOL active)
     UIButtonConfiguration *cfg = [button.configuration copy] ?: [UIButtonConfiguration glassButtonConfiguration];
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
-    cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x102A45, 0.42);
+    cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x161920, 0.55);
     cfg.baseForegroundColor = active ? UIColor.whiteColor : wq_theme_secondary_text();
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 14, 7, 14);
     cfg.background.strokeWidth = active ? 1.0 : 0.75;
-    cfg.background.strokeColor = active ? wq_rgb(0x00F5FF, 0.72) : wq_theme_rim_teal();
+    cfg.background.strokeColor = active ? wq_rgb(0x5AC8FA, 0.72) : wq_theme_rim_teal();
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy] ?: [NSMutableDictionary new];
         out[NSForegroundColorAttributeName] = active ? UIColor.whiteColor : wq_theme_secondary_text();
@@ -341,7 +346,7 @@ static void wq_theme_hook(Class cls, SEL sel, IMP replacement, IMP *original)
         method_setImplementation(method, replacement);
 }
 
-// Every WQ Glass screen gets the Glacier Liquid Glass canvas.
+// Every WQ Glass screen gets the iPhone Duo Liquid Glass canvas.
 static void wq_theme_view_did_load(UIViewController *vc, SEL cmd)
 {
     if (wq_orig_view_did_load) ((void (*)(id, SEL))wq_orig_view_did_load)(vc, cmd);
@@ -375,7 +380,7 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
     } else {
         background.backgroundColor = reduceTransparency ? wq_theme_solid_surface() : wq_theme_glass_tint();
     }
-    background.strokeColor = pressed ? wq_rgb(0x00F5FF, 0.58) : (isPlain ? wq_theme_rim_teal() : wq_theme_rim());
+    background.strokeColor = pressed ? wq_rgb(0x5AC8FA, 0.58) : (isPlain ? wq_theme_rim_teal() : wq_theme_rim());
     background.strokeWidth = pressed ? 1.0 : (isPlain ? 0.65 : 0.75);
     if (isPlain) {
         background.cornerRadius = 14.0;
@@ -414,7 +419,7 @@ void wq_theme_install(void)
         [UITextField appearanceWhenContainedInInstancesOfClasses:@[UISearchBar.class]].textColor = wq_theme_primary_text();
         [UILabel appearanceWhenContainedInInstancesOfClasses:@[UITableViewHeaderFooterView.class]].textColor = wq_theme_secondary_text();
 
-        // Frosted sub-zero Glacier Liquid Glass navigation bar: solid-backed
+        // Frosted sub-zero iPhone Duo Liquid Glass navigation bar: solid-backed
         // dark blur prevents scrolled rows and section headers from bleeding
         // through the title or search bar.
         UINavigationBarAppearance *navStandard = [UINavigationBarAppearance new];

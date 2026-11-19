@@ -1,6 +1,6 @@
 //
 //  WQTheme.h
-//  WQ Glass arctic Glacier Liquid Glass theme (iOS 26)
+//  WQ Glass iPhone Duo dual-surface Liquid Glass theme (iOS 26)
 //
 //  One place for the palette, the Liquid Glass surfaces and the global
 //  appearance. Appearance only: nothing here touches files, access or data.
@@ -10,23 +10,26 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Glacier Liquid Glass Palette
-UIColor *wq_theme_canvas_top(void);        // #091524 deep sub-zero night-blue
-UIColor *wq_theme_canvas_mid(void);        // #122B43 polar navy
-UIColor *wq_theme_canvas_cyan(void);       // #1F4D62 arctic cyan
-UIColor *wq_theme_canvas_edge(void);       // #04090E dark glacial ice
-UIColor *wq_theme_glass_tint(void);        // rgba(16, 42, 69, 0.48) frosty ice-blue
-UIColor *wq_theme_rim(void);               // rgba(224, 255, 255, 0.32) snow-silver specular rim
-UIColor *wq_theme_rim_teal(void);          // rgba(128, 240, 255, 0.22) translucent icy-teal rim
-UIColor *wq_theme_primary_text(void);      // #FFFFFF snow-white
-UIColor *wq_theme_secondary_text(void);    // #B0E2FF frosted polar-blue
-UIColor *wq_theme_detail_text(void);       // #D1E8FA ice-silver
-UIColor *wq_theme_hairline(void);          // rgba(209, 232, 250, 0.16)
-UIColor *wq_theme_cta_text(void);          // #071A2B deep glacier navy for white CTA pills
-UIColor *wq_theme_active_pill(void);       // #0E5A74 luminous arctic teal pill
-UIColor *wq_theme_accent(void);            // #00F5FF glacial aqua for highlights, checks, switches
-UIColor *wq_theme_aurora_teal(void);       // #4FFFB0 aurora teal for active/completion glows
-UIColor *wq_theme_solid_surface(void);     // #11283F opaque glass stand-in (Reduce Transparency)
+// iPhone Duo palette: Anodized Space Black canvas (#090A0D -> #12151B), smoked
+// graphite glass rgba(22,25,32,0.72), brushed-titanium sheen rgba(255,255,255,0.07),
+// titanium text #9BA3B0 and Sapphire (#0A84FF) / Ice-Blue (#5AC8FA) accents.
+// (Function names are kept from earlier themes so call sites stay stable.)
+UIColor *wq_theme_canvas_top(void);
+UIColor *wq_theme_canvas_mid(void);
+UIColor *wq_theme_canvas_cyan(void);
+UIColor *wq_theme_canvas_edge(void);
+UIColor *wq_theme_glass_tint(void);
+UIColor *wq_theme_rim(void);
+UIColor *wq_theme_rim_teal(void);
+UIColor *wq_theme_primary_text(void);
+UIColor *wq_theme_secondary_text(void);
+UIColor *wq_theme_detail_text(void);
+UIColor *wq_theme_hairline(void);
+UIColor *wq_theme_cta_text(void);
+UIColor *wq_theme_active_pill(void);
+UIColor *wq_theme_accent(void);
+UIColor *wq_theme_aurora_teal(void);
+UIColor *wq_theme_solid_surface(void);
 
 // Tinted arctic Glacier Liquid Glass (UIGlassEffect). nil when Reduce Transparency
 // is on; callers then use wq_theme_solid_surface() as an opaque background.
