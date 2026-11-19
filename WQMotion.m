@@ -6,7 +6,7 @@
 
 const CGFloat kWQMotionPressScale = 0.97;
 const CGFloat kWQMotionEntranceOffset = 16.0;
-const NSTimeInterval kWQMotionStagger = 0.030;
+const NSTimeInterval kWQMotionStagger = 0.028;
 const CGFloat kWQMotionSpringResponse = 0.28;
 const CGFloat kWQMotionSpringDamping = 0.84;
 
@@ -14,6 +14,8 @@ static const void *kWQMotionPressKey = &kWQMotionPressKey;
 static const void *kWQMotionAnimatorKey = &kWQMotionAnimatorKey;
 static const void *kWQMotionScrollStateKey = &kWQMotionScrollStateKey;
 static const void *kWQMotionAuroraOverlayKey = &kWQMotionAuroraOverlayKey;
+static const void *kWQMotionEdgeBlurKey = &kWQMotionEdgeBlurKey;
+static const void *kWQMotionInteractiveHoldKey = &kWQMotionInteractiveHoldKey;
 static const void *kWQMotionHorizontalDetentKey = &kWQMotionHorizontalDetentKey;
 static const void *kWQMotionScanSweepKey = &kWQMotionScanSweepKey;
 static const void *kWQMotionBracketsKey = &kWQMotionBracketsKey;
@@ -736,11 +738,11 @@ void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView 
         CGFloat norm = MAX(-1.0, MIN(1.0, dist / halfSpan));
         CGFloat focus = 1.0 - fabs(norm);
 
-        // Safe 2D scale (0.988 -> 1.0) + edge fade (0.90 -> 1.0) with zero 3D
+        // Safe 2D scale (0.975 -> 1.0) + edge fade (0.86 -> 1.0) with zero 3D
         // X-axis pitch rotation so adjacent cells never slice or clip in Z-space.
-        CGFloat scale = 0.988 + 0.012 * focus;
+        CGFloat scale = 0.975 + 0.025 * focus;
         v.transform3D = CATransform3DMakeScale(scale, scale, 1.0);
-        v.alpha = isCell ? (0.90 + 0.10 * focus) : (0.94 + 0.06 * focus);
+        v.alpha = isCell ? (0.86 + 0.14 * focus) : (0.92 + 0.08 * focus);
 
         UIView *rimTarget = [v isKindOfClass:UITableViewCell.class] ? ((UITableViewCell *)v).backgroundView : v;
         if (rimTarget) wq_motion_tint_focal_rim(rimTarget, focus);
@@ -762,6 +764,7 @@ void wq_motion_apply_scroll_wave(UIScrollView *scrollView)
 void wq_motion_update_scroll_aurora(UIScrollView *scrollView, UIView *hostView)
 {
     if (!scrollView || !hostView) return;
+    wq_motion_update_edge_blur(scrollView, hostView);
     WQAuroraEdgeOverlayView *overlay = wq_motion_aurora_overlay(scrollView, hostView);
     if (!overlay) return;
     if (wq_motion_reduced()) {
@@ -795,6 +798,7 @@ void wq_motion_update_scroll_aurora(UIScrollView *scrollView, UIView *hostView)
 void wq_motion_settle_scroll_aurora(UIScrollView *scrollView, UIView *hostView)
 {
     if (!scrollView || !hostView) return;
+    wq_motion_settle_edge_blur(scrollView, hostView);
     WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
     state.smoothedVelocity = 0;
     WQAuroraEdgeOverlayView *overlay = objc_getAssociatedObject(hostView, kWQMotionAuroraOverlayKey);
@@ -1635,3 +1639,457 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
 }
 
 @end
+
+#pragma mark - iPhone Duo Scroll-Exit Optical Blur Curtains
+
+@interface WQDuoEdgeBlurCurtainView : UIView
+- (void)setTopStrength:(CGFloat)top bottomStrength:(CGFloat)bottom animated:(BOOL)animated;
+@end
+
+@implementation WQDuoEdgeBlurCurtainView {
+    UIVisualEffectView *_topBlur;
+    UIVisualEffectView *_bottomBlur;
+    CAGradientLayer *_topMask;
+    CAGradientLayer *_bottomMask;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = UIColor.clearColor;
+        self.layer.zPosition = 550.0;
+
+        UIBlurEffect *effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark];
+        _topBlur = [[UIVisualEffectView alloc] initWithEffect:effect];
+        _topBlur.userInteractionEnabled = NO;
+        _topBlur.alpha = 0.0;
+
+        _topMask = [CAGradientLayer layer];
+        _topMask.colors = @[
+            (id)[UIColor colorWithWhite:1.0 alpha:0.95].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.42].CGColor,
+            (id)[UIColor clearColor].CGColor,
+        ];
+        _topMask.locations = @[@0.0, @0.45, @1.0];
+        _topBlur.layer.mask = _topMask;
+        [self addSubview:_topBlur];
+
+        _bottomBlur = [[UIVisualEffectView alloc] initWithEffect:effect];
+        _bottomBlur.userInteractionEnabled = NO;
+        _bottomBlur.alpha = 0.0;
+
+        _bottomMask = [CAGradientLayer layer];
+        _bottomMask.colors = @[
+            (id)[UIColor clearColor].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.42].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.95].CGColor,
+        ];
+        _bottomMask.locations = @[@0.0, @0.55, @1.0];
+        _bottomBlur.layer.mask = _bottomMask;
+        [self addSubview:_bottomBlur];
+    }
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    CGFloat w = self.bounds.size.width;
+    CGFloat h = self.bounds.size.height;
+    CGFloat topInset = self.safeAreaInsets.top;
+    CGFloat botInset = self.safeAreaInsets.bottom;
+    CGFloat topH = 44.0;
+    CGFloat botH = 64.0;
+    _topBlur.frame = CGRectMake(0, topInset, w, topH);
+    _bottomBlur.frame = CGRectMake(0, MAX(0, h - botInset - botH), w, botH);
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _topMask.frame = _topBlur.bounds;
+    _bottomMask.frame = _bottomBlur.bounds;
+    [CATransaction commit];
+}
+
+- (void)setTopStrength:(CGFloat)top bottomStrength:(CGFloat)bottom animated:(BOOL)animated
+{
+    CGFloat t = MAX(0.0, MIN(0.92, top));
+    CGFloat b = MAX(0.0, MIN(0.92, bottom));
+    void (^apply)(void) = ^{
+        self->_topBlur.alpha = t;
+        self->_bottomBlur.alpha = b;
+    };
+    if (!animated) {
+        apply();
+        return;
+    }
+    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.26 dampingRatio:0.86 animations:apply];
+    [anim startAnimation];
+}
+
+@end
+
+void wq_motion_install_edge_blur(UIScrollView *scrollView, UIView *hostView)
+{
+    if (!scrollView || !hostView) return;
+    if (objc_getAssociatedObject(hostView, kWQMotionEdgeBlurKey)) return;
+
+    WQDuoEdgeBlurCurtainView *curtain = [[WQDuoEdgeBlurCurtainView alloc] initWithFrame:hostView.bounds];
+    curtain.translatesAutoresizingMaskIntoConstraints = NO;
+    [hostView addSubview:curtain];
+
+    if ([hostView isKindOfClass:UIScrollView.class]) {
+        UILayoutGuide *frameGuide = ((UIScrollView *)hostView).frameLayoutGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [curtain.topAnchor constraintEqualToAnchor:frameGuide.topAnchor],
+            [curtain.bottomAnchor constraintEqualToAnchor:frameGuide.bottomAnchor],
+            [curtain.leadingAnchor constraintEqualToAnchor:frameGuide.leadingAnchor],
+            [curtain.trailingAnchor constraintEqualToAnchor:frameGuide.trailingAnchor],
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [curtain.topAnchor constraintEqualToAnchor:hostView.topAnchor],
+            [curtain.bottomAnchor constraintEqualToAnchor:hostView.bottomAnchor],
+            [curtain.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor],
+            [curtain.trailingAnchor constraintEqualToAnchor:hostView.trailingAnchor],
+        ]];
+    }
+    objc_setAssociatedObject(hostView, kWQMotionEdgeBlurKey, curtain, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+void wq_motion_update_edge_blur(UIScrollView *scrollView, UIView *hostView)
+{
+    if (!scrollView || !hostView) return;
+    WQDuoEdgeBlurCurtainView *curtain = objc_getAssociatedObject(hostView, kWQMotionEdgeBlurKey);
+    if (!curtain) return;
+    if (wq_motion_reduced() || UIAccessibilityIsReduceTransparencyEnabled()) {
+        [curtain setTopStrength:0.0 bottomStrength:0.0 animated:NO];
+        return;
+    }
+    WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
+    CGFloat mag = fabs(state.smoothedVelocity);
+    CGFloat velBoost = MIN(0.55, MAX(0.0, (mag - 60.0) / 1400.0));
+    CGFloat y = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
+    CGFloat maxY = MAX(0.0, scrollView.contentSize.height - (scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
+    CGFloat topBase = y > 6.0 ? 0.28 : 0.0;
+    CGFloat botBase = (maxY > 24.0 && y < maxY - 6.0) ? 0.30 : 0.0;
+    CGFloat topStrength = topBase + (state.smoothedVelocity > 0 ? velBoost : velBoost * 0.35);
+    CGFloat botStrength = botBase + (state.smoothedVelocity < 0 ? velBoost : velBoost * 0.35);
+    [curtain setTopStrength:topStrength bottomStrength:botStrength animated:NO];
+}
+
+void wq_motion_settle_edge_blur(UIScrollView *scrollView, UIView *hostView)
+{
+    if (!scrollView || !hostView) return;
+    WQDuoEdgeBlurCurtainView *curtain = objc_getAssociatedObject(hostView, kWQMotionEdgeBlurKey);
+    if (!curtain) return;
+    if (wq_motion_reduced() || UIAccessibilityIsReduceTransparencyEnabled()) {
+        [curtain setTopStrength:0.0 bottomStrength:0.0 animated:NO];
+        return;
+    }
+    CGFloat y = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
+    CGFloat maxY = MAX(0.0, scrollView.contentSize.height - (scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
+    CGFloat topRest = y > 10.0 ? 0.22 : 0.0;
+    CGFloat botRest = (maxY > 24.0 && y < maxY - 10.0) ? 0.22 : 0.0;
+    [curtain setTopStrength:topRest bottomStrength:botRest animated:YES];
+}
+
+#pragma mark - Progressive Haptic Feedback on Press-and-Hold
+
+@interface WQDuoInteractiveHoldTarget : NSObject <UIGestureRecognizerDelegate>
+@property (nonatomic, weak) UIView *targetView;
+@property (nonatomic) NSTimeInterval holdDuration;
+@property (nonatomic) BOOL drawProgressRing;
+@property (nonatomic, copy, nullable) void (^onComplete)(void);
+@end
+
+@implementation WQDuoInteractiveHoldTarget {
+    CADisplayLink *_link;
+    CFTimeInterval _startTime;
+    NSInteger _stageFired;
+    BOOL _completed;
+    UIImpactFeedbackGenerator *_softGen;
+    UIImpactFeedbackGenerator *_mediumGen;
+    UIImpactFeedbackGenerator *_rigidGen;
+    CAShapeLayer *_progressRing;
+    CGColorRef _savedBorderColor;
+    CGFloat _savedBorderWidth;
+}
+
+- (void)dealloc
+{
+    [_link invalidate];
+    if (_savedBorderColor) {
+        CGColorRelease(_savedBorderColor);
+        _savedBorderColor = NULL;
+    }
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *__unused)gr
+shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *__unused)other
+{
+    return YES;
+}
+
+- (void)ensureRingOnView:(UIView *)view
+{
+    if (!_drawProgressRing || !view) return;
+    if (!_progressRing) {
+        _progressRing = [CAShapeLayer layer];
+        _progressRing.fillColor = UIColor.clearColor.CGColor;
+        _progressRing.strokeColor = wq_theme_accent().CGColor;
+        _progressRing.lineWidth = 2.5;
+        _progressRing.lineCap = kCALineCapRound;
+        _progressRing.strokeStart = 0.0;
+        _progressRing.strokeEnd = 0.0;
+        _progressRing.shadowColor = wq_theme_accent().CGColor;
+        _progressRing.shadowRadius = 6.0;
+        _progressRing.shadowOpacity = 0.85f;
+        _progressRing.shadowOffset = CGSizeZero;
+        [view.layer addSublayer:_progressRing];
+    }
+    CGRect inset = CGRectInset(view.bounds, -2.0, -2.0);
+    CGFloat radius = view.layer.cornerRadius > 0 ? view.layer.cornerRadius + 2.0 : MIN(inset.size.width, inset.size.height) * 0.5;
+    _progressRing.frame = view.bounds;
+    _progressRing.path = [UIBezierPath bezierPathWithRoundedRect:inset cornerRadius:radius].CGPath;
+}
+
+- (void)handlePress:(UILongPressGestureRecognizer *)gr
+{
+    UIView *view = _targetView;
+    if (!view) return;
+    if (gr.state == UIGestureRecognizerStateBegan) {
+        _startTime = CACurrentMediaTime();
+        _stageFired = 0;
+        _completed = NO;
+        _softGen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        _mediumGen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        _rigidGen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleRigid];
+        [_softGen prepare];
+        [_mediumGen prepare];
+        [_rigidGen prepare];
+
+        // 0ms touch-down: immediate Light impact + 0.965x compression + sapphire rim highlight boost.
+        [_softGen impactOccurredWithIntensity:0.55];
+
+        if (_savedBorderColor) {
+            CGColorRelease(_savedBorderColor);
+            _savedBorderColor = NULL;
+        }
+        if (view.layer.borderColor) _savedBorderColor = CGColorRetain(view.layer.borderColor);
+        _savedBorderWidth = view.layer.borderWidth;
+
+        BOOL reduced = wq_motion_reduced();
+        UIViewPropertyAnimator *down = [[UIViewPropertyAnimator alloc] initWithDuration:0.16 dampingRatio:reduced ? 1.0 : 0.84 animations:^{
+            CGFloat s = reduced ? 0.99 : 0.965;
+            view.transform = CGAffineTransformMakeScale(s, s);
+            view.layer.borderColor = [wq_theme_accent() colorWithAlphaComponent:0.75].CGColor;
+            view.layer.borderWidth = MAX(1.0, self->_savedBorderWidth);
+        }];
+        [down startAnimation];
+
+        [self ensureRingOnView:view];
+        _progressRing.strokeEnd = 0.0;
+        _progressRing.opacity = 1.0f;
+
+        [_link invalidate];
+        _link = [CADisplayLink displayLinkWithTarget:self selector:@selector(tickHold)];
+        [_link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+    } else if (gr.state == UIGestureRecognizerStateEnded ||
+               gr.state == UIGestureRecognizerStateCancelled ||
+               gr.state == UIGestureRecognizerStateFailed) {
+        [self finishHoldCancelled:(gr.state != UIGestureRecognizerStateEnded)];
+    }
+}
+
+- (void)tickHold
+{
+    UIView *view = _targetView;
+    if (!view) {
+        [_link invalidate];
+        _link = nil;
+        return;
+    }
+    CFTimeInterval elapsed = CACurrentMediaTime() - _startTime;
+    NSTimeInterval duration = MAX(0.45, _holdDuration);
+    CGFloat progress = (CGFloat)MIN(1.0, MAX(0.0, (elapsed - 0.12) / (duration - 0.12)));
+
+    // Continuous hold ramp (150ms..650ms): 0.30 -> 0.65 -> 1.0 progressive micro-pulses.
+    if (_stageFired < 1 && elapsed >= 0.15) {
+        _stageFired = 1;
+        [_softGen impactOccurredWithIntensity:0.30];
+    } else if (_stageFired < 2 && elapsed >= duration * 0.55) {
+        _stageFired = 2;
+        [_mediumGen impactOccurredWithIntensity:0.65];
+    } else if (_stageFired < 3 && elapsed >= duration * 0.82) {
+        _stageFired = 3;
+        [_mediumGen impactOccurredWithIntensity:1.0];
+    }
+
+    // Luminous sapphire edge-charge glow while held.
+    view.layer.shadowColor = wq_theme_accent().CGColor;
+    view.layer.shadowRadius = 4.0 + 10.0 * progress;
+    view.layer.shadowOpacity = (float)(0.20 + 0.50 * progress);
+    view.layer.shadowOffset = CGSizeZero;
+
+    if (_progressRing) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        _progressRing.strokeEnd = progress;
+        [CATransaction commit];
+    }
+
+    if (!_completed && elapsed >= duration) {
+        _completed = YES;
+        [_link invalidate];
+        _link = nil;
+        [_rigidGen impactOccurredWithIntensity:1.0];
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        if (_onComplete) {
+            void (^cb)(void) = _onComplete;
+            cb();
+        }
+    }
+}
+
+- (void)finishHoldCancelled:(BOOL)cancelled
+{
+    [_link invalidate];
+    _link = nil;
+    UIView *view = _targetView;
+    if (!view) return;
+
+    if (!cancelled && !_completed) {
+        [_softGen impactOccurredWithIntensity:0.45];
+    }
+    BOOL reduced = wq_motion_reduced();
+    UIViewPropertyAnimator *up = [[UIViewPropertyAnimator alloc] initWithDuration:0.28 dampingRatio:reduced ? 1.0 : 0.82 animations:^{
+        view.transform = CGAffineTransformIdentity;
+        view.layer.shadowOpacity = 0.0f;
+        if (self->_savedBorderColor) {
+            view.layer.borderColor = self->_savedBorderColor;
+        }
+        view.layer.borderWidth = self->_savedBorderWidth;
+    }];
+    [up startAnimation];
+
+    if (_progressRing) {
+        _progressRing.strokeEnd = 0.0;
+        _progressRing.opacity = 0.0f;
+    }
+}
+
+@end
+
+static void wq_motion_install_hold(UIView *view, NSTimeInterval duration, BOOL drawRing, void (^_Nullable onComplete)(void))
+{
+    if (!view) return;
+    if (objc_getAssociatedObject(view, kWQMotionInteractiveHoldKey)) return;
+    WQDuoInteractiveHoldTarget *target = [WQDuoInteractiveHoldTarget new];
+    target.targetView = view;
+    target.holdDuration = duration > 0 ? duration : 0.65;
+    target.drawProgressRing = drawRing;
+    target.onComplete = onComplete;
+
+    UILongPressGestureRecognizer *press = [[UILongPressGestureRecognizer alloc] initWithTarget:target action:@selector(handlePress:)];
+    press.minimumPressDuration = 0.0;
+    press.cancelsTouchesInView = NO;
+    press.delaysTouchesBegan = NO;
+    press.delegate = target;
+    [view addGestureRecognizer:press];
+    objc_setAssociatedObject(view, kWQMotionInteractiveHoldKey, target, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+void wq_motion_add_interactive_hold(UIView *view, void (^onComplete)(void))
+{
+    wq_motion_install_hold(view, 0.65, NO, onComplete);
+}
+
+void wq_motion_add_hold_progress_ring(UIView *view, NSTimeInterval holdDuration, void (^onComplete)(void))
+{
+    wq_motion_install_hold(view, holdDuration > 0 ? holdDuration : 0.65, YES, onComplete);
+}
+
+#pragma mark - iPhone Duo Optical Blur Tab Transition
+
+@interface WQDuoTabTransitionAnimator : NSObject <UIViewControllerAnimatedTransitioning>
+@end
+
+@implementation WQDuoTabTransitionAnimator
+
+- (NSTimeInterval)transitionDuration:(id<UIViewControllerContextTransitioning> __unused)transitionContext
+{
+    return 0.32;
+}
+
+- (void)animateTransition:(id<UIViewControllerContextTransitioning>)transitionContext
+{
+    UIView *container = transitionContext.containerView;
+    UIView *fromView = [transitionContext viewForKey:UITransitionContextFromViewKey];
+    UIView *toView = [transitionContext viewForKey:UITransitionContextToViewKey];
+    UIViewController *toVC = [transitionContext viewControllerForKey:UITransitionContextToViewControllerKey];
+    if (!toView || !fromView) {
+        [transitionContext completeTransition:!transitionContext.transitionWasCancelled];
+        return;
+    }
+
+    CGRect finalFrame = [transitionContext finalFrameForViewController:toVC];
+    if (CGRectIsEmpty(finalFrame)) finalFrame = container.bounds;
+    toView.frame = finalFrame;
+    [container addSubview:toView];
+
+    BOOL reduced = wq_motion_reduced() || UIAccessibilityIsReduceTransparencyEnabled();
+    if (reduced) {
+        toView.alpha = 0.0;
+        [UIView animateWithDuration:0.20 animations:^{
+            toView.alpha = 1.0;
+            fromView.alpha = 0.0;
+        } completion:^(BOOL finished) {
+            fromView.alpha = 1.0;
+            [transitionContext completeTransition:finished && !transitionContext.transitionWasCancelled];
+        }];
+        return;
+    }
+
+    UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark];
+    UIVisualEffectView *fromBlur = [[UIVisualEffectView alloc] initWithEffect:nil];
+    fromBlur.frame = fromView.bounds;
+    fromBlur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    fromBlur.userInteractionEnabled = NO;
+    [fromView addSubview:fromBlur];
+
+    UIVisualEffectView *toBlur = [[UIVisualEffectView alloc] initWithEffect:blur];
+    toBlur.frame = toView.bounds;
+    toBlur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    toBlur.userInteractionEnabled = NO;
+    toBlur.alpha = 0.92;
+    [toView addSubview:toBlur];
+
+    toView.alpha = 0.0;
+    toView.transform = CGAffineTransformMakeScale(1.02, 1.02);
+
+    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 dampingRatio:0.86 animations:^{
+        fromBlur.effect = blur;
+        fromView.alpha = 0.0;
+        fromView.transform = CGAffineTransformMakeScale(0.965, 0.965);
+        toBlur.effect = nil;
+        toBlur.alpha = 0.0;
+        toView.alpha = 1.0;
+        toView.transform = CGAffineTransformIdentity;
+    }];
+    [anim addCompletion:^(UIViewAnimatingPosition __unused pos) {
+        [fromBlur removeFromSuperview];
+        [toBlur removeFromSuperview];
+        fromView.alpha = 1.0;
+        fromView.transform = CGAffineTransformIdentity;
+        toView.transform = CGAffineTransformIdentity;
+        [transitionContext completeTransition:!transitionContext.transitionWasCancelled];
+    }];
+    [anim startAnimation];
+}
+
+@end
+
+id<UIViewControllerAnimatedTransitioning> wq_motion_duo_tab_animator(void)
+{
+    return [WQDuoTabTransitionAnimator new];
+}

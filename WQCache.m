@@ -9,6 +9,7 @@
 #import "WQUI.h"
 #import "WQTheme.h"
 #import "WQMotion.h"
+#import "WQGlobalSearch.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
 #import "WQCacheSafety.h"
@@ -433,6 +434,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }
     self.tableView.tableHeaderView = [self buildGlassCacheHeader];
     wq_install_header_shield(self);
+    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     [self buildCacheCornerRail];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -453,17 +455,26 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     __weak typeof(self) weakSelf = self;
     _cleanPillButton = wq_motion_dock_pill(WQLocalized(@"Clean"), @"sparkles", YES);
     [_cleanPillButton.widthAnchor constraintGreaterThanOrEqualToConstant:96.0].active = YES;
+    wq_motion_add_hold_progress_ring(_cleanPillButton, 0.65, ^{
+        typeof(self) me = weakSelf;
+        if (!me) return;
+        if (me->_cleaning) [me stopClean]; else [me confirmClean];
+    });
 
     _selectPillButton = wq_motion_dock_pill(WQLocalized(@"Select"), @"checklist", NO);
     _selectPillButton.showsMenuAsPrimaryAction = YES;
+    wq_motion_add_interactive_hold(_selectPillButton, nil);
+
+    UIButton *searchBtn = wq_global_search_dock_button(self);
 
     UIButton *rescanBtn = wq_motion_dock_button(nil, @"arrow.clockwise", WQLocalized(@"Rescan"));
     [rescanBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         wq_haptic_impact(UIImpactFeedbackStyleLight);
         [weakSelf userRefresh];
     }] forControlEvents:UIControlEventTouchUpInside];
+    wq_motion_add_interactive_hold(rescanBtn, nil);
 
-    _cacheCornerRail = wq_motion_make_dock(@[_cleanPillButton, _selectPillButton, rescanBtn], 6);
+    _cacheCornerRail = wq_motion_make_dock(@[_cleanPillButton, _selectPillButton, searchBtn, rescanBtn], 6);
     wq_motion_add_hud_brackets(_cacheCornerRail, 5, 8);
     wq_motion_install_corner_rail(_cacheCornerRail, self, self.tableView, 12.0);
 }

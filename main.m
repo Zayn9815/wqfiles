@@ -17,6 +17,7 @@
 #import "WQUI.h"
 #import "WQTheme.h"
 #import "WQMotion.h"
+#import "WQGlobalSearch.h"
 #import "WQSharing.h"
 #import "WQDir.h"
 #import "WQApps.h"
@@ -1386,6 +1387,7 @@ static NSString *wq_info_date(struct timespec ts)
         self.tableView.backgroundColor = [UIColor clearColor];
     }
     wq_install_header_shield(self);
+    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
@@ -1972,14 +1974,10 @@ static NSString *wq_info_date(struct timespec ts)
         [rightWingItems addObject:_dockSelectButton];
     }
 
-    UIButton *search = wq_motion_dock_button(nil, @"magnifyingglass", WQLocalized(@"Search"));
-    [search addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        wq_haptic_selection();
-        UISearchController *controller = weakSelf.navigationItem.searchController;
-        controller.active = YES;
-        [controller.searchBar becomeFirstResponder];
-    }] forControlEvents:UIControlEventTouchUpInside];
+    UIButton *search = wq_global_search_dock_button(self);
     [rightWingItems addObject:search];
+    if (_dockCoreButton) wq_motion_add_interactive_hold(_dockCoreButton, nil);
+    if (_dockSelectButton) wq_motion_add_interactive_hold(_dockSelectButton, nil);
 
     for (UIView *b in [leftWingItems arrayByAddingObjectsFromArray:rightWingItems]) {
         [NSLayoutConstraint activateConstraints:@[
@@ -5164,9 +5162,11 @@ static void wq_apply_design(void);
     _scroll.alwaysBounceVertical = YES;
     _scroll.showsVerticalScrollIndicator = NO;
     _scroll.delegate = self;
-    _scroll.contentInset = UIEdgeInsetsMake(76, 0, 116, 0);
-    _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(76, 0, 116, 0);
+    _scroll.clipsToBounds = YES;
+    _scroll.contentInset = UIEdgeInsetsMake(76, 0, 156, 0);
+    _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(76, 0, 156, 0);
     [self.view addSubview:_scroll];
+    wq_motion_install_edge_blur(_scroll, self.view);
 
     _contentStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _contentStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -5235,10 +5235,12 @@ static void wq_apply_design(void);
         [_statusLabel.trailingAnchor constraintEqualToAnchor:_statusPill.trailingAnchor constant:-8],
     ]];
 
-    UIButton *jumpIconBtn = [self headerIconButton:@"arrow.forward.circle" label:WQLocalizedNullable(@"Go to Path") selector:@selector(goToPath)];
+    UIButton *searchPillBtn = wq_global_search_pill_button(self);
     UIButton *logIconBtn = [self headerIconButton:@"doc.plaintext" label:WQLocalizedNullable(@"Log") selector:@selector(openLog)];
     UIButton *gearIconBtn = [self headerIconButton:@"gearshape.fill" label:WQLocalizedNullable(@"Settings") selector:@selector(openSettings)];
-    UIStackView *actionRow = [[UIStackView alloc] initWithArrangedSubviews:@[jumpIconBtn, logIconBtn, gearIconBtn]];
+    wq_motion_add_interactive_hold(logIconBtn, nil);
+    wq_motion_add_interactive_hold(gearIconBtn, nil);
+    UIStackView *actionRow = [[UIStackView alloc] initWithArrangedSubviews:@[searchPillBtn, logIconBtn, gearIconBtn]];
     actionRow.axis = UILayoutConstraintAxisHorizontal;
     actionRow.spacing = 5;
     actionRow.alignment = UIStackViewAlignmentCenter;
@@ -5497,6 +5499,9 @@ static void wq_apply_design(void);
                                                       symbol:@"doc.plaintext"
                                                    prominent:NO
                                                       action:^{ wq_haptic_selection(); [weakSelf openLog]; }];
+    wq_motion_add_interactive_hold(_quickButton, ^{ [weakSelf quickCheckTapped]; });
+    wq_motion_add_hold_progress_ring(_fullScanButton, 0.65, ^{ [weakSelf fullScanTapped]; });
+    wq_motion_add_interactive_hold(logButton, ^{ [weakSelf openLog]; });
 
     _heroButtons = [[UIStackView alloc] initWithArrangedSubviews:@[_quickButton, _fullScanButton, logButton]];
     _heroButtons.axis = UILayoutConstraintAxisHorizontal;
@@ -5554,6 +5559,7 @@ static void wq_apply_design(void);
                                                               badge:t[4]];
         pad.tag = (NSInteger)i;
         [pad addTarget:self action:@selector(openToolCard:) forControlEvents:UIControlEventTouchUpInside];
+        wq_motion_add_interactive_hold(pad, nil);
         [pads addObject:pad];
     }
     for (NSUInteger i = 0; i < pads.count; i += 2) {
@@ -6606,6 +6612,7 @@ static NSString *const kWQTroubleshootingFooter =
     [super viewDidLoad];
     wq_prism_install_background(self);
     wq_install_header_shield(self);
+    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.tableView.backgroundColor = [UIColor clearColor];
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
@@ -6649,7 +6656,10 @@ static NSString *const kWQTroubleshootingFooter =
         [weakSelf reloadVaultCounts];
     }] forControlEvents:UIControlEventTouchUpInside];
 
-    _vaultCornerRail = wq_motion_make_dock(@[jumpPill, refreshBtn], 6);
+    UIButton *vaultSearchBtn = wq_global_search_dock_button(self);
+    wq_motion_add_interactive_hold(jumpPill, nil);
+    wq_motion_add_interactive_hold(refreshBtn, nil);
+    _vaultCornerRail = wq_motion_make_dock(@[jumpPill, vaultSearchBtn, refreshBtn], 6);
     wq_motion_add_hud_brackets(_vaultCornerRail, 5, 8);
     wq_motion_install_corner_rail(_vaultCornerRail, self, self.tableView, 12.0);
 }
@@ -6867,6 +6877,38 @@ static NSString *const kWQTroubleshootingFooter =
     self.tabBar.itemPositioning = UITabBarItemPositioningCentered;
     self.tabBar.itemSpacing = 14.0;
     self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+
+    __weak typeof(self) weakTab = self;
+    __weak WQPrismHomeViewController *weakHome = home;
+    wq_global_search_register_command_handler(^(NSString *commandID, UIViewController *__unused host) {
+        typeof(self) tab = weakTab;
+        WQPrismHomeViewController *h = weakHome;
+        if (!tab) return;
+        if ([commandID isEqualToString:@"full_scan"]) {
+            tab.selectedIndex = 0;
+            if (h) [h fullScanTapped];
+        } else if ([commandID isEqualToString:@"quick_check"]) {
+            tab.selectedIndex = 0;
+            if (h) [h quickCheckTapped];
+        } else if ([commandID isEqualToString:@"clean_caches"]) {
+            tab.selectedIndex = 2;
+        } else if ([commandID isEqualToString:@"open_vault"]) {
+            tab.selectedIndex = 3;
+        } else if ([commandID isEqualToString:@"open_logs"]) {
+            tab.selectedIndex = 0;
+            if (h) [h openLog];
+        } else if ([commandID isEqualToString:@"jump_path"]) {
+            tab.selectedIndex = 0;
+            if (h) [h goToPath];
+        }
+    });
+}
+
+- (id<UIViewControllerAnimatedTransitioning>)tabBarController:(UITabBarController *__unused)tabBarController
+           animationControllerForTransitionFromViewController:(UIViewController *__unused)fromVC
+                                             toViewController:(UIViewController *__unused)toVC
+{
+    return wq_motion_duo_tab_animator();
 }
 
 - (void)tabBarController:(UITabBarController *__unused)tabBarController didSelectViewController:(UIViewController *__unused)viewController

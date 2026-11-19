@@ -9,6 +9,7 @@
 #import "WQUI.h"
 #import "WQTheme.h"
 #import "WQMotion.h"
+#import "WQGlobalSearch.h"
 #import "WQSharing.h"
 #import "WQAccess.h"
 #import "WQLaunchServices.h"
@@ -593,6 +594,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     wq_install_header_shield(self);
+    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.tableView.tableHeaderView = [self buildGlassAppsHeader];
     self.tableView.tableFooterView = [self buildAppsFooter];
@@ -608,22 +610,16 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     UIButton *sortPill = wq_motion_dock_pill(WQLocalized(@"Sort"), @"line.3.horizontal.decrease.circle", NO);
     sortPill.menu = [self appsSortMenu];
     sortPill.showsMenuAsPrimaryAction = YES;
+    wq_motion_add_interactive_hold(sortPill, nil);
 
-    UIButton *searchBtn = wq_motion_dock_button(nil, @"magnifyingglass", WQLocalized(@"Search apps"));
-    [searchBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        WQAppsViewController *me = weakSelf;
-        if (!me) return;
-        wq_haptic_selection();
-        UISearchController *sc = me.navigationItem.searchController;
-        sc.active = YES;
-        dispatch_async(dispatch_get_main_queue(), ^{ [sc.searchBar becomeFirstResponder]; });
-    }] forControlEvents:UIControlEventTouchUpInside];
+    UIButton *searchBtn = wq_global_search_dock_button(self);
 
     UIButton *rescanBtn = wq_motion_dock_button(nil, @"arrow.clockwise", WQLocalized(@"Rescan"));
     [rescanBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         wq_haptic_impact(UIImpactFeedbackStyleLight);
         [weakSelf userRefresh];
     }] forControlEvents:UIControlEventTouchUpInside];
+    wq_motion_add_interactive_hold(rescanBtn, nil);
 
     _appsCornerRail = wq_motion_make_dock(@[sortPill, searchBtn, rescanBtn], 6);
     wq_motion_add_hud_brackets(_appsCornerRail, 5, 8);

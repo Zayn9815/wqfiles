@@ -86,6 +86,26 @@ void wq_motion_rollup_number(UILabel *label, double targetValue, NSTimeInterval 
                              NSString *(^formatter)(double value));
 void wq_motion_rollup_bytes(UILabel *label, unsigned long long targetBytes, NSTimeInterval duration);
 
+#pragma mark - iPhone Duo Optical Blur & Progressive Haptics
+// Progressive haptic press-and-hold: touch-down Light/Soft impact + 0.965x
+// compression + sapphire rim boost, continuous hold ramp (150ms..650ms,
+// intensity 0.30 -> 0.65 -> 1.0) with luminous edge-charge glow, Rigid/Success
+// detent on completion, and taut spring rebound (damping 0.82, 0.28s) + release tick.
+void wq_motion_add_interactive_hold(UIView *view, void (^_Nullable onComplete)(void));
+// Same progressive haptic hold with a radial/perimeter progress ring that fills
+// smoothly around major action buttons (e.g. Clean Caches, Full Scan) while held.
+void wq_motion_add_hold_progress_ring(UIView *view, NSTimeInterval holdDuration, void (^onComplete)(void));
+// Velocity-reactive top and bottom optical defocus curtains (UIVisualEffectView
+// masked by smooth vertical CAGradientLayer alpha gradients) so scrolling rows
+// blur out cleanly at viewport edges without 3D cell slicing.
+void wq_motion_install_edge_blur(UIScrollView *scrollView, UIView *hostView);
+void wq_motion_update_edge_blur(UIScrollView *scrollView, UIView *hostView);
+void wq_motion_settle_edge_blur(UIScrollView *scrollView, UIView *hostView);
+// iPhone Duo optical blur tab transition animator (UIViewPropertyAnimator,
+// dampingRatio 0.86, 0.32s): blurs & scales outgoing tab (1.0 -> 0.965) while
+// unblurring incoming tab (1.02 -> 1.0) into razor-sharp focus.
+id<UIViewControllerAnimatedTransitioning> wq_motion_duo_tab_animator(void);
+
 #pragma mark - Status Transitions
 void wq_motion_pop(UIView *view);                 // elastic badge/state-change bounce
 void wq_motion_cross_fade(UIView *view, void (^changes)(void));
