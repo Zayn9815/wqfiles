@@ -268,6 +268,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier
 {
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
+        self.clipsToBounds = YES;
+        self.contentView.clipsToBounds = YES;
         _checkView = [UIImageView new];
         _checkView.contentMode = UIViewContentModeScaleAspectFit;
         _iconView = [UIImageView new];
@@ -338,6 +340,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 {
     if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
         self.selectionStyle = UITableViewCellSelectionStyleNone;
+        self.clipsToBounds = YES;
+        self.contentView.clipsToBounds = YES;
         _captionLabel = [UILabel new];
         _captionLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
         _captionLabel.textColor = wq_theme_secondary_text();
@@ -428,7 +432,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         self.tableView.backgroundColor = [UIColor clearColor];
     }
     self.tableView.tableHeaderView = [self buildGlassCacheHeader];
-    wq_theme_apply_scroll_insets(self.tableView, 28.0);
+    wq_install_header_shield(self);
+    wq_theme_apply_scroll_insets(self.tableView, 156.0);
     [self buildCacheCornerRail];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
     search.searchResultsUpdater = self;
@@ -447,12 +452,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 {
     __weak typeof(self) weakSelf = self;
     _cleanPillButton = wq_motion_dock_pill(WQLocalized(@"Clean"), @"sparkles", YES);
-    [_cleanPillButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        typeof(self) me = weakSelf;
-        if (!me) return;
-        wq_haptic_impact(UIImpactFeedbackStyleMedium);
-        if (me->_cleaning) [me stopClean]; else [me confirmClean];
-    }] forControlEvents:UIControlEventTouchUpInside];
+    [_cleanPillButton.widthAnchor constraintGreaterThanOrEqualToConstant:96.0].active = YES;
 
     _selectPillButton = wq_motion_dock_pill(WQLocalized(@"Select"), @"checklist", NO);
     _selectPillButton.showsMenuAsPrimaryAction = YES;
@@ -465,7 +465,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 
     _cacheCornerRail = wq_motion_make_dock(@[_cleanPillButton, _selectPillButton, rescanBtn], 6);
     wq_motion_add_hud_brackets(_cacheCornerRail, 5, 8);
-    wq_motion_install_corner_rail(_cacheCornerRail, self, self.tableView, 14.0);
+    wq_motion_install_corner_rail(_cacheCornerRail, self, self.tableView, 12.0);
 }
 
 - (UIView *)buildGlassCacheHeader
@@ -616,21 +616,74 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     [self setStatus:status];
 }
 
+- (void)configureSummaryCell:(WQSummaryCell *)cell animated:(BOOL)animated
+{
+    if (!cell) return;
+    unsigned long long total = 0, selected = 0;
+    NSUInteger n = 0;
+    for (WQCacheItem *it in _items) { total += it.bytes; if (it.selected) { selected += it.bytes; n++; } }
+    BOOL busy = _scanning || _cleaning;
+    NSString *nextCaption = busy ? (_cleaning ? WQLocalized(@"Cleaning") : WQLocalized(@"Scanning")) : WQLocalized(@"Reclaimable");
+    NSString *nextStatus = _status ?: _result
+        ?: WQLocalizedFormat(n == 1 ? @"%@ selected in %lu item" : @"%@ selected in %lu items",
+                             wq_size_text(selected), (unsigned long)n);
+
+    BOOL crossDissolve = animated && !UIAccessibilityIsReduceMotionEnabled();
+    if (crossDissolve && ![cell.captionLabel.text isEqualToString:nextCaption]) {
+        [UIView transitionWithView:cell.captionLabel
+                          duration:0.20
+                           options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction
+                        animations:^{ cell.captionLabel.text = nextCaption; }
+                        completion:nil];
+    } else {
+        cell.captionLabel.text = nextCaption;
+    }
+
+    if (busy) [cell.spinner startAnimating]; else [cell.spinner stopAnimating];
+    // While the first scan runs, the total found so far rolls up smoothly.
+    unsigned long long shownBytes = (_scanning && !_items.count) ? _scanBytes : total;
+    wq_motion_rollup_bytes(cell.totalLabel, shownBytes, busy ? 0.16 : 0.36);
+
+    float shown = _scanning ? _scanProgress : total ? (float)((double)selected / (double)total) : 0;
+    [cell.bar setProgress:shown animated:YES];
+    cell.bar.hidden = NO;
+    // The ring follows the same value; after a clean it closes with a check.
+    [cell.ring setProgress:shown animated:YES];
+    if (!busy && _result.length && !_cleanRequiresRescan) [cell.ring showCheckmarkAnimated:YES]; else [cell.ring hideCheckmark];
+
+    if (crossDissolve && ![cell.statusLabel.text isEqualToString:nextStatus]) {
+        [UIView transitionWithView:cell.statusLabel
+                          duration:0.20
+                           options:UIViewAnimationOptionTransitionCrossDissolve | UIViewAnimationOptionAllowUserInteraction
+                        animations:^{ cell.statusLabel.text = nextStatus; }
+                        completion:nil];
+    } else {
+        cell.statusLabel.text = nextStatus;
+    }
+}
+
 - (void)setStatus:(NSString *)status
 {
     _status = status;
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
+    NSIndexPath *summaryPath = [NSIndexPath indexPathForRow:0 inSection:0];
+    WQSummaryCell *cell = (WQSummaryCell *)[self.tableView cellForRowAtIndexPath:summaryPath];
+    if ([cell isKindOfClass:WQSummaryCell.class]) {
+        [self configureSummaryCell:cell animated:YES];
+    } else if (self.isViewLoaded && self.view.window) {
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationNone];
+    }
 }
 
 - (void)updateButtons
 {
     // Stop stays while cleaning, whatever else happens.
+    // The floating bottom action dock morphs into Stop, so no duplicate top-right bar button is needed.
     if (_cleaning) {
-        UIBarButtonItem *stop = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Stop") style:UIBarButtonItemStylePlain
-                                                                 target:self action:@selector(stopClean)];
-        self.navigationItem.rightBarButtonItems = @[stop];
+        self.navigationItem.rightBarButtonItems = nil;
         if (_cleanPillButton) {
             wq_theme_style_primary_button(_cleanPillButton, WQLocalizedNullable(@"Stop"), @"stop.fill");
+            [_cleanPillButton removeTarget:self action:NULL forControlEvents:UIControlEventTouchUpInside];
+            [_cleanPillButton addTarget:self action:@selector(stopClean) forControlEvents:UIControlEventTouchUpInside];
             _cleanPillButton.enabled = YES;
         }
         _selectPillButton.enabled = NO;
@@ -640,6 +693,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         self.navigationItem.rightBarButtonItems = nil;
         if (_cleanPillButton) {
             wq_theme_style_primary_button(_cleanPillButton, WQLocalizedNullable(@"Clean"), @"sparkles");
+            [_cleanPillButton removeTarget:self action:NULL forControlEvents:UIControlEventTouchUpInside];
             _cleanPillButton.enabled = NO;
         }
         _selectPillButton.enabled = NO;
@@ -666,6 +720,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     self.navigationItem.rightBarButtonItems = nil;
     if (_cleanPillButton) {
         wq_theme_style_primary_button(_cleanPillButton, WQLocalizedNullable(@"Clean"), @"sparkles");
+        [_cleanPillButton removeTarget:self action:NULL forControlEvents:UIControlEventTouchUpInside];
+        [_cleanPillButton addTarget:self action:@selector(confirmClean) forControlEvents:UIControlEventTouchUpInside];
         _cleanPillButton.enabled = cleanEnabled;
     }
     if (_selectPillButton) {
@@ -965,24 +1021,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     if (indexPath.section == 0) {
         WQSummaryCell *cell = [tableView dequeueReusableCellWithIdentifier:@"summary"]
             ?: [[WQSummaryCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"summary"];
-        unsigned long long total = 0, selected = 0;
-        NSUInteger n = 0;
-        for (WQCacheItem *it in _items) { total += it.bytes; if (it.selected) { selected += it.bytes; n++; } }
-        BOOL busy = _scanning || _cleaning;
-        cell.captionLabel.text = busy ? (_cleaning ? WQLocalized(@"Cleaning") : WQLocalized(@"Scanning")) : WQLocalized(@"Reclaimable");
-        if (busy) [cell.spinner startAnimating]; else [cell.spinner stopAnimating];
-        // While the first scan runs, the total found so far rolls up smoothly.
-        unsigned long long shownBytes = (_scanning && !_items.count) ? _scanBytes : total;
-        wq_motion_rollup_bytes(cell.totalLabel, shownBytes, busy ? 0.16 : 0.36);
-        float shown = _scanning ? _scanProgress : total ? (float)((double)selected / (double)total) : 0;
-        [cell.bar setProgress:shown animated:YES];
-        cell.bar.hidden = NO;
-        // The ring follows the same value; after a clean it closes with a check.
-        [cell.ring setProgress:shown animated:YES];
-        if (!busy && _result.length && !_cleanRequiresRescan) [cell.ring showCheckmarkAnimated:YES]; else [cell.ring hideCheckmark];
-        cell.statusLabel.text = _status ?: _result
-            ?: WQLocalizedFormat(n == 1 ? @"%@ selected in %lu item" : @"%@ selected in %lu items",
-                                 wq_size_text(selected), (unsigned long)n);
+        [self configureSummaryCell:cell animated:NO];
         return cell;
     }
     WQCleanerCell *cell = [tableView dequeueReusableCellWithIdentifier:@"item"]
@@ -998,8 +1037,9 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                                  item.limited ? WQLocalized(@" · access limited") : @"");
     }
     cell.sizeLabel.text = wq_size_text(item.bytes);
-    cell.iconView.image = wq_app_icon(item.bundleID)
-        ?: [UIImage systemImageNamed:item.bundleID ? @"app.dashed" : @"exclamationmark.triangle"];
+    NSString *fallbackSymbol = item.crashLogs ? @"doc.text.magnifyingglass"
+                             : (item.bundleID ? @"app.dashed" : @"exclamationmark.triangle");
+    cell.iconView.image = wq_app_icon(item.bundleID) ?: wq_glacier_symbol_badge(fallbackSymbol, 36.0);
     cell.iconView.tintColor = wq_theme_secondary_text();
     cell.checkView.image = [UIImage systemImageNamed:item.selected ? @"checkmark.circle.fill" : @"circle"];
     cell.checkView.tintColor = item.selected ? wq_theme_accent() : [wq_theme_secondary_text() colorWithAlphaComponent:0.55];
@@ -1022,8 +1062,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }
     item.selected = !item.selected;
     wq_haptic_selection();
-    [tableView reloadRowsAtIndexPaths:@[indexPath, [NSIndexPath indexPathForRow:0 inSection:0]]
-                     withRowAnimation:UITableViewRowAnimationNone];
+    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    WQSummaryCell *summary = (WQSummaryCell *)[tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+    if ([summary isKindOfClass:WQSummaryCell.class]) {
+        [self configureSummaryCell:summary animated:YES];
+    }
     WQCleanerCell *updated = (WQCleanerCell *)[tableView cellForRowAtIndexPath:indexPath];
     if ([updated isKindOfClass:WQCleanerCell.class]) wq_motion_pop(updated.checkView);
     [self updateButtons];
@@ -1096,12 +1139,8 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }
     if (!selected.count) return;
     NSString *msg = WQLocalizedFormat(@"%@, about %@? This cannot be undone. Close the selected apps first; you can stop between items.", WQCacheConfirmationScope(selected), wq_size_text(sel));
-    UIAlertController *alert = wq_alert_controller(@"Clean caches?", msg, UIAlertControllerStyleAlert);
-    [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
-    [alert addAction:wq_alert_action(@"Clean", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
-        [self clean];
-    })];
-    [self presentViewController:alert animated:YES completion:nil];
+    __weak typeof(self) weakSelf = self;
+    wq_present_glass_confirm(self, @"Clean caches?", msg, @"Clean", YES, ^{ [weakSelf clean]; });
 }
 
 - (void)clean

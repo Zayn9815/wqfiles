@@ -500,25 +500,26 @@ void wq_motion_install_dock(UIView *dock, UIViewController *host, UIScrollView *
         ? ((UIScrollView *)host.view).frameLayoutGuide : host.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [dock.centerXAnchor constraintEqualToAnchor:horizGuide.centerXAnchor],
-        [dock.bottomAnchor constraintEqualToAnchor:host.view.safeAreaLayoutGuide.bottomAnchor constant:-10],
+        [dock.bottomAnchor constraintEqualToAnchor:host.view.safeAreaLayoutGuide.bottomAnchor constant:-12],
         [dock.leadingAnchor constraintGreaterThanOrEqualToAnchor:horizGuide.leadingAnchor constant:14],
         [dock.trailingAnchor constraintLessThanOrEqualToAnchor:horizGuide.trailingAnchor constant:-14],
     ]];
-    if (scroll) wq_theme_apply_scroll_insets(scroll, 96.0);
+    if (scroll) wq_theme_apply_scroll_insets(scroll, 156.0);
 }
 
 void wq_motion_install_corner_rail(UIView *rail, UIViewController *host, UIScrollView *scroll, CGFloat bottomOffset)
 {
     [host.view addSubview:rail];
     rail.layer.zPosition = 500;
+    CGFloat clearance = MAX(12.0, bottomOffset);
     UILayoutGuide *horizGuide = [host.view isKindOfClass:UIScrollView.class]
         ? ((UIScrollView *)host.view).frameLayoutGuide : host.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [rail.trailingAnchor constraintEqualToAnchor:horizGuide.trailingAnchor constant:-14],
-        [rail.bottomAnchor constraintEqualToAnchor:host.view.safeAreaLayoutGuide.bottomAnchor constant:-bottomOffset],
+        [rail.bottomAnchor constraintEqualToAnchor:host.view.safeAreaLayoutGuide.bottomAnchor constant:-clearance],
         [rail.leadingAnchor constraintGreaterThanOrEqualToAnchor:horizGuide.leadingAnchor constant:14],
     ]];
-    if (scroll) wq_theme_apply_scroll_insets(scroll, MAX(96.0, bottomOffset + 78.0));
+    if (scroll) wq_theme_apply_scroll_insets(scroll, 156.0);
 }
 
 void wq_motion_set_visible(UIVisualEffectView *glass, BOOL visible, BOOL animated)
@@ -709,31 +710,37 @@ void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView 
                                     scrollView.bounds.size.width,
                                     MAX(1.0, scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
     CGFloat viewportMidY = CGRectGetMidY(visibleRect);
-    CGFloat halfSpan = MAX(120.0, visibleRect.size.height * 0.54);
-    const CGFloat maxPitch = (CGFloat)(3.5 * M_PI / 180.0);
+    CGFloat halfSpan = MAX(120.0, visibleRect.size.height * 0.56);
 
     for (UIView *v in views) {
         if (!v || v.hidden || !v.superview) continue;
         WQMotionPressTarget *press = objc_getAssociatedObject(v, kWQMotionPressKey);
         if (press && press.pressed) continue;
+        BOOL isCell = [v isKindOfClass:UITableViewCell.class] || [v isKindOfClass:UICollectionViewCell.class];
+        if (isCell) {
+            v.clipsToBounds = YES;
+            if ([v isKindOfClass:UITableViewCell.class]) {
+                ((UITableViewCell *)v).contentView.clipsToBounds = YES;
+            }
+        }
         if (reduced) {
             if (!CATransform3DIsIdentity(v.transform3D)) {
                 v.transform3D = CATransform3DIdentity;
             }
+            if (v.alpha < 0.99) v.alpha = 1.0;
             continue;
         }
-        // Compute un-transformed layout center in scrollView coordinates (frame shifts when rotated).
+        // Compute un-transformed layout center in scrollView coordinates.
         CGPoint centerInScroll = [v.superview convertPoint:v.center toView:scrollView];
         CGFloat dist = centerInScroll.y - viewportMidY;
         CGFloat norm = MAX(-1.0, MIN(1.0, dist / halfSpan));
         CGFloat focus = 1.0 - fabs(norm);
-        CGFloat scale = 0.96 + 0.04 * focus;
 
-        CATransform3D t = CATransform3DIdentity;
-        t.m34 = -1.0 / 900.0;
-        t = CATransform3DRotate(t, norm * maxPitch, 1.0, 0.0, 0.0);
-        t = CATransform3DScale(t, scale, scale, 1.0);
-        v.transform3D = t;
+        // Safe 2D scale (0.985 -> 1.0) + subtle opacity (0.90 -> 1.0) with zero 3D
+        // X-axis pitch rotation so adjacent cells never slice or clip in Z-space.
+        CGFloat scale = 0.985 + 0.015 * focus;
+        v.transform3D = CATransform3DMakeScale(scale, scale, 1.0);
+        v.alpha = isCell ? (0.90 + 0.10 * focus) : (0.94 + 0.06 * focus);
 
         UIView *rimTarget = [v isKindOfClass:UITableViewCell.class] ? ((UITableViewCell *)v).backgroundView : v;
         if (rimTarget) wq_motion_tint_focal_rim(rimTarget, focus);

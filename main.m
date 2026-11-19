@@ -1385,6 +1385,8 @@ static NSString *wq_info_date(struct timespec ts)
         wq_prism_install_background(self);
         self.tableView.backgroundColor = [UIColor clearColor];
     }
+    wq_install_header_shield(self);
+    wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     __weak typeof(self) weakSelf = self;
@@ -2857,6 +2859,8 @@ static NSString *wq_info_date(struct timespec ts)
 {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"item"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"item"];
+    cell.clipsToBounds = YES;
+    cell.contentView.clipsToBounds = YES;
     cell.backgroundColor = wq_prism_enabled() ? [UIColor clearColor] : nil;
     cell.accessoryView = nil;
     UIListContentConfiguration *c = cell.defaultContentConfiguration;
@@ -6369,12 +6373,10 @@ static void wq_apply_design(void);
 // after a successful reset (the startup check retries; Settings tells the user).
 static void wq_confirm_reset_access_cache(UIViewController *host, void (^done)(void))
 {
-    UIAlertController *alert = wq_alert_controller(@"Reset Access Cache?",
-        @"Another app that shares WQ Glass's App Group (for example one signed with the same tool) can leave its cache folder in a state that blocks sandbox access. This puts it back; nothing is deleted.",
-        UIAlertControllerStyleAlert);
-    [alert addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
     __weak UIViewController *weakHost = host;
-    [alert addAction:wq_alert_action(@"Reset", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+    wq_present_glass_confirm(host, @"Reset Access Cache?",
+        @"Another app that shares WQ Glass's App Group (for example one signed with the same tool) can leave its cache folder in a state that blocks sandbox access. This puts it back; nothing is deleted.",
+        @"Reset", NO, ^{
         NSString *error = nil;
         UIViewController *h = weakHost;
         if (wq_reset_access_cache(&error)) {
@@ -6383,8 +6385,7 @@ static void wq_confirm_reset_access_cache(UIViewController *host, void (^done)(v
             return;
         }
         if (h) wq_alert(h, @"Reset failed", error ?: @"see Log");
-    })];
-    [host presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 static NSString *const kWQTroubleshootingFooter =
@@ -6621,6 +6622,8 @@ static NSString *const kWQTroubleshootingFooter =
 {
     [super viewDidLoad];
     wq_prism_install_background(self);
+    wq_install_header_shield(self);
+    wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.tableView.backgroundColor = [UIColor clearColor];
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
     self.tableView.tableHeaderView = [self buildVaultHeader];
@@ -6665,7 +6668,7 @@ static NSString *const kWQTroubleshootingFooter =
 
     _vaultCornerRail = wq_motion_make_dock(@[jumpPill, refreshBtn], 6);
     wq_motion_add_hud_brackets(_vaultCornerRail, 5, 8);
-    wq_motion_install_corner_rail(_vaultCornerRail, self, self.tableView, 14.0);
+    wq_motion_install_corner_rail(_vaultCornerRail, self, self.tableView, 12.0);
 }
 
 - (UIView *)buildVaultHeader

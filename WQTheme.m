@@ -383,6 +383,8 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
     }
     background.visualEffect = nil;
     cell.backgroundConfiguration = background;
+    cell.clipsToBounds = YES;
+    cell.contentView.clipsToBounds = YES;
 
     if ([cell.contentConfiguration isKindOfClass:UIListContentConfiguration.class]) {
         UIListContentConfiguration *content = [(UIListContentConfiguration *)cell.contentConfiguration copy];
@@ -412,13 +414,29 @@ void wq_theme_install(void)
         [UITextField appearanceWhenContainedInInstancesOfClasses:@[UISearchBar.class]].textColor = wq_theme_primary_text();
         [UILabel appearanceWhenContainedInInstancesOfClasses:@[UITableViewHeaderFooterView.class]].textColor = wq_theme_secondary_text();
 
-        UINavigationBarAppearance *navApp = [UINavigationBarAppearance new];
-        [navApp configureWithTransparentBackground];
-        navApp.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
-        navApp.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
-        [UINavigationBar appearance].standardAppearance = navApp;
-        [UINavigationBar appearance].compactAppearance = navApp;
-        [UINavigationBar appearance].scrollEdgeAppearance = navApp;
+        // Frosted sub-zero Glacier Liquid Glass navigation bar: solid-backed
+        // dark blur prevents scrolled rows and section headers from bleeding
+        // through the title or search bar.
+        UINavigationBarAppearance *navStandard = [UINavigationBarAppearance new];
+        [navStandard configureWithOpaqueBackground];
+        navStandard.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
+        navStandard.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.92];
+        navStandard.shadowColor = wq_theme_rim_teal();
+        navStandard.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+        navStandard.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+
+        UINavigationBarAppearance *navScrollEdge = [UINavigationBarAppearance new];
+        [navScrollEdge configureWithDefaultBackground];
+        navScrollEdge.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
+        navScrollEdge.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.86];
+        navScrollEdge.shadowColor = UIColor.clearColor;
+        navScrollEdge.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+        navScrollEdge.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+
+        [UINavigationBar appearance].standardAppearance = navStandard;
+        [UINavigationBar appearance].compactAppearance = navStandard;
+        [UINavigationBar appearance].scrollEdgeAppearance = navScrollEdge;
+        [UINavigationBar appearance].compactScrollEdgeAppearance = navScrollEdge;
         [UINavigationBar appearance].tintColor = wq_theme_primary_text();
     });
 }

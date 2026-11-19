@@ -592,7 +592,8 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
-    wq_theme_apply_scroll_insets(self.tableView, 28.0);
+    wq_install_header_shield(self);
+    wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.tableView.tableHeaderView = [self buildGlassAppsHeader];
     self.tableView.tableFooterView = [self buildAppsFooter];
     [self buildAppsCornerRail];
@@ -626,7 +627,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
 
     _appsCornerRail = wq_motion_make_dock(@[sortPill, searchBtn, rescanBtn], 6);
     wq_motion_add_hud_brackets(_appsCornerRail, 5, 8);
-    wq_motion_install_corner_rail(_appsCornerRail, self, self.tableView, 14.0);
+    wq_motion_install_corner_rail(_appsCornerRail, self, self.tableView, 12.0);
 }
 
 - (void)viewDidLayoutSubviews
@@ -1291,7 +1292,9 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     c.textProperties.numberOfLines = 2;
     c.secondaryTextProperties.color = wq_theme_secondary_text();
     c.secondaryTextProperties.numberOfLines = 0;
-    c.image = wq_app_icon(app.bundleID) ?: [UIImage systemImageNamed:@"app.dashed"];
+    c.image = wq_app_icon(app.bundleID) ?: wq_glacier_symbol_badge(@"app.dashed", 36.0);
+    cell.clipsToBounds = YES;
+    cell.contentView.clipsToBounds = YES;
     c.imageProperties.maximumSize = CGSizeMake(36, 36);
     cell.contentConfiguration = c;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;

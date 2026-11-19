@@ -43,6 +43,20 @@ UIImage *_Nullable wq_app_icon(NSString *_Nullable bundleID);
 // WQ Prism: a soft layered backdrop shared by the redesigned screens.
 UIView *wq_prism_background_view(void);
 void wq_prism_install_background(UIViewController *vc);
+// Frosted Glacier Liquid Glass top header shield (zPosition = 999) that prevents
+// scrolled list rows from bleeding behind the navigation title and search bar.
+void wq_install_header_shield(UIViewController *vc);
+// Crisp Glacier-tinted SF Symbol rendered inside a frosted rounded-square badge
+// for apps/items whose native icon cannot be read directly.
+UIImage *wq_glacier_symbol_badge(NSString *symbolName, CGFloat size);
+// Custom frosted Glacier Liquid Glass confirmation modal replacing plain system
+// UIAlertController popups for destructive or primary confirmations.
+void wq_present_glass_confirm(UIViewController *host,
+                              NSString *title,
+                              NSString *_Nullable message,
+                              NSString *confirmTitle,
+                              BOOL destructive,
+                              void (^onConfirm)(void));
 // Settings → New Design: WQ Prism (default) or the classic list design.
 BOOL wq_prism_enabled(void);
 void wq_set_prism_enabled(BOOL enabled);

@@ -41,7 +41,7 @@ NSString *wq_app_version_line(void)
     return [NSString stringWithFormat:@"WQ Glass %@ (%@)", info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?"];
 }
 
-const CGFloat kWQDeviceStripHeight = 52;
+const CGFloat kWQDeviceStripHeight = 56;
 
 // Frosted Glacier Liquid Glass telemetry pill with aqua dot, version and device/iOS line.
 UIView *wq_device_header(CGFloat width)
@@ -49,6 +49,7 @@ UIView *wq_device_header(CGFloat width)
     CGFloat useWidth = width > 0 ? width : 360.0;
     UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, useWidth, kWQDeviceStripHeight + 16)];
     box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    box.clipsToBounds = YES;
     UIVisualEffectView *pill = wq_theme_make_glass_card(18, NO);
     [box addSubview:pill];
 
@@ -74,24 +75,24 @@ UIView *wq_device_header(CGFloat width)
     [pill.contentView addSubview:header];
 
     [NSLayoutConstraint activateConstraints:@[
-        [pill.topAnchor constraintEqualToAnchor:box.topAnchor constant:2],
+        [pill.topAnchor constraintEqualToAnchor:box.topAnchor constant:6],
         [pill.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
         [pill.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
-        [pill.heightAnchor constraintGreaterThanOrEqualToConstant:kWQDeviceStripHeight - 2],
+        [pill.heightAnchor constraintGreaterThanOrEqualToConstant:kWQDeviceStripHeight - 4],
         [dot.widthAnchor constraintEqualToConstant:7],
         [dot.heightAnchor constraintEqualToConstant:7],
         [dot.leadingAnchor constraintEqualToAnchor:pill.contentView.leadingAnchor constant:14],
         [dot.centerYAnchor constraintEqualToAnchor:pill.contentView.centerYAnchor],
-        [header.topAnchor constraintEqualToAnchor:pill.contentView.topAnchor constant:7],
-        [header.bottomAnchor constraintEqualToAnchor:pill.contentView.bottomAnchor constant:-7],
+        [header.topAnchor constraintEqualToAnchor:pill.contentView.topAnchor constant:8],
+        [header.bottomAnchor constraintEqualToAnchor:pill.contentView.bottomAnchor constant:-8],
         [header.leadingAnchor constraintEqualToAnchor:dot.trailingAnchor constant:8],
         [header.trailingAnchor constraintEqualToAnchor:pill.contentView.trailingAnchor constant:-14],
     ]];
 
     [box layoutIfNeeded];
     CGSize labelSize = [header sizeThatFits:CGSizeMake(MAX(120.0, useWidth - 72.0), CGFLOAT_MAX)];
-    CGFloat pillHeight = MAX(kWQDeviceStripHeight - 2, ceil(labelSize.height) + 14.0);
-    box.frame = CGRectMake(0, 0, useWidth, pillHeight + 16.0);
+    CGFloat pillHeight = MAX(kWQDeviceStripHeight - 4, ceil(labelSize.height) + 16.0);
+    box.frame = CGRectMake(0, 0, useWidth, pillHeight + 14.0);
     return box;
 }
 
@@ -279,8 +280,8 @@ static UIImage *wq_service_tile(NSString *bundleID)
         ];
     });
     NSString *key = bundleID.lowercaseString;
-    NSString *symbol = @"gearshape.fill";
-    UIColor *color = UIColor.systemGrayColor;
+    NSString *symbol = @"cube.transparent.fill";
+    UIColor *color = [UIColor colorWithRed:0.09 green:0.22 blue:0.35 alpha:1.0];
     for (NSArray *rule in rules) {
         BOOL hit = NO;
         for (NSString *word in rule[0]) if ([key containsString:word]) { hit = YES; break; }
@@ -291,17 +292,84 @@ static UIImage *wq_service_tile(NSString *bundleID)
     if (tile) return tile;
     CGFloat s = 40;
     UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
-    UIColor *fill = [color resolvedColorWithTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]];
-    tile = [r imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
-        [fill setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, s, s) cornerRadius:s * 0.225] fill];
-        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:19 weight:UIImageSymbolWeightSemibold];
-        UIImage *g = [[UIImage systemImageNamed:symbol withConfiguration:cfg] ?: [UIImage systemImageNamed:@"gearshape.fill" withConfiguration:cfg]
-                      imageWithTintColor:UIColor.whiteColor renderingMode:UIImageRenderingModeAlwaysOriginal];
-        [g drawInRect:CGRectMake((s - g.size.width) / 2, (s - g.size.height) / 2, g.size.width, g.size.height)];
+    UIColor *fill = [color resolvedColorWithTraitCollection:[UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleDark]];
+    tile = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGRect rect = CGRectMake(0, 0, s, s);
+        CGFloat radius = s * 0.24;
+        UIBezierPath *clip = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
+        [clip addClip];
+        // Deep sub-zero frosted gradient from navy base into glacier tint.
+        CGFloat cr = 0.09, cg = 0.22, cb = 0.35, ca = 1.0;
+        [fill getRed:&cr green:&cg blue:&cb alpha:&ca];
+        UIColor *top = [UIColor colorWithRed:MIN(1.0, cr * 1.15) green:MIN(1.0, cg * 1.18) blue:MIN(1.0, cb * 1.20) alpha:0.96];
+        UIColor *bot = [UIColor colorWithRed:cr * 0.52 green:cg * 0.56 blue:cb * 0.64 alpha:0.98];
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        NSArray *colors = @[(id)top.CGColor, (id)bot.CGColor];
+        CGGradientRef grad = CGGradientCreateWithColors(cs, (__bridge CFArrayRef)colors, NULL);
+        CGContextDrawLinearGradient(ctx.CGContext, grad, CGPointMake(0, 0), CGPointMake(s, s), 0);
+        CGGradientRelease(grad);
+        CGColorSpaceRelease(cs);
+
+        // Specular icy-silver rim inside the rounded square.
+        UIBezierPath *rim = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(rect, 0.75, 0.75) cornerRadius:radius - 0.75];
+        rim.lineWidth = 1.0;
+        [[UIColor colorWithRed:0.80 green:0.96 blue:1.0 alpha:0.34] setStroke];
+        [rim stroke];
+
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:18 weight:UIImageSymbolWeightSemibold];
+        UIImage *sym = [UIImage systemImageNamed:symbol withConfiguration:cfg]
+                    ?: [UIImage systemImageNamed:@"cube.transparent.fill" withConfiguration:cfg];
+        UIImage *g = [sym imageWithTintColor:[UIColor colorWithRed:0.88 green:0.98 blue:1.0 alpha:1.0]
+                               renderingMode:UIImageRenderingModeAlwaysOriginal];
+        [g drawInRect:CGRectMake((s - g.size.width) / 2.0, (s - g.size.height) / 2.0, g.size.width, g.size.height)];
     }];
     [tiles setObject:tile forKey:cacheKey];
     return tile;
+}
+
+UIImage *wq_glacier_symbol_badge(NSString *symbolName, CGFloat size)
+{
+    static NSCache *badgeCache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ badgeCache = [NSCache new]; });
+    CGFloat s = size > 0 ? size : 36.0;
+    NSString *sym = symbolName.length ? symbolName : @"cube.transparent.fill";
+    NSString *key = [NSString stringWithFormat:@"%@_%.0f", sym, s];
+    UIImage *cached = [badgeCache objectForKey:key];
+    if (cached) return cached;
+
+    UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(s, s)];
+    UIImage *img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGRect rect = CGRectMake(0, 0, s, s);
+        CGFloat radius = s * 0.25;
+        UIBezierPath *clip = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:radius];
+        [clip addClip];
+        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        NSArray *colors = @[
+            (id)[UIColor colorWithRed:0.086 green:0.220 blue:0.345 alpha:0.96].CGColor,
+            (id)[UIColor colorWithRed:0.043 green:0.114 blue:0.196 alpha:0.98].CGColor,
+        ];
+        CGGradientRef grad = CGGradientCreateWithColors(cs, (__bridge CFArrayRef)colors, NULL);
+        CGContextDrawLinearGradient(ctx.CGContext, grad, CGPointMake(0, 0), CGPointMake(s, s), 0);
+        CGGradientRelease(grad);
+        CGColorSpaceRelease(cs);
+
+        UIBezierPath *rim = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(rect, 0.75, 0.75) cornerRadius:radius - 0.75];
+        rim.lineWidth = 1.0;
+        [[UIColor colorWithRed:0.50 green:0.94 blue:1.0 alpha:0.36] setStroke];
+        [rim stroke];
+
+        UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:s * 0.48
+                                                                                          weight:UIImageSymbolWeightSemibold];
+        UIImage *raw = [UIImage systemImageNamed:sym withConfiguration:cfg]
+                    ?: [UIImage systemImageNamed:@"cube.transparent.fill" withConfiguration:cfg];
+        UIImage *tinted = [raw imageWithTintColor:[UIColor colorWithRed:0.65 green:0.96 blue:1.0 alpha:1.0]
+                                    renderingMode:UIImageRenderingModeAlwaysOriginal];
+        [tinted drawInRect:CGRectMake((s - tinted.size.width) / 2.0, (s - tinted.size.height) / 2.0,
+                                      tinted.size.width, tinted.size.height)];
+    }];
+    if (img) [badgeCache setObject:img forKey:key];
+    return img;
 }
 
 // Rounded app icon for a bundle id, cached. Falls back to the closest parent
@@ -589,4 +657,328 @@ BOOL wq_prism_enabled(void)
 void wq_set_prism_enabled(BOOL enabled)
 {
     [NSUserDefaults.standardUserDefaults setBool:!enabled forKey:kWQClassicDesignPref];
+}
+
+#pragma mark - Glacier Header Shield (Anti-Bleed)
+
+@interface WQGlacierHeaderShieldView : UIView
+@end
+
+@implementation WQGlacierHeaderShieldView {
+    CAGradientLayer *_backdrop;
+    UIVisualEffectView *_frost;
+    UIView *_hairline;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.userInteractionEnabled = NO;
+        self.clipsToBounds = YES;
+        self.layer.zPosition = 999.0;
+
+        _backdrop = [CAGradientLayer layer];
+        _backdrop.colors = @[
+            (id)[UIColor colorWithRed:0.035 green:0.082 blue:0.141 alpha:0.98].CGColor,
+            (id)[UIColor colorWithRed:0.051 green:0.122 blue:0.200 alpha:0.95].CGColor,
+            (id)[UIColor colorWithRed:0.035 green:0.082 blue:0.141 alpha:0.90].CGColor,
+        ];
+        _backdrop.locations = @[@0.0, @0.72, @1.0];
+        [self.layer addSublayer:_backdrop];
+
+        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
+        _frost = [[UIVisualEffectView alloc] initWithEffect:blur];
+        _frost.alpha = 0.55;
+        _frost.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:_frost];
+
+        _hairline = [UIView new];
+        _hairline.translatesAutoresizingMaskIntoConstraints = NO;
+        _hairline.backgroundColor = wq_theme_rim_teal();
+        [self addSubview:_hairline];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_frost.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_frost.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_frost.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_frost.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_hairline.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_hairline.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_hairline.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_hairline.heightAnchor constraintEqualToConstant:0.5],
+        ]];
+    }
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    _backdrop.frame = self.bounds;
+}
+
+@end
+
+void wq_install_header_shield(UIViewController *vc)
+{
+    if (!vc || !vc.isViewLoaded) return;
+    static const NSInteger kShieldTag = 0x57514853;
+    if ([vc.view viewWithTag:kShieldTag]) return;
+
+    WQGlacierHeaderShieldView *shield = [[WQGlacierHeaderShieldView alloc] initWithFrame:CGRectZero];
+    shield.tag = kShieldTag;
+    shield.translatesAutoresizingMaskIntoConstraints = NO;
+    [vc.view addSubview:shield];
+
+    NSLayoutYAxisAnchor *topAnchor = vc.view.topAnchor;
+    NSLayoutXAxisAnchor *leadingAnchor = vc.view.leadingAnchor;
+    NSLayoutXAxisAnchor *trailingAnchor = vc.view.trailingAnchor;
+    if ([vc.view isKindOfClass:UIScrollView.class]) {
+        UILayoutGuide *frameGuide = ((UIScrollView *)vc.view).frameLayoutGuide;
+        topAnchor = frameGuide.topAnchor;
+        leadingAnchor = frameGuide.leadingAnchor;
+        trailingAnchor = frameGuide.trailingAnchor;
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [shield.topAnchor constraintEqualToAnchor:topAnchor],
+        [shield.leadingAnchor constraintEqualToAnchor:leadingAnchor],
+        [shield.trailingAnchor constraintEqualToAnchor:trailingAnchor],
+        [shield.bottomAnchor constraintEqualToAnchor:vc.view.safeAreaLayoutGuide.topAnchor],
+    ]];
+}
+
+#pragma mark - Glacier Liquid Glass Confirmation Modal
+
+@interface WQGlassConfirmViewController : UIViewController
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *_Nullable)message
+                 confirmTitle:(NSString *)confirmTitle
+                  destructive:(BOOL)destructive
+                    onConfirm:(void (^)(void))onConfirm;
+@end
+
+@implementation WQGlassConfirmViewController {
+    NSString *_alertTitle;
+    NSString *_alertMessage;
+    NSString *_confirmTitle;
+    BOOL _destructive;
+    void (^_onConfirm)(void);
+    UIVisualEffectView *_dimView;
+    UIVisualEffectView *_cardView;
+}
+
+- (instancetype)initWithTitle:(NSString *)title
+                      message:(NSString *)message
+                 confirmTitle:(NSString *)confirmTitle
+                  destructive:(BOOL)destructive
+                    onConfirm:(void (^)(void))onConfirm
+{
+    if ((self = [super initWithNibName:nil bundle:nil])) {
+        _alertTitle = [WQLocalizedNullable(title) copy] ?: @"";
+        _alertMessage = [WQLocalizedNullable(message) copy];
+        _confirmTitle = [WQLocalized(confirmTitle) copy];
+        _destructive = destructive;
+        _onConfirm = [onConfirm copy];
+        self.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        self.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor clearColor];
+
+    _dimView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+    _dimView.translatesAutoresizingMaskIntoConstraints = NO;
+    _dimView.backgroundColor = [UIColor colorWithRed:0.02 green:0.05 blue:0.09 alpha:0.58];
+    _dimView.alpha = 0.0;
+    [self.view addSubview:_dimView];
+
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(cancelTapped)];
+    [_dimView addGestureRecognizer:tap];
+
+    _cardView = wq_theme_make_glass_card(24.0, NO);
+    _cardView.layer.borderColor = [UIColor colorWithRed:0.88 green:0.99 blue:1.0 alpha:0.42].CGColor;
+    _cardView.layer.borderWidth = 1.0;
+    _cardView.layer.shadowColor = [UIColor colorWithRed:0.0 green:0.96 blue:1.0 alpha:0.22].CGColor;
+    _cardView.layer.shadowRadius = 24.0;
+    _cardView.layer.shadowOpacity = 1.0;
+    _cardView.layer.shadowOffset = CGSizeMake(0, 12);
+    _cardView.alpha = 0.0;
+    _cardView.transform = UIAccessibilityIsReduceMotionEnabled()
+        ? CGAffineTransformIdentity
+        : CGAffineTransformMakeScale(0.90, 0.90);
+    [self.view addSubview:_cardView];
+
+    // Top icy-aqua specular hairline accent.
+    UIView *topAccent = [UIView new];
+    topAccent.translatesAutoresizingMaskIntoConstraints = NO;
+    topAccent.backgroundColor = _destructive ? wq_theme_accent() : wq_theme_aurora_teal();
+    topAccent.layer.cornerRadius = 1.5;
+    topAccent.layer.shadowColor = topAccent.backgroundColor.CGColor;
+    topAccent.layer.shadowRadius = 6.0;
+    topAccent.layer.shadowOpacity = 0.85;
+    topAccent.layer.shadowOffset = CGSizeZero;
+
+    UILabel *titleLabel = [UILabel new];
+    titleLabel.font = [UIFont systemFontOfSize:19 weight:UIFontWeightBold];
+    titleLabel.textColor = wq_theme_primary_text();
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.numberOfLines = 0;
+    titleLabel.text = _alertTitle;
+
+    UILabel *messageLabel = [UILabel new];
+    messageLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    messageLabel.textColor = wq_theme_secondary_text();
+    messageLabel.textAlignment = NSTextAlignmentCenter;
+    messageLabel.numberOfLines = 0;
+    messageLabel.text = _alertMessage;
+    messageLabel.hidden = (_alertMessage.length == 0);
+
+    UIButton *cancelBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    cancelBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButtonConfiguration *cancelCfg = [UIButtonConfiguration plainButtonConfiguration];
+    cancelCfg.title = WQLocalized(@"Cancel");
+    cancelCfg.baseForegroundColor = wq_theme_detail_text();
+    cancelCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cancelCfg.contentInsets = NSDirectionalEdgeInsetsMake(12, 16, 12, 16);
+    cancelCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *inAttr) {
+        NSMutableDictionary *outAttr = [inAttr mutableCopy];
+        outAttr[NSFontAttributeName] = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        return outAttr;
+    };
+    cancelCfg.background.backgroundColor = [UIColor colorWithRed:0.09 green:0.20 blue:0.32 alpha:0.65];
+    cancelCfg.background.strokeColor = wq_theme_rim();
+    cancelCfg.background.strokeWidth = 0.75;
+    cancelBtn.configuration = cancelCfg;
+    [cancelBtn addTarget:self action:@selector(cancelTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *confirmBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    confirmBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButtonConfiguration *confirmCfg = [UIButtonConfiguration filledButtonConfiguration];
+    confirmCfg.title = _confirmTitle;
+    confirmCfg.baseBackgroundColor = _destructive ? wq_theme_accent() : wq_theme_aurora_teal();
+    confirmCfg.baseForegroundColor = [UIColor colorWithRed:0.02 green:0.07 blue:0.12 alpha:1.0];
+    confirmCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    confirmCfg.contentInsets = NSDirectionalEdgeInsetsMake(12, 16, 12, 16);
+    confirmCfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *inAttr) {
+        NSMutableDictionary *outAttr = [inAttr mutableCopy];
+        outAttr[NSFontAttributeName] = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+        return outAttr;
+    };
+    confirmBtn.configuration = confirmCfg;
+    confirmBtn.layer.shadowColor = confirmCfg.baseBackgroundColor.CGColor;
+    confirmBtn.layer.shadowRadius = 10.0;
+    confirmBtn.layer.shadowOpacity = 0.45;
+    confirmBtn.layer.shadowOffset = CGSizeMake(0, 4);
+    [confirmBtn addTarget:self action:@selector(confirmTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[cancelBtn, confirmBtn]];
+    buttons.axis = UILayoutConstraintAxisHorizontal;
+    buttons.distribution = UIStackViewDistributionFillEqually;
+    buttons.spacing = 10;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, messageLabel, buttons]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 12;
+    [stack setCustomSpacing:20 afterView:messageLabel];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [_cardView.contentView addSubview:topAccent];
+    [_cardView.contentView addSubview:stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [_dimView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [_dimView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [_dimView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_dimView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_cardView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_cardView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [_cardView.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:24],
+        [_cardView.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-24],
+        [_cardView.widthAnchor constraintLessThanOrEqualToConstant:340],
+        [_cardView.widthAnchor constraintGreaterThanOrEqualToConstant:286],
+        [topAccent.topAnchor constraintEqualToAnchor:_cardView.contentView.topAnchor constant:12],
+        [topAccent.centerXAnchor constraintEqualToAnchor:_cardView.contentView.centerXAnchor],
+        [topAccent.widthAnchor constraintEqualToConstant:40],
+        [topAccent.heightAnchor constraintEqualToConstant:3],
+        [stack.topAnchor constraintEqualToAnchor:topAccent.bottomAnchor constant:14],
+        [stack.leadingAnchor constraintEqualToAnchor:_cardView.contentView.leadingAnchor constant:20],
+        [stack.trailingAnchor constraintEqualToAnchor:_cardView.contentView.trailingAnchor constant:-20],
+        [stack.bottomAnchor constraintEqualToAnchor:_cardView.contentView.bottomAnchor constant:-20],
+    ]];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (UIAccessibilityIsReduceMotionEnabled()) {
+        [UIView animateWithDuration:0.18 animations:^{
+            self->_dimView.alpha = 1.0;
+            self->_cardView.alpha = 1.0;
+        }];
+        return;
+    }
+    UISpringTimingParameters *spring = [[UISpringTimingParameters alloc] initWithDampingRatio:0.74 initialVelocity:CGVectorMake(0.4, 0.4)];
+    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.32 timingParameters:spring];
+    [anim addAnimations:^{
+        self->_dimView.alpha = 1.0;
+        self->_cardView.alpha = 1.0;
+        self->_cardView.transform = CGAffineTransformIdentity;
+    }];
+    [anim startAnimation];
+}
+
+- (void)dismissWithCompletion:(void (^_Nullable)(void))completion
+{
+    if (UIAccessibilityIsReduceMotionEnabled()) {
+        [self dismissViewControllerAnimated:NO completion:completion];
+        return;
+    }
+    [UIView animateWithDuration:0.18 delay:0 options:UIViewAnimationOptionCurveEaseIn animations:^{
+        self->_dimView.alpha = 0.0;
+        self->_cardView.alpha = 0.0;
+        self->_cardView.transform = CGAffineTransformMakeScale(0.92, 0.92);
+    } completion:^(BOOL __unused finished) {
+        [self dismissViewControllerAnimated:NO completion:completion];
+    }];
+}
+
+- (void)cancelTapped
+{
+    UIImpactFeedbackGenerator *gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [gen impactOccurred];
+    [self dismissWithCompletion:nil];
+}
+
+- (void)confirmTapped
+{
+    UIImpactFeedbackGenerator *gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [gen impactOccurred];
+    void (^action)(void) = _onConfirm;
+    [self dismissWithCompletion:^{
+        if (action) action();
+    }];
+}
+
+@end
+
+void wq_present_glass_confirm(UIViewController *host,
+                              NSString *title,
+                              NSString *message,
+                              NSString *confirmTitle,
+                              BOOL destructive,
+                              void (^onConfirm)(void))
+{
+    if (!host || !host.isViewLoaded || !host.view.window) return;
+    if (host.presentedViewController && !host.presentedViewController.isBeingDismissed) return;
+    WQGlassConfirmViewController *modal = [[WQGlassConfirmViewController alloc] initWithTitle:title
+                                                                                      message:message
+                                                                                 confirmTitle:confirmTitle
+                                                                                  destructive:destructive
+                                                                                    onConfirm:onConfirm];
+    [host presentViewController:modal animated:NO completion:nil];
 }
