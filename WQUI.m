@@ -513,6 +513,10 @@ NSString *wq_size_text(unsigned long long size)
         [self updateColors];
         [self registerForTraitChanges:@[UITraitUserInterfaceStyle.class] withAction:@selector(updateColors)];
         [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(updateColors)
+                                                   name:WQThemeDidChangeNotification
+                                                 object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self
                                                selector:@selector(updateShimmerAnimations)
                                                    name:UIAccessibilityReduceMotionStatusDidChangeNotification
                                                  object:nil];
@@ -533,8 +537,8 @@ NSString *wq_size_text(unsigned long long size)
 
 - (void)updateColors
 {
-    // iPhone Duo Liquid Glass canvas: deep sub-zero night-blue (#091524 -> #122B43)
-    // into arctic cyan (#1F4D62) and dark glacial ice (#04090E).
+    BOOL classic = wq_theme_is_classic_stock();
+    CGFloat glowScale = classic ? 0.12 : 1.0;
     _base.colors = @[(id)wq_theme_canvas_top().CGColor,
                      (id)wq_theme_canvas_mid().CGColor,
                      (id)wq_theme_canvas_cyan().CGColor,
@@ -543,17 +547,17 @@ NSString *wq_size_text(unsigned long long size)
 
     _polarBand.colors = @[
         (id)[UIColor clearColor].CGColor,
-        (id)[wq_theme_accent() colorWithAlphaComponent:0.10].CGColor,
-        (id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.08].CGColor,
+        (id)[wq_theme_accent() colorWithAlphaComponent:0.10 * glowScale].CGColor,
+        (id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.08 * glowScale].CGColor,
         (id)[UIColor clearColor].CGColor,
     ];
     _polarBand.locations = @[@0.0, @0.35, @0.65, @1.0];
 
-    // Sub-zero aqua, aurora teal, arctic cyan, and deep glacial ice light pools.
-    _glows[0].colors = @[(id)[wq_theme_accent() colorWithAlphaComponent:0.20].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[1].colors = @[(id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.08].CGColor, (id)[UIColor clearColor].CGColor];
-    _glows[2].colors = @[(id)[wq_theme_canvas_cyan() colorWithAlphaComponent:0.46].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[0].colors = @[(id)[wq_theme_accent() colorWithAlphaComponent:0.20 * glowScale].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[1].colors = @[(id)[wq_theme_aurora_teal() colorWithAlphaComponent:0.12 * glowScale].CGColor, (id)[UIColor clearColor].CGColor];
+    _glows[2].colors = @[(id)[wq_theme_canvas_cyan() colorWithAlphaComponent:0.46 * glowScale].CGColor, (id)[UIColor clearColor].CGColor];
     _glows[3].colors = @[(id)[wq_theme_canvas_edge() colorWithAlphaComponent:0.60].CGColor, (id)[UIColor clearColor].CGColor];
+    [self updateShimmerAnimations];
 }
 
 - (void)updateShimmerAnimations
@@ -678,11 +682,6 @@ void wq_set_prism_enabled(BOOL enabled)
         self.layer.zPosition = 999.0;
 
         _backdrop = [CAGradientLayer layer];
-        _backdrop.colors = @[
-            (id)[UIColor colorWithRed:0.093 green:0.101 blue:0.120 alpha:0.98].CGColor,
-            (id)[UIColor colorWithRed:0.133 green:0.143 blue:0.170 alpha:0.95].CGColor,
-            (id)[UIColor colorWithRed:0.093 green:0.101 blue:0.120 alpha:0.90].CGColor,
-        ];
         _backdrop.locations = @[@0.0, @0.72, @1.0];
         [self.layer addSublayer:_backdrop];
 
@@ -694,8 +693,13 @@ void wq_set_prism_enabled(BOOL enabled)
 
         _hairline = [UIView new];
         _hairline.translatesAutoresizingMaskIntoConstraints = NO;
-        _hairline.backgroundColor = wq_theme_rim_teal();
         [self addSubview:_hairline];
+
+        [self applyThemeColors];
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(applyThemeColors)
+                                                   name:WQThemeDidChangeNotification
+                                                 object:nil];
 
         [NSLayoutConstraint activateConstraints:@[
             [_frost.topAnchor constraintEqualToAnchor:self.topAnchor],
@@ -709,6 +713,21 @@ void wq_set_prism_enabled(BOOL enabled)
         ]];
     }
     return self;
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)applyThemeColors
+{
+    _backdrop.colors = @[
+        (id)[wq_theme_canvas_top() colorWithAlphaComponent:0.98].CGColor,
+        (id)[wq_theme_canvas_mid() colorWithAlphaComponent:0.94].CGColor,
+        (id)[wq_theme_canvas_top() colorWithAlphaComponent:0.90].CGColor,
+    ];
+    _hairline.backgroundColor = wq_theme_rim_teal();
 }
 
 - (void)layoutSubviews

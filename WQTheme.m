@@ -1,14 +1,30 @@
 //
 //  WQTheme.m
-//  WQ Glass iPhone Duo Liquid Glass theme (iOS 26)
+//  WQ Glass Multi-Theme & UI Style Engine (iOS 26)
 //
 
 #import "WQTheme.h"
 #import "WQUI.h"
 #import <objc/runtime.h>
 
-static const NSInteger kWQThemeBackdropTag = 0x57515042;   // same tag wq_prism_install_background uses
+NSNotificationName const WQThemeDidChangeNotification = @"WQThemeDidChangeNotification";
+NSString *const kWQSelectedThemeIDKey = @"WQSelectedThemeID";
+NSString *const kWQSelectedUIStyleIDKey = @"WQSelectedUIStyleID";
+
+NSString *const kWQThemeIDiPhoneDuo = @"iphone_duo";
+NSString *const kWQThemeIDGlacierGlass = @"glacier_glass";
+NSString *const kWQThemeIDCrimsonGlass = @"crimson_glass";
+NSString *const kWQThemeIDAnodizedObsidian = @"anodized_obsidian";
+NSString *const kWQThemeIDClassicNative = @"classic_native";
+
+NSString *const kWQUIStyleIDDuoHUD = @"duo_hud";
+NSString *const kWQUIStyleIDLiquidGlass = @"liquid_glass";
+NSString *const kWQUIStyleIDCompactPro = @"compact_pro";
+
+static const NSInteger kWQThemeBackdropTag = 0x57515042;
+static const NSInteger kWQThemeSheenTag = 0x57515348;
 static const void *kWQThemeSpringKey = &kWQThemeSpringKey;
+static const void *kWQThemeCardObserverKey = &kWQThemeCardObserverKey;
 
 static UIColor *wq_rgb(uint32_t rgb, CGFloat alpha)
 {
@@ -18,27 +34,411 @@ static UIColor *wq_rgb(uint32_t rgb, CGFloat alpha)
                            alpha:alpha];
 }
 
-#pragma mark - Glacier Palette
+typedef struct {
+    uint32_t canvasTop;
+    uint32_t canvasMid;
+    uint32_t canvasCyan;
+    uint32_t canvasEdge;
+    uint32_t glassTint;   CGFloat glassAlpha;
+    uint32_t rim;         CGFloat rimAlpha;
+    uint32_t rimTeal;     CGFloat rimTealAlpha;
+    uint32_t primaryText;
+    uint32_t secondaryText;
+    uint32_t detailText;
+    uint32_t hairline;    CGFloat hairlineAlpha;
+    uint32_t ctaText;
+    uint32_t activePill;
+    uint32_t accent;
+    uint32_t auroraTeal;
+    uint32_t solidSurface;
+    uint32_t sheen;       CGFloat sheenAlpha;
+    uint32_t plainCell;   CGFloat plainCellAlpha;
+} WQThemeSpec;
 
-UIColor *wq_theme_canvas_top(void)     { return wq_rgb(0x090A0D, 1.0); }
-UIColor *wq_theme_canvas_mid(void)     { return wq_rgb(0x12151B, 1.0); }
-UIColor *wq_theme_canvas_cyan(void)    { return wq_rgb(0x1A1E26, 1.0); }
-UIColor *wq_theme_canvas_edge(void)    { return wq_rgb(0x050608, 1.0); }
-UIColor *wq_theme_glass_tint(void)     { return wq_rgb(0x161920, 0.72); }
-UIColor *wq_theme_rim(void)            { return wq_rgb(0xFFFFFF, 0.30); }
-UIColor *wq_theme_rim_teal(void)       { return wq_rgb(0x5AC8FA, 0.24); }
-UIColor *wq_theme_primary_text(void)   { return UIColor.whiteColor; }
-UIColor *wq_theme_secondary_text(void) { return wq_rgb(0x9BA3B0, 1.0); }
-UIColor *wq_theme_detail_text(void)    { return wq_rgb(0xC3C9D3, 1.0); }
-UIColor *wq_theme_hairline(void)       { return wq_rgb(0xFFFFFF, 0.10); }
-UIColor *wq_theme_cta_text(void)       { return wq_rgb(0xFFFFFF, 1.0); }
-UIColor *wq_theme_active_pill(void)    { return wq_rgb(0x0A84FF, 1.0); }
-UIColor *wq_theme_accent(void)         { return wq_rgb(0x0A84FF, 1.0); }
-UIColor *wq_theme_aurora_teal(void)    { return wq_rgb(0x5AC8FA, 1.0); }
-UIColor *wq_theme_solid_surface(void)  { return wq_rgb(0x161920, 1.0); }
+static const WQThemeSpec kSpeciPhoneDuo = {
+    .canvasTop     = 0x090A0D,
+    .canvasMid     = 0x12151B,
+    .canvasCyan    = 0x1A1E26,
+    .canvasEdge    = 0x050608,
+    .glassTint     = 0x161920, .glassAlpha = 0.72,
+    .rim           = 0xFFFFFF, .rimAlpha = 0.30,
+    .rimTeal       = 0x5AC8FA, .rimTealAlpha = 0.24,
+    .primaryText   = 0xFFFFFF,
+    .secondaryText = 0x9BA3B0,
+    .detailText    = 0xC3C9D3,
+    .hairline      = 0xFFFFFF, .hairlineAlpha = 0.10,
+    .ctaText       = 0xFFFFFF,
+    .activePill    = 0x0A84FF,
+    .accent        = 0x0A84FF,
+    .auroraTeal    = 0x5AC8FA,
+    .solidSurface  = 0x161920,
+    .sheen         = 0xFFFFFF, .sheenAlpha = 0.07,
+    .plainCell     = 0x161920, .plainCellAlpha = 0.56,
+};
 
-static UIColor *wq_theme_pressed(void)     { return wq_rgb(0x0A84FF, 0.22); }
-static UIColor *wq_theme_plain_cell(void)  { return wq_rgb(0x161920, 0.55); }
+static const WQThemeSpec kSpecGlacierGlass = {
+    .canvasTop     = 0x091524,
+    .canvasMid     = 0x122B43,
+    .canvasCyan    = 0x1F4D62,
+    .canvasEdge    = 0x04090E,
+    .glassTint     = 0x102A45, .glassAlpha = 0.48,
+    .rim           = 0xE0FFFF, .rimAlpha = 0.32,
+    .rimTeal       = 0x80F0FF, .rimTealAlpha = 0.22,
+    .primaryText   = 0xFFFFFF,
+    .secondaryText = 0xB0E2FF,
+    .detailText    = 0xD1E8FA,
+    .hairline      = 0xD1E8FA, .hairlineAlpha = 0.16,
+    .ctaText       = 0x071A2B,
+    .activePill    = 0x0E5A74,
+    .accent        = 0x00F5FF,
+    .auroraTeal    = 0x4FFFB0,
+    .solidSurface  = 0x11283F,
+    .sheen         = 0xE0FFFF, .sheenAlpha = 0.06,
+    .plainCell     = 0x102A45, .plainCellAlpha = 0.36,
+};
+
+static const WQThemeSpec kSpecCrimsonGlass = {
+    .canvasTop     = 0x1A050A,
+    .canvasMid     = 0x380B16,
+    .canvasCyan    = 0x4A1020,
+    .canvasEdge    = 0x0D0305,
+    .glassTint     = 0x3A0C18, .glassAlpha = 0.54,
+    .rim           = 0xFFE0E8, .rimAlpha = 0.32,
+    .rimTeal       = 0xFF6482, .rimTealAlpha = 0.26,
+    .primaryText   = 0xFFFFFF,
+    .secondaryText = 0xF4B8C4,
+    .detailText    = 0xFFDCE4,
+    .hairline      = 0xFFDCE4, .hairlineAlpha = 0.16,
+    .ctaText       = 0xFFFFFF,
+    .activePill    = 0xA81838,
+    .accent        = 0xFF2D55,
+    .auroraTeal    = 0xFF6482,
+    .solidSurface  = 0x2C0811,
+    .sheen         = 0xFFD6E0, .sheenAlpha = 0.07,
+    .plainCell     = 0x3A0C18, .plainCellAlpha = 0.42,
+};
+
+static const WQThemeSpec kSpecAnodizedObsidian = {
+    .canvasTop     = 0x090B0E,
+    .canvasMid     = 0x12161D,
+    .canvasCyan    = 0x171C26,
+    .canvasEdge    = 0x050608,
+    .glassTint     = 0x12161D, .glassAlpha = 0.74,
+    .rim           = 0xDAE2EE, .rimAlpha = 0.26,
+    .rimTeal       = 0x32D74B, .rimTealAlpha = 0.24,
+    .primaryText   = 0xFFFFFF,
+    .secondaryText = 0x8E96A4,
+    .detailText    = 0xC4CCD8,
+    .hairline      = 0xFFFFFF, .hairlineAlpha = 0.09,
+    .ctaText       = 0x06140A,
+    .activePill    = 0x1E7D32,
+    .accent        = 0x32D74B,
+    .auroraTeal    = 0x63E686,
+    .solidSurface  = 0x141820,
+    .sheen         = 0xFFFFFF, .sheenAlpha = 0.05,
+    .plainCell     = 0x12161D, .plainCellAlpha = 0.60,
+};
+
+static const WQThemeSpec kSpecClassicNative = {
+    .canvasTop     = 0x000000,
+    .canvasMid     = 0x0E0E10,
+    .canvasCyan    = 0x1C1C1E,
+    .canvasEdge    = 0x000000,
+    .glassTint     = 0x1C1C1E, .glassAlpha = 0.88,
+    .rim           = 0xFFFFFF, .rimAlpha = 0.14,
+    .rimTeal       = 0x0A84FF, .rimTealAlpha = 0.20,
+    .primaryText   = 0xFFFFFF,
+    .secondaryText = 0x98989F,
+    .detailText    = 0xD1D1D6,
+    .hairline      = 0x545458, .hairlineAlpha = 0.45,
+    .ctaText       = 0xFFFFFF,
+    .activePill    = 0x0A84FF,
+    .accent        = 0x0A84FF,
+    .auroraTeal    = 0x64D2FF,
+    .solidSurface  = 0x1C1C1E,
+    .sheen         = 0xFFFFFF, .sheenAlpha = 0.02,
+    .plainCell     = 0x1C1C1E, .plainCellAlpha = 0.82,
+};
+
+@implementation WQThemeDescriptor
+- (instancetype)initWithID:(NSString *)themeID title:(NSString *)title subtitle:(NSString *)subtitle spec:(WQThemeSpec)spec
+{
+    if ((self = [super init])) {
+        _themeID = [themeID copy];
+        _title = [title copy];
+        _subtitle = [subtitle copy];
+        _canvasTop = wq_rgb(spec.canvasTop, 1.0);
+        _canvasMid = wq_rgb(spec.canvasMid, 1.0);
+        _accent = wq_rgb(spec.accent, 1.0);
+        _secondaryAccent = wq_rgb(spec.auroraTeal, 1.0);
+        _rim = wq_rgb(spec.rim, spec.rimAlpha);
+    }
+    return self;
+}
+@end
+
+@implementation WQUIStyleDescriptor
+- (instancetype)initWithID:(NSString *)styleID title:(NSString *)title subtitle:(NSString *)subtitle symbol:(NSString *)symbol
+{
+    if ((self = [super init])) {
+        _styleID = [styleID copy];
+        _title = [title copy];
+        _subtitle = [subtitle copy];
+        _symbolName = [symbol copy];
+    }
+    return self;
+}
+@end
+
+static NSString *gCachedThemeID;
+static NSString *gCachedUIStyleID;
+
+static NSString *wq_normalize_theme_id(NSString *_Nullable raw)
+{
+    if ([raw isEqualToString:kWQThemeIDGlacierGlass]) return kWQThemeIDGlacierGlass;
+    if ([raw isEqualToString:kWQThemeIDCrimsonGlass]) return kWQThemeIDCrimsonGlass;
+    if ([raw isEqualToString:kWQThemeIDAnodizedObsidian]) return kWQThemeIDAnodizedObsidian;
+    if ([raw isEqualToString:kWQThemeIDClassicNative]) return kWQThemeIDClassicNative;
+    return kWQThemeIDiPhoneDuo;
+}
+
+static NSString *wq_normalize_ui_style_id(NSString *_Nullable raw)
+{
+    if ([raw isEqualToString:kWQUIStyleIDLiquidGlass]) return kWQUIStyleIDLiquidGlass;
+    if ([raw isEqualToString:kWQUIStyleIDCompactPro]) return kWQUIStyleIDCompactPro;
+    return kWQUIStyleIDDuoHUD;
+}
+
+NSString *wq_theme_selected_id(void)
+{
+    if (!gCachedThemeID) {
+        gCachedThemeID = wq_normalize_theme_id([NSUserDefaults.standardUserDefaults stringForKey:kWQSelectedThemeIDKey]);
+    }
+    return gCachedThemeID;
+}
+
+NSString *wq_theme_selected_ui_style_id(void)
+{
+    if (!gCachedUIStyleID) {
+        gCachedUIStyleID = wq_normalize_ui_style_id([NSUserDefaults.standardUserDefaults stringForKey:kWQSelectedUIStyleIDKey]);
+    }
+    return gCachedUIStyleID;
+}
+
+static const WQThemeSpec *wq_active_spec(void)
+{
+    NSString *tid = wq_theme_selected_id();
+    if ([tid isEqualToString:kWQThemeIDGlacierGlass]) return &kSpecGlacierGlass;
+    if ([tid isEqualToString:kWQThemeIDCrimsonGlass]) return &kSpecCrimsonGlass;
+    if ([tid isEqualToString:kWQThemeIDAnodizedObsidian]) return &kSpecAnodizedObsidian;
+    if ([tid isEqualToString:kWQThemeIDClassicNative]) return &kSpecClassicNative;
+    return &kSpeciPhoneDuo;
+}
+
+NSArray<WQThemeDescriptor *> *wq_theme_all_themes(void)
+{
+    static NSArray<WQThemeDescriptor *> *list;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        list = @[
+            [[WQThemeDescriptor alloc] initWithID:kWQThemeIDiPhoneDuo
+                                            title:@"iPhone Duo"
+                                         subtitle:@"Space Black & Graphite glass · Apple Sapphire"
+                                             spec:kSpeciPhoneDuo],
+            [[WQThemeDescriptor alloc] initWithID:kWQThemeIDGlacierGlass
+                                            title:@"Glacier Liquid Glass"
+                                         subtitle:@"Sub-zero night-blue ice · Glacial Aqua & Aurora"
+                                             spec:kSpecGlacierGlass],
+            [[WQThemeDescriptor alloc] initWithID:kWQThemeIDCrimsonGlass
+                                            title:@"Crimson Liquid Glass"
+                                         subtitle:@"Deep burgundy & obsidian ruby · Glowing Crimson"
+                                             spec:kSpecCrimsonGlass],
+            [[WQThemeDescriptor alloc] initWithID:kWQThemeIDAnodizedObsidian
+                                            title:@"Anodized Obsidian"
+                                         subtitle:@"Matte obsidian crystal · Surgical Electric Mint"
+                                             spec:kSpecAnodizedObsidian],
+            [[WQThemeDescriptor alloc] initWithID:kWQThemeIDClassicNative
+                                            title:@"Classic Stock"
+                                         subtitle:@"Clean native iOS dark surfaces & system blue"
+                                             spec:kSpecClassicNative],
+        ];
+    });
+    return list;
+}
+
+NSArray<WQUIStyleDescriptor *> *wq_theme_all_ui_styles(void)
+{
+    static NSArray<WQUIStyleDescriptor *> *list;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        list = @[
+            [[WQUIStyleDescriptor alloc] initWithID:kWQUIStyleIDDuoHUD
+                                              title:@"iPhone Duo Split HUD"
+                                           subtitle:@"Dual-pane hero, Dynamic Island capsules & optical blur"
+                                             symbol:@"rectangle.split.2x1.fill"],
+            [[WQUIStyleDescriptor alloc] initWithID:kWQUIStyleIDLiquidGlass
+                                              title:@"Full Liquid Glass Capsules"
+                                           subtitle:@"Elevated frosted cards, luminous rims & expanded glass rails"
+                                             symbol:@"sparkles.rectangle.stack.fill"],
+            [[WQUIStyleDescriptor alloc] initWithID:kWQUIStyleIDCompactPro
+                                              title:@"Compact Pro Utility"
+                                           subtitle:@"Streamlined single-card header & high-density browsing"
+                                             symbol:@"list.bullet.rectangle.portrait.fill"],
+        ];
+    });
+    return list;
+}
+
+BOOL wq_theme_is_compact_pro(void)      { return [wq_theme_selected_ui_style_id() isEqualToString:kWQUIStyleIDCompactPro]; }
+BOOL wq_theme_is_full_liquid_glass(void){ return [wq_theme_selected_ui_style_id() isEqualToString:kWQUIStyleIDLiquidGlass]; }
+BOOL wq_theme_is_classic_stock(void)    { return [wq_theme_selected_id() isEqualToString:kWQThemeIDClassicNative]; }
+
+CGFloat wq_theme_card_border_width(void)
+{
+    if (wq_theme_is_classic_stock()) return 0.5;
+    if (wq_theme_is_full_liquid_glass()) return 1.0;
+    if (wq_theme_is_compact_pro()) return 0.5;
+    return 0.5;
+}
+
+CGFloat wq_theme_card_corner_radius(CGFloat baseRadius)
+{
+    if (wq_theme_is_compact_pro()) return MAX(12.0, baseRadius - 6.0);
+    if (wq_theme_is_full_liquid_glass()) return baseRadius + 4.0;
+    return baseRadius;
+}
+
+#pragma mark - Active Dynamic Palette
+
+UIColor *wq_theme_canvas_top(void)     { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->canvasTop, 1.0); }
+UIColor *wq_theme_canvas_mid(void)     { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->canvasMid, 1.0); }
+UIColor *wq_theme_canvas_cyan(void)    { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->canvasCyan, 1.0); }
+UIColor *wq_theme_canvas_edge(void)    { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->canvasEdge, 1.0); }
+UIColor *wq_theme_glass_tint(void)     { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->glassTint, s->glassAlpha); }
+UIColor *wq_theme_rim(void)            { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->rim, wq_theme_is_full_liquid_glass() ? MIN(1.0, s->rimAlpha + 0.12) : s->rimAlpha); }
+UIColor *wq_theme_rim_teal(void)       { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->rimTeal, s->rimTealAlpha); }
+UIColor *wq_theme_primary_text(void)   { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->primaryText, 1.0); }
+UIColor *wq_theme_secondary_text(void) { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->secondaryText, 1.0); }
+UIColor *wq_theme_detail_text(void)    { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->detailText, 1.0); }
+UIColor *wq_theme_hairline(void)       { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->hairline, s->hairlineAlpha); }
+UIColor *wq_theme_cta_text(void)       { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->ctaText, 1.0); }
+UIColor *wq_theme_active_pill(void)    { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->activePill, 1.0); }
+UIColor *wq_theme_accent(void)         { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->accent, 1.0); }
+UIColor *wq_theme_aurora_teal(void)    { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->auroraTeal, 1.0); }
+UIColor *wq_theme_solid_surface(void)  { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->solidSurface, 1.0); }
+UIColor *wq_theme_sheen_color(void)    { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->sheen, s->sheenAlpha); }
+
+static UIColor *wq_theme_pressed(void)     { return [wq_theme_accent() colorWithAlphaComponent:0.22]; }
+static UIColor *wq_theme_plain_cell(void)  { const WQThemeSpec *s = wq_active_spec(); return wq_rgb(s->plainCell, s->plainCellAlpha); }
+
+#pragma mark - Live Theme & UI Switching
+
+static void wq_theme_configure_nav_appearances(UINavigationBarAppearance **stdOut, UINavigationBarAppearance **edgeOut)
+{
+    UINavigationBarAppearance *navStandard = [UINavigationBarAppearance new];
+    [navStandard configureWithOpaqueBackground];
+    navStandard.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
+    navStandard.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.92];
+    navStandard.shadowColor = wq_theme_rim_teal();
+    navStandard.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+    navStandard.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+
+    UINavigationBarAppearance *navScrollEdge = [UINavigationBarAppearance new];
+    [navScrollEdge configureWithDefaultBackground];
+    navScrollEdge.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
+    navScrollEdge.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.86];
+    navScrollEdge.shadowColor = UIColor.clearColor;
+    navScrollEdge.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+    navScrollEdge.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
+
+    if (stdOut) *stdOut = navStandard;
+    if (edgeOut) *edgeOut = navScrollEdge;
+}
+
+static void wq_theme_refresh_view_hierarchy(UIView *view, UINavigationBarAppearance *navStd, UINavigationBarAppearance *navEdge)
+{
+    if (!view) return;
+    if ([view isKindOfClass:UINavigationBar.class]) {
+        UINavigationBar *bar = (UINavigationBar *)view;
+        bar.standardAppearance = navStd;
+        bar.compactAppearance = navStd;
+        bar.scrollEdgeAppearance = navEdge;
+        bar.compactScrollEdgeAppearance = navEdge;
+        bar.tintColor = wq_theme_primary_text();
+    } else if ([view isKindOfClass:UITableView.class]) {
+        UITableView *table = (UITableView *)view;
+        table.separatorColor = table.style == UITableViewStylePlain ? UIColor.clearColor : wq_theme_hairline();
+        for (UITableViewCell *cell in table.visibleCells) {
+            [cell setNeedsUpdateConfiguration];
+        }
+    } else if ([view isKindOfClass:UISwitch.class]) {
+        ((UISwitch *)view).onTintColor = wq_theme_accent();
+    } else if ([view isKindOfClass:UISearchBar.class]) {
+        ((UISearchBar *)view).tintColor = wq_theme_accent();
+    }
+    for (UIView *sub in view.subviews) {
+        wq_theme_refresh_view_hierarchy(sub, navStd, navEdge);
+    }
+}
+
+void wq_theme_apply_live_appearance(void)
+{
+    [UISwitch appearance].onTintColor = wq_theme_accent();
+    [UIProgressView appearance].progressTintColor = wq_theme_accent();
+    [UIProgressView appearance].trackTintColor = wq_theme_hairline();
+    [UIRefreshControl appearance].tintColor = wq_theme_accent();
+    [UIActivityIndicatorView appearance].color = wq_theme_accent();
+    [UITableView appearance].separatorColor = wq_theme_hairline();
+    [UISearchBar appearance].tintColor = wq_theme_accent();
+    [UITextField appearanceWhenContainedInInstancesOfClasses:@[UISearchBar.class]].textColor = wq_theme_primary_text();
+    [UILabel appearanceWhenContainedInInstancesOfClasses:@[UITableViewHeaderFooterView.class]].textColor = wq_theme_secondary_text();
+
+    UINavigationBarAppearance *navStd = nil;
+    UINavigationBarAppearance *navEdge = nil;
+    wq_theme_configure_nav_appearances(&navStd, &navEdge);
+
+    [UINavigationBar appearance].standardAppearance = navStd;
+    [UINavigationBar appearance].compactAppearance = navStd;
+    [UINavigationBar appearance].scrollEdgeAppearance = navEdge;
+    [UINavigationBar appearance].compactScrollEdgeAppearance = navEdge;
+    [UINavigationBar appearance].tintColor = wq_theme_primary_text();
+
+    if (!NSThread.isMainThread) return;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            window.tintColor = wq_theme_accent();
+            window.backgroundColor = wq_theme_canvas_edge();
+            wq_theme_refresh_view_hierarchy(window, navStd, navEdge);
+        }
+    }
+}
+
+void wq_theme_set_selected_id(NSString *themeID)
+{
+    NSString *normalized = wq_normalize_theme_id(themeID);
+    gCachedThemeID = normalized;
+    [NSUserDefaults.standardUserDefaults setObject:normalized forKey:kWQSelectedThemeIDKey];
+    void (^notify)(void) = ^{
+        wq_theme_apply_live_appearance();
+        [NSNotificationCenter.defaultCenter postNotificationName:WQThemeDidChangeNotification object:normalized];
+    };
+    if (NSThread.isMainThread) notify();
+    else dispatch_async(dispatch_get_main_queue(), notify);
+}
+
+void wq_theme_set_selected_ui_style_id(NSString *styleID)
+{
+    NSString *normalized = wq_normalize_ui_style_id(styleID);
+    gCachedUIStyleID = normalized;
+    [NSUserDefaults.standardUserDefaults setObject:normalized forKey:kWQSelectedUIStyleIDKey];
+    void (^notify)(void) = ^{
+        wq_theme_apply_live_appearance();
+        [NSNotificationCenter.defaultCenter postNotificationName:WQThemeDidChangeNotification object:normalized];
+    };
+    if (NSThread.isMainThread) notify();
+    else dispatch_async(dispatch_get_main_queue(), notify);
+}
 
 #pragma mark - Spring interaction
 
@@ -80,9 +480,51 @@ void wq_theme_add_spring_tap(UIControl *control)
 
 #pragma mark - Liquid Glass
 
+@interface WQThemeCardObserver : NSObject
+@property (nonatomic, weak) UIVisualEffectView *card;
+@property (nonatomic) BOOL interactive;
+@property (nonatomic) CGFloat baseRadius;
+@end
+
+@implementation WQThemeCardObserver
+- (instancetype)initWithCard:(UIVisualEffectView *)card interactive:(BOOL)interactive baseRadius:(CGFloat)baseRadius
+{
+    if ((self = [super init])) {
+        _card = card;
+        _interactive = interactive;
+        _baseRadius = baseRadius;
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(refresh)
+                                                   name:WQThemeDidChangeNotification
+                                                 object:nil];
+    }
+    return self;
+}
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+- (void)refresh
+{
+    UIVisualEffectView *card = _card;
+    if (!card) return;
+    UIVisualEffect *effect = wq_theme_glass_effect(_interactive);
+    card.effect = effect;
+    card.backgroundColor = effect ? UIColor.clearColor : wq_theme_solid_surface();
+    card.layer.cornerRadius = wq_theme_card_corner_radius(_baseRadius);
+    card.layer.borderWidth = wq_theme_card_border_width();
+    card.layer.borderColor = wq_theme_rim().CGColor;
+    UIView *sheen = [card.contentView viewWithTag:kWQThemeSheenTag];
+    if (sheen) sheen.backgroundColor = wq_theme_sheen_color();
+}
+@end
+
 UIVisualEffect *wq_theme_glass_effect(BOOL interactive)
 {
     if (UIAccessibilityIsReduceTransparencyEnabled()) return nil;
+    if (wq_theme_is_classic_stock()) {
+        return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark];
+    }
     UIGlassEffect *glass = [UIGlassEffect effectWithStyle:UIGlassEffectStyleRegular];
     glass.tintColor = wq_theme_glass_tint();
     glass.interactive = interactive;
@@ -94,33 +536,35 @@ UIVisualEffectView *wq_theme_make_glass_card(CGFloat cornerRadius, BOOL interact
     UIVisualEffect *effect = wq_theme_glass_effect(interactive);
     UIVisualEffectView *card = [[UIVisualEffectView alloc] initWithEffect:effect];
     card.translatesAutoresizingMaskIntoConstraints = NO;
-    card.layer.cornerRadius = cornerRadius;
+    card.layer.cornerRadius = wq_theme_card_corner_radius(cornerRadius);
     card.layer.cornerCurve = kCACornerCurveContinuous;
-    card.layer.borderWidth = 0.5;
+    card.layer.borderWidth = wq_theme_card_border_width();
     card.layer.borderColor = wq_theme_rim().CGColor;
     card.clipsToBounds = YES;
     if (!effect) card.backgroundColor = wq_theme_solid_surface();
-    // Dual-tone Duo surface: brushed-titanium sheen rgba(255,255,255,0.07)
-    // over the smoked graphite glass.
+
     UIView *sheen = [UIView new];
+    sheen.tag = kWQThemeSheenTag;
     sheen.userInteractionEnabled = NO;
     sheen.frame = card.contentView.bounds;
     sheen.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    sheen.backgroundColor = wq_rgb(0xFFFFFF, 0.07);
+    sheen.backgroundColor = wq_theme_sheen_color();
     [card.contentView insertSubview:sheen atIndex:0];
+
+    WQThemeCardObserver *obs = [[WQThemeCardObserver alloc] initWithCard:card interactive:interactive baseRadius:cornerRadius];
+    objc_setAssociatedObject(card, kWQThemeCardObserverKey, obs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return card;
 }
 
 UIButtonConfiguration *wq_theme_primary_button_configuration(void)
 {
-    // filledButtonConfiguration renders a crisp snow-white ice pill with deep
-    // glacier navy (#071A2B) text & SF Symbol across iOS 26/27 Liquid Glass UI.
     UIButtonConfiguration *cfg = [UIButtonConfiguration filledButtonConfiguration];
     UIColor *cta = wq_theme_cta_text();
-    cfg.baseBackgroundColor = wq_theme_accent();
+    UIColor *bg = wq_theme_accent();
+    cfg.baseBackgroundColor = bg;
     cfg.baseForegroundColor = cta;
-    cfg.background.backgroundColor = wq_theme_accent();
-    cfg.background.strokeColor = wq_rgb(0x5AC8FA, 0.65);
+    cfg.background.backgroundColor = bg;
+    cfg.background.strokeColor = [wq_theme_aurora_teal() colorWithAlphaComponent:0.65];
     cfg.background.strokeWidth = 0.85;
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
@@ -226,11 +670,11 @@ void wq_theme_update_pill_button(UIButton *button, BOOL active)
     UIButtonConfiguration *cfg = [button.configuration copy] ?: [UIButtonConfiguration glassButtonConfiguration];
     cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
     cfg.titleLineBreakMode = NSLineBreakByTruncatingTail;
-    cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_rgb(0x161920, 0.55);
+    cfg.baseBackgroundColor = active ? wq_theme_active_pill() : wq_theme_plain_cell();
     cfg.baseForegroundColor = active ? UIColor.whiteColor : wq_theme_secondary_text();
     cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 14, 7, 14);
     cfg.background.strokeWidth = active ? 1.0 : 0.75;
-    cfg.background.strokeColor = active ? wq_rgb(0x5AC8FA, 0.72) : wq_theme_rim_teal();
+    cfg.background.strokeColor = active ? [wq_theme_aurora_teal() colorWithAlphaComponent:0.72] : wq_theme_rim_teal();
     cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
         NSMutableDictionary *out = [incoming mutableCopy] ?: [NSMutableDictionary new];
         out[NSForegroundColorAttributeName] = active ? UIColor.whiteColor : wq_theme_secondary_text();
@@ -341,12 +785,10 @@ static void wq_theme_hook(Class cls, SEL sel, IMP replacement, IMP *original)
     Method method = class_getInstanceMethod(cls, sel);
     if (!method) return;
     *original = method_getImplementation(method);
-    // Inherited: add an override on cls so the superclass stays untouched.
     if (!class_addMethod(cls, sel, replacement, method_getTypeEncoding(method)))
         method_setImplementation(method, replacement);
 }
 
-// Every WQ Glass screen gets the iPhone Duo Liquid Glass canvas.
 static void wq_theme_view_did_load(UIViewController *vc, SEL cmd)
 {
     if (wq_orig_view_did_load) ((void (*)(id, SEL))wq_orig_view_did_load)(vc, cmd);
@@ -356,8 +798,6 @@ static void wq_theme_view_did_load(UIViewController *vc, SEL cmd)
     wq_theme_install_backdrop(vc);
 }
 
-// Rows of themed tables: both grouped cards and plain file-browser rows become
-// frosted glacier ice surfaces bordered by crystalline snow-silver specular rims.
 static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigurationState *state)
 {
     if (wq_orig_cell_update) ((void (*)(id, SEL, id))wq_orig_cell_update)(cell, cmd, state);
@@ -373,6 +813,8 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
     BOOL pressed = state.isHighlighted || (state.isSelected && !state.isEditing);
     BOOL isPlain = table.style == UITableViewStylePlain;
     BOOL reduceTransparency = UIAccessibilityIsReduceTransparencyEnabled();
+    BOOL compact = wq_theme_is_compact_pro();
+    BOOL fullGlass = wq_theme_is_full_liquid_glass();
     if (pressed) {
         background.backgroundColor = wq_theme_pressed();
     } else if (isPlain) {
@@ -380,11 +822,13 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
     } else {
         background.backgroundColor = reduceTransparency ? wq_theme_solid_surface() : wq_theme_glass_tint();
     }
-    background.strokeColor = pressed ? wq_rgb(0x5AC8FA, 0.58) : (isPlain ? wq_theme_rim_teal() : wq_theme_rim());
-    background.strokeWidth = pressed ? 1.0 : (isPlain ? 0.65 : 0.75);
+    background.strokeColor = pressed ? [wq_theme_aurora_teal() colorWithAlphaComponent:0.58] : (isPlain ? wq_theme_rim_teal() : wq_theme_rim());
+    background.strokeWidth = pressed ? 1.0 : (fullGlass ? 1.0 : (isPlain ? 0.65 : 0.75));
     if (isPlain) {
-        background.cornerRadius = 14.0;
-        background.backgroundInsets = NSDirectionalEdgeInsetsMake(3.0, 10.0, 3.0, 10.0);
+        background.cornerRadius = compact ? 10.0 : (fullGlass ? 18.0 : 14.0);
+        background.backgroundInsets = compact
+            ? NSDirectionalEdgeInsetsMake(1.5, 8.0, 1.5, 8.0)
+            : NSDirectionalEdgeInsetsMake(3.0, 10.0, 3.0, 10.0);
     }
     background.visualEffect = nil;
     cell.backgroundConfiguration = background;
@@ -396,6 +840,9 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
         if (!content.textProperties.color) content.textProperties.color = wq_theme_primary_text();
         if (content.secondaryText.length || content.secondaryAttributedText.length)
             content.secondaryTextProperties.color = wq_theme_secondary_text();
+        if (compact) {
+            content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
+        }
         cell.contentConfiguration = content;
     }
 }
@@ -408,41 +855,7 @@ void wq_theme_install(void)
                       (IMP)wq_theme_view_did_load, &wq_orig_view_did_load);
         wq_theme_hook(UITableViewCell.class, @selector(updateConfigurationUsingState:),
                       (IMP)wq_theme_cell_update, &wq_orig_cell_update);
-
-        [UISwitch appearance].onTintColor = wq_theme_accent();
-        [UIProgressView appearance].progressTintColor = wq_theme_accent();
-        [UIProgressView appearance].trackTintColor = wq_theme_hairline();
-        [UIRefreshControl appearance].tintColor = wq_theme_accent();
-        [UIActivityIndicatorView appearance].color = wq_theme_accent();
-        [UITableView appearance].separatorColor = wq_theme_hairline();
-        [UISearchBar appearance].tintColor = wq_theme_accent();
-        [UITextField appearanceWhenContainedInInstancesOfClasses:@[UISearchBar.class]].textColor = wq_theme_primary_text();
-        [UILabel appearanceWhenContainedInInstancesOfClasses:@[UITableViewHeaderFooterView.class]].textColor = wq_theme_secondary_text();
-
-        // Frosted sub-zero iPhone Duo Liquid Glass navigation bar: solid-backed
-        // dark blur prevents scrolled rows and section headers from bleeding
-        // through the title or search bar.
-        UINavigationBarAppearance *navStandard = [UINavigationBarAppearance new];
-        [navStandard configureWithOpaqueBackground];
-        navStandard.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
-        navStandard.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.92];
-        navStandard.shadowColor = wq_theme_rim_teal();
-        navStandard.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
-        navStandard.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
-
-        UINavigationBarAppearance *navScrollEdge = [UINavigationBarAppearance new];
-        [navScrollEdge configureWithDefaultBackground];
-        navScrollEdge.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemChromeMaterialDark];
-        navScrollEdge.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.86];
-        navScrollEdge.shadowColor = UIColor.clearColor;
-        navScrollEdge.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
-        navScrollEdge.largeTitleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
-
-        [UINavigationBar appearance].standardAppearance = navStandard;
-        [UINavigationBar appearance].compactAppearance = navStandard;
-        [UINavigationBar appearance].scrollEdgeAppearance = navScrollEdge;
-        [UINavigationBar appearance].compactScrollEdgeAppearance = navScrollEdge;
-        [UINavigationBar appearance].tintColor = wq_theme_primary_text();
+        wq_theme_apply_live_appearance();
     });
 }
 

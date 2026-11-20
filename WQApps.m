@@ -605,7 +605,20 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     [self buildAppsCornerRail];
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
     [self scan];
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)themeDidChange
+{
+    [self syncFilterPills];
+    [self updateAppsSummary];
+    [self.tableView reloadData];
 }
 
 - (void)buildAppsCornerRail

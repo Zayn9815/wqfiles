@@ -1,6 +1,6 @@
 //
 //  WQHealth.m
-//  WQ Glass
+//  WQ Files
 //
 
 #import "WQHealth.h"
@@ -8,7 +8,9 @@
 #import "WQAppsSupport.h"
 #import "WQLaunchServices.h"
 #import "WQLocalization.h"
+#import "WQAccessSafety.h"
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 
 @implementation WQHealthCheck
 @end
@@ -48,7 +50,7 @@ WQHealthState wq_health_names_state(BOOL namesLoaded, BOOL knownName, NSUInteger
     return WQHealthOK;
 }
 
-// Up to `count` folders spread over the list, not WQ Glass's own.
+// Up to `count` folders spread over the list, not WQ Files' own.
 static NSArray<NSString *> *wq_health_sample(NSArray<NSString *> *containers, NSString *home, NSUInteger count)
 {
     NSMutableArray *others = [NSMutableArray new];
@@ -60,17 +62,36 @@ static NSArray<NSString *> *wq_health_sample(NSArray<NSString *> *containers, NS
     return picked;
 }
 
+static NSString *wq_health_build(void)
+{
+#if TARGET_OS_SIMULATOR
+    // The simulator reports the Mac's build (e.g. 26B131), not an iOS one.
+    return @"";
+#endif
+    char build[32] = {0};
+    size_t len = sizeof build - 1;
+    return sysctlbyname("kern.osversion", build, &len, NULL, 0) == 0 ? @(build) : @"";
+}
+
+BOOL wq_worse_query_patched(void)
+{
+    return WQWorseQueryPatchedBuild(wq_health_build());
+}
+
 NSArray<WQHealthCheck *> *wq_health_run(void (^stage)(NSString *))
 {
     NSMutableArray<WQHealthCheck *> *checks = [NSMutableArray new];
     NSOperatingSystemVersion os = NSProcessInfo.processInfo.operatingSystemVersion;
     NSString *osText = [NSString stringWithFormat:@"%ld.%ld.%ld", (long)os.majorVersion, (long)os.minorVersion, (long)os.patchVersion];
+    NSString *build = wq_health_build();
+    BOOL patched = WQWorseQueryPatchedBuild(build);
+    if (patched) wq_log(@"health: build %@ is iOS 27.3 beta 2 or later, where Apple patched worse_query", build);
 
     // 1. App Group: without it no token can be asked for.
     if (stage) stage(WQLocalized(@"Checking the App Group…"));
     NSString *group = wq_app_group();
     [checks addObject:wq_check(@"App Group", group ? WQHealthOK : WQHealthFailed,
-        group ?: WQLocalized(@"Missing: the tool that signed WQ Glass removed it. Re-install with AltStore, SideStore or Impactor.")) ];
+        group ?: WQLocalized(@"Missing: the tool that signed WQ Files removed it. Re-install with AltStore, SideStore or Impactor.")) ];
 
     // 2. Other apps' folders.
     if (stage) stage(WQLocalized(@"Finding other apps' folders…"));
@@ -84,7 +105,7 @@ NSArray<WQHealthCheck *> *wq_health_run(void (^stage)(NSString *))
     else if (!containers)
         folders = wq_check(@"Other apps' folders", WQHealthFailed, WQLocalized(@"They can't be found on this device (see Log for the reason)."));
     else if (!sample.count)
-        folders = wq_check(@"Other apps' folders", WQHealthFailed, WQLocalizedFormat(@"Only WQ Glass's own folder was found (%lu in total).", (unsigned long)containers.count));
+        folders = wq_check(@"Other apps' folders", WQHealthFailed, WQLocalizedFormat(@"Only WQ Files' own folder was found (%lu in total).", (unsigned long)containers.count));
     else
         folders = wq_check(@"Other apps' folders", WQHealthOK, WQLocalizedFormat(@"%lu found.", (unsigned long)containers.count));
     [checks addObject:folders];
@@ -105,6 +126,12 @@ NSArray<WQHealthCheck *> *wq_health_run(void (^stage)(NSString *))
                               (unsigned long)sample.count, [refused componentsJoinedByString:@", "]);
     [checks addObject:wq_check(@"Sandbox access", access,
         access == WQHealthSkipped ? WQLocalized(@"Nothing to check.")
+        // On a supported iOS the technique works; a failure there is local
+        // (access cache, another app in the same App Group), not "iOS".
+        : access == WQHealthFailed && patched
+            ? WQLocalizedFormat(@"None of %lu sampled app folders could be opened. Apple patched worse_query, the sandbox escape WQ Files is built on, in iOS 27.3 beta 2, so it can't work on this build (%@). It works up to iOS 27.3 beta 1 and on iOS 26.", (unsigned long)sample.count, build)
+        : access == WQHealthFailed && (os.majorVersion == 26 || os.majorVersion == 27)
+            ? WQLocalizedFormat(@"None of %lu sampled app folders could be opened, even after repairing the access cache. Another app that shares WQ Files' App Group (for example in LiveContainer) can get in the way: close it, then tap Reset Access Cache and Try Again. If it stays like this, send the Log.", (unsigned long)sample.count)
         : access == WQHealthFailed ? WQLocalizedFormat(@"None of %lu sampled app folders could be opened: the sandbox escape doesn't work on iOS %@.", (unsigned long)sample.count, osText)
         : WQLocalizedFormat(@"%lu of %lu sampled app folders open.", (unsigned long)opened, (unsigned long)sample.count))];
 
@@ -134,9 +161,11 @@ NSArray<WQHealthCheck *> *wq_health_run(void (^stage)(NSString *))
     gBundlesReachable = bundles;
 
     // 5. iOS version.
-    BOOL tested = os.majorVersion == 26 || os.majorVersion == 27;
+    BOOL tested = (os.majorVersion == 26 || os.majorVersion == 27) && !patched;
     [checks addObject:wq_check(@"iOS version", tested ? WQHealthOK : WQHealthWarning,
-        tested ? osText : WQLocalizedFormat(@"iOS %@ hasn't been tested with this version of WQ Glass.", osText))];
+        tested ? osText
+        : patched ? WQLocalizedFormat(@"iOS %@ (%@): Apple patched worse_query in iOS 27.3 beta 2. Folders that still open here may stop opening.", osText, build)
+        : WQLocalizedFormat(@"iOS %@ hasn't been tested with this version of WQ Files.", osText))];
 
     NSMutableArray *summary = [NSMutableArray new];
     for (WQHealthCheck *c in checks) [summary addObject:[NSString stringWithFormat:@"%@=%@", c.key,

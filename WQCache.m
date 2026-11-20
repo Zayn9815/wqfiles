@@ -259,6 +259,70 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     return YES;
 }
 
+#pragma mark - Custom targets (ported from upstream)
+
+static NSString *const kWQCacheCustomTargetsPref = @"WQCleanerCustomTargets";
+
+static NSArray<NSDictionary *> *wq_cache_custom_targets(void)
+{
+    NSMutableArray *out = [NSMutableArray new];
+    id stored = [NSUserDefaults.standardUserDefaults objectForKey:kWQCacheCustomTargetsPref];
+    if (![stored isKindOfClass:NSArray.class]) return out;
+    for (id t in stored)
+        if ([t isKindOfClass:NSDictionary.class] && [t[@"bundle"] isKindOfClass:NSString.class] &&
+            [(NSString *)t[@"bundle"] length] && WQCacheCustomRelativeValid(t[@"path"])) [out addObject:t];
+    return out;
+}
+
+BOOL wq_cache_custom_target_contains(NSString *bundleID, NSString *relative)
+{
+    for (NSDictionary *t in wq_cache_custom_targets())
+        if ([t[@"bundle"] isEqualToString:bundleID] && [t[@"path"] isEqualToString:relative]) return YES;
+    return NO;
+}
+
+NSDictionary *wq_cache_custom_target_for_path(NSString *path)
+{
+    NSString *container = nil;
+    NSString *relative = WQCacheCustomRelativeForPath(path, &container);
+    if (!relative) return nil;
+    for (NSDictionary *t in wq_cache_custom_targets())
+        if ([t[@"path"] isEqualToString:relative] && [t[@"container"] isEqual:container]) return t;
+    return nil;
+}
+
+void wq_cache_custom_target_add(NSString *bundleID, NSString *appName, NSString *container, NSString *relative, BOOL isFile,
+                                BOOL autoSelect)
+{
+    if (!bundleID.length || !WQCacheCustomRelativeValid(relative) || wq_cache_custom_target_contains(bundleID, relative)) return;
+    NSMutableArray *targets = [wq_cache_custom_targets() mutableCopy];
+    [targets addObject:@{@"bundle": bundleID, @"app": appName ?: bundleID, @"container": container ?: @"",
+                         @"path": relative, @"file": @(isFile), @"auto": @(autoSelect)}];
+    [NSUserDefaults.standardUserDefaults setObject:targets forKey:kWQCacheCustomTargetsPref];
+    wq_log(@"cache cleaner: added %@ of %@", relative, bundleID);
+}
+
+void wq_cache_custom_target_set_auto_select(NSString *bundleID, NSString *relative, BOOL autoSelect)
+{
+    NSMutableArray *targets = [NSMutableArray new];
+    for (NSDictionary *t in wq_cache_custom_targets()) {
+        if ([t[@"bundle"] isEqualToString:bundleID] && [t[@"path"] isEqualToString:relative]) {
+            NSMutableDictionary *changed = [t mutableCopy];
+            changed[@"auto"] = @(autoSelect);
+            [targets addObject:changed];
+        } else [targets addObject:t];
+    }
+    [NSUserDefaults.standardUserDefaults setObject:targets forKey:kWQCacheCustomTargetsPref];
+}
+
+void wq_cache_custom_target_remove(NSString *bundleID, NSString *relative)
+{
+    NSMutableArray *targets = [NSMutableArray new];
+    for (NSDictionary *t in wq_cache_custom_targets())
+        if (!([t[@"bundle"] isEqualToString:bundleID] && [t[@"path"] isEqualToString:relative])) [targets addObject:t];
+    [NSUserDefaults.standardUserDefaults setObject:targets forKey:kWQCacheCustomTargetsPref];
+}
+
 // Row: selection circle, icon, name with "cache · temp" below, size in a
 // fixed right-hand column so long names never push it out.
 @interface WQCleanerCell : UITableViewCell
@@ -450,7 +514,20 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     self.definesPresentationContext = YES;
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
     [self scan];
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)themeDidChange
+{
+    [self syncFilterPills];
+    [self updateButtons];
+    [self.tableView reloadData];
 }
 
 - (void)buildCacheCornerRail

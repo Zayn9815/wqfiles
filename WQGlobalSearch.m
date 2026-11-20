@@ -496,7 +496,29 @@ static void wq_spotlight_warm_index_async(void)
     ]];
 
     [self loadEmptyState];
+    [self applyThemeLive];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyThemeLive) name:WQThemeDidChangeNotification object:nil];
     wq_spotlight_warm_index_async();
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)applyThemeLive
+{
+    _backdrop.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.80];
+    _panel.layer.borderWidth = wq_theme_card_border_width();
+    _panel.layer.borderColor = wq_theme_rim().CGColor;
+    _searchField.textColor = wq_theme_primary_text();
+    _searchField.tintColor = wq_theme_accent();
+    _searchField.attributedPlaceholder = [[NSAttributedString alloc]
+        initWithString:WQLocalized(@"Search files, apps, caches…")
+            attributes:@{NSForegroundColorAttributeName: wq_theme_secondary_text()}];
+    _hintLabel.textColor = wq_theme_secondary_text();
+    _tableView.separatorColor = wq_theme_hairline();
+    [_tableView reloadData];
 }
 
 + (void)wq_prewarmOnLaunch
@@ -733,8 +755,11 @@ static void wq_spotlight_warm_index_async(void)
     WQSpotlightCell *cell = [tableView dequeueReusableCellWithIdentifier:@"spot" forIndexPath:indexPath];
     WQSpotlightResult *r = _sections[(NSUInteger)indexPath.section][(NSUInteger)indexPath.row];
     cell.titleLabel.text = r.title;
+    cell.titleLabel.textColor = wq_theme_primary_text();
     cell.subtitleLabel.text = r.subtitle;
+    cell.subtitleLabel.textColor = wq_theme_secondary_text();
     cell.sizeLabel.text = r.detailBadge ?: @"";
+    cell.sizeLabel.textColor = wq_theme_detail_text();
     if (r.bundleID.length) {
         cell.iconView.image = wq_app_icon(r.bundleID) ?: wq_glacier_symbol_badge(r.symbolName, 34.0);
     } else {

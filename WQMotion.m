@@ -701,13 +701,10 @@ static void wq_motion_tint_focal_rim(UIView *view, CGFloat focus)
 {
     UIView *rim = wq_motion_rim_view(view, 1);
     if (!rim) return;
-    // Smoothly brighten rim from subtle graphite-sapphire toward luminous silver-ice at focal center.
     CGFloat t = MAX(0.0, MIN(1.0, focus));
-    CGFloat r = 0.62 + 0.30 * t;
-    CGFloat g = 0.84 + 0.14 * t;
-    CGFloat b = 1.0;
-    CGFloat a = 0.18 + 0.28 * t * t;
-    rim.layer.borderColor = [UIColor colorWithRed:r green:g blue:b alpha:a].CGColor;
+    CGFloat a = 0.18 + 0.30 * t * t;
+    UIColor *base = t > 0.65 ? wq_theme_rim() : wq_theme_rim_teal();
+    rim.layer.borderColor = [base colorWithAlphaComponent:a].CGColor;
 }
 
 void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView *> *views)

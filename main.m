@@ -45,6 +45,9 @@
 #import "WQTrash.h"
 #import "WQArchive.h"
 #import "WQSyntax.h"
+#import "WQWebServer.h"
+#import "WQInspector.h"
+#import "WQScanTask.h"
 #import "WQMediaStream.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -1416,6 +1419,8 @@ static NSString *wq_info_date(struct timespec ts)
     }
     [menuItems addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Copy Path") image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil
                           handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = path; }]];
+    [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Share on Wi-Fi…") image:[UIImage systemImageNamed:@"wifi"] identifier:nil
+                          handler:^(UIAction *__unused a) { [weakSelf shareOnWiFi]; }]];
     [menuItems addObject:[UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
         WQDirViewController *folder = weakSelf;
         if (!folder) { completion(@[]); return; }
@@ -1502,6 +1507,8 @@ static NSString *wq_info_date(struct timespec ts)
     [self restoreRightItems];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateToolbar)
                                                name:kWQMoveChanged object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyThemeLive)
+                                               name:WQThemeDidChangeNotification object:nil];
     [self updateToolbar];
     [self updateHeader];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -1515,6 +1522,35 @@ static NSString *wq_info_date(struct timespec ts)
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     [self reload];
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)applyThemeLive
+{
+    _pathLabel.textColor = wq_theme_secondary_text();
+    _pathCountLabel.textColor = wq_theme_aurora_teal();
+    self.tableView.separatorColor = wq_theme_hairline();
+    [self.tableView reloadData];
+}
+
+- (void)shareOnWiFi
+{
+    NSArray<WQWebEntry *> *entries = nil;
+    if (_labels && _all.count) {
+        NSMutableArray<WQWebEntry *> *list = [NSMutableArray new];
+        for (WQItem *item in _all) {
+            WQWebEntry *entry = [WQWebEntry new];
+            entry.path = item.path;
+            entry.label = item.label;
+            [list addObject:entry];
+        }
+        entries = list;
+    }
+    wq_present_wifi_sharing(self, _path, _baseTitle ?: _path.lastPathComponent, entries, !self.readOnly && !_backupStorage);
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -4443,22 +4479,24 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
     UIVisualEffectView *_effect;
     CAGradientLayer *_sheen;
     CAGradientLayer *_bottomRim;
+    CGFloat _baseRadius;
 }
 
 - (instancetype)initWithRadius:(CGFloat)radius
 {
     if ((self = [super initWithFrame:CGRectZero])) {
+        _baseRadius = radius;
+        CGFloat resolvedRadius = wq_theme_card_corner_radius(radius);
         self.translatesAutoresizingMaskIntoConstraints = NO;
-        self.layer.cornerRadius = radius;
+        self.layer.cornerRadius = resolvedRadius;
         self.layer.cornerCurve = kCACornerCurveContinuous;
         self.clipsToBounds = YES;
         self.backgroundColor = [UIColor clearColor];
 
-        // Native iOS 26 Liquid Glass, tinted frosty glacier ice-blue.
         _effect = [[UIVisualEffectView alloc] initWithEffect:nil];
         _effect.translatesAutoresizingMaskIntoConstraints = NO;
         _effect.userInteractionEnabled = NO;
-        _effect.layer.cornerRadius = radius;
+        _effect.layer.cornerRadius = resolvedRadius;
         _effect.layer.cornerCurve = kCACornerCurveContinuous;
         [self addSubview:_effect];
         [NSLayoutConstraint activateConstraints:@[
@@ -4468,26 +4506,15 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
             [_effect.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
         ]];
 
-        // Layered diagonal snow-silver & icy-teal refraction sheen across the prism face.
         _sheen = [CAGradientLayer layer];
         _sheen.startPoint = CGPointMake(0.0, 0.0);
         _sheen.endPoint = CGPointMake(0.95, 0.90);
-        _sheen.colors = @[
-            (id)[UIColor colorWithRed:0.898 green:0.951 blue:1.000 alpha:0.22].CGColor,
-            (id)[UIColor colorWithRed:0.575 green:0.796 blue:1.000 alpha:0.06].CGColor,
-            (id)[UIColor colorWithRed:0.575 green:0.796 blue:1.000 alpha:0.0].CGColor,
-        ];
         _sheen.locations = @[@0.0, @0.34, @0.72];
         [self.layer addSublayer:_sheen];
 
-        // Secondary bottom-edge optical rim reflection in icy-teal.
         _bottomRim = [CAGradientLayer layer];
         _bottomRim.startPoint = CGPointMake(0.5, 1.0);
         _bottomRim.endPoint = CGPointMake(0.5, 0.72);
-        _bottomRim.colors = @[
-            (id)[UIColor colorWithRed:0.575 green:0.796 blue:1.000 alpha:0.18].CGColor,
-            (id)[UIColor colorWithRed:0.575 green:0.796 blue:1.000 alpha:0.0].CGColor,
-        ];
         [self.layer addSublayer:_bottomRim];
 
         _contentView = [UIView new];
@@ -4506,18 +4533,43 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
                            withAction:@selector(updateBorder)];
         [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateMaterial)
             name:UIAccessibilityReduceTransparencyStatusDidChangeNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange)
+            name:WQThemeDidChangeNotification object:nil];
     }
     return self;
 }
 
-// Reduce Transparency: an opaque glacier slate surface instead of glass.
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)themeDidChange
+{
+    CGFloat resolvedRadius = wq_theme_card_corner_radius(_baseRadius);
+    self.layer.cornerRadius = resolvedRadius;
+    _effect.layer.cornerRadius = resolvedRadius;
+    [self updateMaterial];
+    [self updateBorder];
+}
+
 - (void)updateMaterial
 {
     UIVisualEffect *glass = wq_theme_glass_effect(NO);
     _effect.effect = glass;
     self.backgroundColor = glass ? [UIColor clearColor] : wq_theme_solid_surface();
-    _sheen.hidden = glass == nil;
-    _bottomRim.hidden = glass == nil;
+    BOOL showSheen = glass != nil && !wq_theme_is_classic_stock();
+    _sheen.hidden = !showSheen;
+    _bottomRim.hidden = !showSheen;
+    _sheen.colors = @[
+        (id)[wq_theme_rim() colorWithAlphaComponent:0.20].CGColor,
+        (id)[wq_theme_rim_teal() colorWithAlphaComponent:0.08].CGColor,
+        (id)[UIColor clearColor].CGColor,
+    ];
+    _bottomRim.colors = @[
+        (id)[wq_theme_rim_teal() colorWithAlphaComponent:0.18].CGColor,
+        (id)[UIColor clearColor].CGColor,
+    ];
 }
 
 - (void)layoutSubviews
@@ -4529,10 +4581,7 @@ static NSArray<UIColor *> *WQPrismTone(NSString *tone)
 
 - (void)updateBorder
 {
-    // Crisp crystalline snow-silver specular rim.
-    CGFloat scale = self.traitCollection.displayScale;
-    if (scale <= 0) scale = 3.0;
-    self.layer.borderWidth = MAX(0.75, 2.0 / scale);
+    self.layer.borderWidth = wq_theme_card_border_width();
     self.layer.borderColor = wq_theme_rim().CGColor;
 }
 
@@ -5099,6 +5148,14 @@ static void wq_apply_design(void);
     [self updateHealthUI];
 
     __weak typeof(self) weakSelf = self;
+    [NSNotificationCenter.defaultCenter addObserverForName:WQThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *__unused n) {
+        WQPrismHomeViewController *me = weakSelf;
+        if (!me || !me.isViewLoaded) return;
+        [me updateHealthUI];
+        [me rebuildContainers];
+        [me rebuildFavorites];
+        [me rebuildSystem];
+    }];
     dispatch_async(wq_io(), ^{
         NSString *recovery = wq_recover_interrupted_restore();
         if (recovery) {
@@ -6530,6 +6587,123 @@ static void wq_confirm_reset_access_cache(UIViewController *host, void (^done)(v
 static NSString *const kWQTroubleshootingFooter =
     @"Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Glass's own cache folder in its App Group; nothing is deleted.";
 
+#pragma mark - Appearance & Theme Studio Cells
+
+@interface WQThemePreviewCell : UITableViewCell
+- (void)configureWithDescriptor:(WQThemeDescriptor *)desc selected:(BOOL)selected;
+@end
+
+@implementation WQThemePreviewCell {
+    UIView *_swatchBox;
+    CAGradientLayer *_swatchGrad;
+    UIView *_accentDot;
+    UIView *_secondaryDot;
+    UILabel *_titleLabel;
+    UILabel *_subtitleLabel;
+    UIImageView *_checkView;
+}
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier
+{
+    if ((self = [super initWithStyle:style reuseIdentifier:reuseIdentifier])) {
+        self.clipsToBounds = YES;
+        self.contentView.clipsToBounds = YES;
+
+        _swatchBox = [UIView new];
+        _swatchBox.translatesAutoresizingMaskIntoConstraints = NO;
+        _swatchBox.layer.cornerRadius = 11.0;
+        _swatchBox.layer.cornerCurve = kCACornerCurveContinuous;
+        _swatchBox.layer.borderWidth = 1.0;
+        _swatchBox.clipsToBounds = YES;
+
+        _swatchGrad = [CAGradientLayer layer];
+        _swatchGrad.startPoint = CGPointMake(0.0, 0.0);
+        _swatchGrad.endPoint = CGPointMake(1.0, 1.0);
+        [_swatchBox.layer addSublayer:_swatchGrad];
+
+        _accentDot = [UIView new];
+        _accentDot.translatesAutoresizingMaskIntoConstraints = NO;
+        _accentDot.layer.cornerRadius = 5.5;
+        [_swatchBox addSubview:_accentDot];
+
+        _secondaryDot = [UIView new];
+        _secondaryDot.translatesAutoresizingMaskIntoConstraints = NO;
+        _secondaryDot.layer.cornerRadius = 4.5;
+        [_swatchBox addSubview:_secondaryDot];
+
+        _titleLabel = [UILabel new];
+        _titleLabel.font = [UIFont systemFontOfSize:15.5 weight:UIFontWeightSemibold];
+        _titleLabel.numberOfLines = 1;
+
+        _subtitleLabel = [UILabel new];
+        _subtitleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+        _subtitleLabel.numberOfLines = 2;
+
+        UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[_titleLabel, _subtitleLabel]];
+        textStack.translatesAutoresizingMaskIntoConstraints = NO;
+        textStack.axis = UILayoutConstraintAxisVertical;
+        textStack.spacing = 2;
+
+        _checkView = [UIImageView new];
+        _checkView.translatesAutoresizingMaskIntoConstraints = NO;
+        _checkView.contentMode = UIViewContentModeScaleAspectFit;
+
+        [self.contentView addSubview:_swatchBox];
+        [self.contentView addSubview:textStack];
+        [self.contentView addSubview:_checkView];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_swatchBox.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:14],
+            [_swatchBox.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+            [_swatchBox.widthAnchor constraintEqualToConstant:44],
+            [_swatchBox.heightAnchor constraintEqualToConstant:36],
+            [_accentDot.widthAnchor constraintEqualToConstant:11],
+            [_accentDot.heightAnchor constraintEqualToConstant:11],
+            [_accentDot.leadingAnchor constraintEqualToAnchor:_swatchBox.leadingAnchor constant:8],
+            [_accentDot.centerYAnchor constraintEqualToAnchor:_swatchBox.centerYAnchor],
+            [_secondaryDot.widthAnchor constraintEqualToConstant:9],
+            [_secondaryDot.heightAnchor constraintEqualToConstant:9],
+            [_secondaryDot.leadingAnchor constraintEqualToAnchor:_accentDot.trailingAnchor constant:6],
+            [_secondaryDot.centerYAnchor constraintEqualToAnchor:_swatchBox.centerYAnchor],
+            [_checkView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-14],
+            [_checkView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+            [_checkView.widthAnchor constraintEqualToConstant:22],
+            [_checkView.heightAnchor constraintEqualToConstant:22],
+            [textStack.leadingAnchor constraintEqualToAnchor:_swatchBox.trailingAnchor constant:12],
+            [textStack.trailingAnchor constraintLessThanOrEqualToAnchor:_checkView.leadingAnchor constant:-10],
+            [textStack.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
+            [textStack.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-10],
+        ]];
+    }
+    return self;
+}
+
+- (void)layoutSubviews
+{
+    [super layoutSubviews];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    _swatchGrad.frame = _swatchBox.bounds;
+    [CATransaction commit];
+}
+
+- (void)configureWithDescriptor:(WQThemeDescriptor *)desc selected:(BOOL)selected
+{
+    _swatchGrad.colors = @[(id)desc.canvasTop.CGColor, (id)desc.canvasMid.CGColor];
+    _swatchBox.layer.borderColor = selected ? desc.accent.CGColor : desc.rim.CGColor;
+    _swatchBox.layer.borderWidth = selected ? 1.5 : 0.75;
+    _accentDot.backgroundColor = desc.accent;
+    _secondaryDot.backgroundColor = desc.secondaryAccent;
+    _titleLabel.text = desc.title;
+    _titleLabel.textColor = wq_theme_primary_text();
+    _subtitleLabel.text = desc.subtitle;
+    _subtitleLabel.textColor = wq_theme_secondary_text();
+    _checkView.image = [UIImage systemImageNamed:selected ? @"checkmark.circle.fill" : @"circle"];
+    _checkView.tintColor = selected ? desc.accent : [wq_theme_secondary_text() colorWithAlphaComponent:0.45];
+}
+
+@end
+
 #pragma mark - WQ Prism settings
 
 @implementation WQPrismSettingsViewController {
@@ -6549,8 +6723,21 @@ static NSString *const kWQTroubleshootingFooter =
                                                                                style:UIBarButtonItemStylePlain
                                                                               target:self
                                                                               action:@selector(done)];
+    [self.tableView registerClass:WQThemePreviewCell.class forCellReuseIdentifier:@"theme-preview"];
     [self installBrandHeader];
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)themeDidChange
+{
+    [self installBrandHeader];
+    [self.tableView reloadData];
 }
 
 - (void)installBrandHeader
@@ -6638,22 +6825,34 @@ static NSString *const kWQTroubleshootingFooter =
     }
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 3; }
+// 0: Appearance & Theme Studio (5 themes), 1: UI Layout & Chrome Preset (3 styles),
+// 2: Preferences (switches + Wi-Fi password + Inspectors), 3: App Info, 4: Troubleshooting
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 5; }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return section == 0 ? 6 : section == 1 ? 3 : 1;
+    if (section == 0) return (NSInteger)wq_theme_all_themes().count;
+    if (section == 1) return (NSInteger)wq_theme_all_ui_styles().count;
+    if (section == 2) return 8;
+    if (section == 3) return 3;
+    return 1;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 2 ? WQLocalized(@"Troubleshooting") : nil;
+    if (section == 0) return WQLocalized(@"Appearance & Theme Studio");
+    if (section == 1) return WQLocalized(@"UI Layout & Chrome Preset");
+    if (section == 2) return WQLocalized(@"Preferences");
+    if (section == 4) return WQLocalized(@"Troubleshooting");
+    return nil;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    if (section == 2) return WQLocalized(kWQTroubleshootingFooter);
-    if (section != 0) return nil;
+    if (section == 0) return WQLocalized(@"Tap any theme to switch colors, Liquid Glass surfaces, and accents live with zero restart.");
+    if (section == 1) return WQLocalized(@"Adapts card rims, header chrome, and row density alongside your active color theme.");
+    if (section == 4) return WQLocalized(kWQTroubleshootingFooter);
+    if (section != 2) return nil;
     return [NSString stringWithFormat:@"%@\n\n%@\n\n%@",
             WQLocalized(@"Allow Deleting: when off, nothing can be deleted: no Delete or swipe to delete in folders and backups, no Clear Data in Apps and no cleaning in the Cache Cleaner. Saving, moving and restoring still work.\n\nShow Item Counts: shows how many items each folder holds. Every subfolder has to be listed for this, which slows down folders with many subfolders, especially in other apps' data."),
             WQLocalized(@"Keep Data Before Restore: restoring an app or file backup first backs up what's there now, so a failed restore can be undone. When off, that backup is deleted once the restore succeeded."),
@@ -6662,18 +6861,61 @@ static NSString *const kWQTroubleshootingFooter =
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    if (indexPath.section == 0) {
+        WQThemePreviewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"theme-preview" forIndexPath:indexPath];
+        WQThemeDescriptor *desc = wq_theme_all_themes()[(NSUInteger)indexPath.row];
+        BOOL active = [desc.themeID isEqualToString:wq_theme_selected_id()];
+        [cell configureWithDescriptor:desc selected:active];
+        return cell;
+    }
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"prism-settings"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"prism-settings"];
     cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if (indexPath.section == 0) {
+
+    if (indexPath.section == 1) {
+        WQUIStyleDescriptor *style = wq_theme_all_ui_styles()[(NSUInteger)indexPath.row];
+        BOOL active = [style.styleID isEqualToString:wq_theme_selected_ui_style_id()];
+        c.text = style.title;
+        c.secondaryText = style.subtitle;
+        c.secondaryTextProperties.numberOfLines = 2;
+        c.image = [UIImage systemImageNamed:style.symbolName];
+        c.imageProperties.tintColor = active ? wq_theme_accent() : wq_theme_secondary_text();
+        cell.contentConfiguration = c;
+        UIImageView *chk = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:active ? @"checkmark.circle.fill" : @"circle"]];
+        chk.tintColor = active ? wq_theme_accent() : [wq_theme_secondary_text() colorWithAlphaComponent:0.45];
+        cell.accessoryView = chk;
+        return cell;
+    }
+    if (indexPath.section == 2) {
+        if (indexPath.row == 6) {
+            c.text = WQLocalizedNullable(@"Sharing Password");
+            c.secondaryText = wq_sharing_password().length ? WQLocalized(@"Fixed password set") : WQLocalized(@"Random each session");
+            c.image = [UIImage systemImageNamed:@"wifi"];
+            c.imageProperties.tintColor = wq_theme_accent();
+            cell.contentConfiguration = c;
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return cell;
+        }
+        if (indexPath.row == 7) {
+            NSArray *installed = wq_inspectors_in(wq_inspectors_folder(), NULL);
+            c.text = WQLocalizedNullable(@"Inspectors");
+            c.secondaryText = WQLocalizedFormat(@"%lu installed", (unsigned long)installed.count);
+            c.image = [UIImage systemImageNamed:@"wand.and.stars"];
+            c.imageProperties.tintColor = wq_theme_accent();
+            cell.contentConfiguration = c;
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            return cell;
+        }
         NSArray<NSString *> *titles = @[@"Allow Deleting", @"Show Item Counts", @"Keep Data Before Restore", @"Reopen Last Folder", @"Check for Updates", @"New Design"];
         NSArray<NSString *> *symbols = @[@"trash.slash", @"number", @"clock.arrow.circlepath", @"arrow.uturn.forward", @"arrow.down.circle", @"paintbrush"];
         c.text = WQLocalizedNullable(titles[(NSUInteger)indexPath.row]);
         c.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
         UISwitch *toggle = [UISwitch new];
+        toggle.onTintColor = wq_theme_accent();
         toggle.on = indexPath.row == 1 ? wq_show_item_counts()
                    : indexPath.row == 2 ? wq_keep_before_restore()
                    : indexPath.row == 3 ? ![defaults boolForKey:kWQReopenOffPref]
@@ -6689,7 +6931,6 @@ static NSString *const kWQTroubleshootingFooter =
                 if (!on) [defaults removeObjectForKey:kWQLastFolderPref];
             } else if (indexPath.row == 4) [defaults setBool:!on forKey:kWQUpdateCheckOffPref];
             else if (indexPath.row == 5) {
-                // Settings is a sheet over the tabs: close it, then swap the screens.
                 wq_set_prism_enabled(on);
                 [self dismissViewControllerAnimated:YES completion:^{ wq_apply_design(); }];
             }
@@ -6700,7 +6941,7 @@ static NSString *const kWQTroubleshootingFooter =
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         return cell;
     }
-    if (indexPath.section == 2) {
+    if (indexPath.section == 4) {
         c.text = WQLocalizedNullable(@"Reset Access Cache");
         c.image = [UIImage systemImageNamed:@"arrow.counterclockwise.circle"];
         cell.contentConfiguration = c;
@@ -6722,9 +6963,38 @@ static NSString *const kWQTroubleshootingFooter =
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 0) return;
+    if (indexPath.section == 0) {
+        WQThemeDescriptor *desc = wq_theme_all_themes()[(NSUInteger)indexPath.row];
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        wq_theme_set_selected_id(desc.themeID);
+        UITableViewCell *picked = [tableView cellForRowAtIndexPath:indexPath];
+        if (picked) wq_motion_pop(picked);
+        return;
+    }
+    if (indexPath.section == 1) {
+        WQUIStyleDescriptor *style = wq_theme_all_ui_styles()[(NSUInteger)indexPath.row];
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        wq_theme_set_selected_ui_style_id(style.styleID);
+        UITableViewCell *picked = [tableView cellForRowAtIndexPath:indexPath];
+        if (picked) wq_motion_pop(picked);
+        return;
+    }
+    if (indexPath.section == 2) {
+        if (indexPath.row == 6) {
+            wq_haptic_selection();
+            __weak typeof(self) weakSelf = self;
+            wq_edit_sharing_password(self, ^{ [weakSelf.tableView reloadData]; });
+        } else if (indexPath.row == 7) {
+            wq_haptic_selection();
+            NSString *folder = wq_inspectors_folder();
+            [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
+            WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:folder title:WQLocalizedNullable(@"Inspectors")];
+            [self.navigationController pushViewController:dir animated:YES];
+        }
+        return;
+    }
     wq_haptic_selection();
-    if (indexPath.section == 2) { wq_confirm_reset_access_cache(self, nil); return; }
+    if (indexPath.section == 4) { wq_confirm_reset_access_cache(self, nil); return; }
     if (indexPath.row == 0) {
         [self.navigationController pushViewController:[WQLanguageViewController new] animated:YES];
     } else if (indexPath.row == 1) {
@@ -7027,27 +7297,8 @@ static NSString *const kWQTroubleshootingFooter =
     self.viewControllers = @[homeNav, appsNav, cleanNav, vaultNav];
     self.selectedIndex = 0;
     self.delegate = self;
-    // iOS 26 floating Glacier Liquid Glass tab bar: luminous arctic teal active
-    // selection pill (#0E5A74) with snow-white active tab and polar-blue (#B0E2FF)
-    // inactive tabs; shrinks while scrolling down so glacial content refracts beneath.
-    UITabBarAppearance *tabAppearance = [UITabBarAppearance new];
-    [tabAppearance configureWithDefaultBackground];
-    tabAppearance.backgroundColor = [UIColor colorWithRed:0.119 green:0.129 blue:0.153 alpha:0.46];
-    tabAppearance.selectionIndicatorTintColor = [wq_theme_active_pill() colorWithAlphaComponent:0.94];
-    for (UITabBarItemAppearance *item in @[
-        tabAppearance.stackedLayoutAppearance,
-        tabAppearance.inlineLayoutAppearance,
-        tabAppearance.compactInlineLayoutAppearance,
-    ]) {
-        item.normal.iconColor = wq_theme_secondary_text();
-        item.normal.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_secondary_text()};
-        item.selected.iconColor = wq_theme_primary_text();
-        item.selected.titleTextAttributes = @{NSForegroundColorAttributeName: wq_theme_primary_text()};
-    }
-    self.tabBar.standardAppearance = tabAppearance;
-    self.tabBar.scrollEdgeAppearance = tabAppearance;
-    self.tabBar.tintColor = wq_theme_primary_text();
-    self.tabBar.unselectedItemTintColor = wq_theme_secondary_text();
+    [self applyTabAppearance];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyTabAppearance) name:WQThemeDidChangeNotification object:nil];
     self.tabBar.itemPositioning = UITabBarItemPositioningCentered;
     self.tabBar.itemSpacing = 14.0;
     self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
@@ -7076,6 +7327,44 @@ static NSString *const kWQTroubleshootingFooter =
             if (h) [h goToPath];
         }
     });
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)applyTabAppearance
+{
+    UITabBarAppearance *appearance = [UITabBarAppearance new];
+    if (wq_theme_is_classic_stock()) {
+        [appearance configureWithDefaultBackground];
+    } else {
+        [appearance configureWithTransparentBackground];
+        appearance.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.78];
+        appearance.shadowColor = wq_theme_hairline();
+    }
+    UIColor *active = wq_theme_accent();
+    UIColor *inactive = wq_theme_secondary_text();
+    for (UITabBarItemAppearance *itemApp in @[appearance.stackedLayoutAppearance,
+                                              appearance.inlineLayoutAppearance,
+                                              appearance.compactInlineLayoutAppearance]) {
+        itemApp.selected.iconColor = active;
+        itemApp.selected.titleTextAttributes = @{
+            NSForegroundColorAttributeName: active,
+            NSFontAttributeName: [UIFont systemFontOfSize:10.5 weight:UIFontWeightSemibold],
+        };
+        itemApp.normal.iconColor = inactive;
+        itemApp.normal.titleTextAttributes = @{
+            NSForegroundColorAttributeName: inactive,
+            NSFontAttributeName: [UIFont systemFontOfSize:10.5 weight:UIFontWeightMedium],
+        };
+    }
+    self.tabBar.standardAppearance = appearance;
+    self.tabBar.scrollEdgeAppearance = appearance;
+    self.tabBar.tintColor = active;
+    self.tabBar.unselectedItemTintColor = inactive;
+    self.tabBar.itemSpacing = wq_theme_is_compact_pro() ? 8.0 : 14.0;
 }
 
 - (id<UIViewControllerAnimatedTransitioning>)tabBarController:(UITabBarController *__unused)tabBarController
@@ -8078,6 +8367,7 @@ int main(int argc, char *argv[])
         // Container folders get their bundle id from the LaunchServices database
         // when the identifier attribute can't be read (iOS 27.2).
         wq_set_container_label_resolver(wq_bundle_id_for_container);
+        wq_set_group_label_resolver(wq_group_id_for_container);
         wq_set_container_list_provider(wq_ls_container_paths);
         wq_set_full_scan_ui(wq_confirm_full_scan, wq_full_scan_progress);
         // Temporary media copies and share exports left by earlier runs.
