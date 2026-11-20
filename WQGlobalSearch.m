@@ -152,45 +152,159 @@ static NSArray<WQSpotlightResult *> *wq_spotlight_quick_commands(void)
     return out;
 }
 
-// Cached app index so live typing stays instantaneous.
-static NSMutableArray<WQSpotlightResult *> *gWQSpotlightAppCache;
+// Cached Spotlight indexes warmed automatically at launch on QOS_CLASS_USER_INITIATED
+// so opening Spotlight returns instantaneous results with zero UI stall.
+static NSObject *gWQSpotlightIndexLock;
+static NSArray<WQSpotlightResult *> *gWQSpotlightAppCache;
+static NSArray<WQSpotlightResult *> *gWQSpotlightBackupCache;
+static NSArray<WQSpotlightResult *> *gWQSpotlightFileCache;
 static BOOL gWQSpotlightIndexWarm;
+static BOOL gWQSpotlightWarmInFlight;
 
-static void wq_spotlight_warm_apps_on_io(void)
+static void wq_spotlight_index_init(void)
 {
-    if (gWQSpotlightIndexWarm) return;
-    gWQSpotlightIndexWarm = YES;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ gWQSpotlightIndexLock = [NSObject new]; });
+}
+
+static void wq_spotlight_warm_index_sync(void)
+{
+    wq_spotlight_index_init();
+    @synchronized (gWQSpotlightIndexLock) {
+        if (gWQSpotlightIndexWarm || gWQSpotlightWarmInFlight) return;
+        gWQSpotlightWarmInFlight = YES;
+    }
+
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
     if (!wq_display_names_loaded()) wq_load_display_names();
+
+    // 1. Parallel app & extension container index across cores.
     NSMutableArray<WQSpotlightResult *> *apps = [NSMutableArray new];
+    NSObject *appsLock = [NSObject new];
     NSArray<NSString *> *roots = @[
         @"/private/var/mobile/Containers/Data/Application",
         @"/private/var/mobile/Containers/Data/PluginKitPlugin",
     ];
     for (NSString *root in roots) {
         NSArray<NSString *> *containers = wq_enumerate(root, 0, nil, nil);
-        for (NSString *c in containers) {
-            NSString *bid = wq_container_label(c);
-            NSString *name = wq_display_name(bid) ?: bid ?: c.lastPathComponent;
-            WQSpotlightResult *item = [WQSpotlightResult new];
-            item.category = WQSearchCategoryApp;
-            item.title = name;
-            item.subtitle = bid ?: c.lastPathComponent;
-            item.path = c;
-            item.bundleID = bid;
-            item.symbolName = @"app.dashed";
-            item.isDirectory = YES;
-            item.detailBadge = [root.lastPathComponent isEqualToString:@"Application"] ? @"APP" : @"EXT";
-            [apps addObject:item];
+        if (!containers.count) continue;
+        NSString *badge = [root.lastPathComponent isEqualToString:@"Application"] ? @"APP" : @"EXT";
+        dispatch_apply(containers.count, q, ^(size_t idx) {
+            @autoreleasepool {
+                NSString *c = containers[idx];
+                NSString *bid = wq_container_label(c);
+                NSString *name = wq_display_name(bid) ?: bid ?: c.lastPathComponent;
+                WQSpotlightResult *item = [WQSpotlightResult new];
+                item.category = WQSearchCategoryApp;
+                item.title = name;
+                item.subtitle = bid ?: c.lastPathComponent;
+                item.path = c;
+                item.bundleID = bid;
+                item.symbolName = @"app.dashed";
+                item.isDirectory = YES;
+                item.detailBadge = badge;
+                @synchronized (appsLock) { [apps addObject:item]; }
+            }
+        });
+    }
+
+    // 2. Bulk-prefetched backup vault index (File Backups & App Backups).
+    NSMutableArray<WQSpotlightResult *> *backups = [NSMutableArray new];
+    NSString *fileBackups = wq_backup_root();
+    NSString *appBackups = [fileBackups.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"App Backups"];
+    NSArray<NSURLResourceKey> *keys = @[
+        NSURLTotalFileAllocatedSizeKey,
+        NSURLIsDirectoryKey,
+        NSURLContentModificationDateKey,
+    ];
+    for (NSString *bRoot in @[fileBackups, appBackups]) {
+        NSURL *rootURL = [NSURL fileURLWithPath:bRoot];
+        NSDirectoryEnumerator<NSURL *> *en = [NSFileManager.defaultManager
+            enumeratorAtURL:rootURL
+            includingPropertiesForKeys:keys
+            options:NSDirectoryEnumerationSkipsSubdirectoryDescendants | NSDirectoryEnumerationSkipsHiddenFiles
+            errorHandler:nil];
+        for (NSURL *u in en) {
+            NSNumber *isDirNum = nil;
+            NSNumber *allocSize = nil;
+            [u getResourceValue:&isDirNum forKey:NSURLIsDirectoryKey error:nil];
+            [u getResourceValue:&allocSize forKey:NSURLTotalFileAllocatedSizeKey error:nil];
+            WQSpotlightResult *b = [WQSpotlightResult new];
+            b.category = WQSearchCategoryCacheOrBackup;
+            b.title = u.lastPathComponent ?: @"";
+            b.subtitle = bRoot.lastPathComponent;
+            b.path = u.path;
+            b.symbolName = @"clock.arrow.circlepath";
+            b.isDirectory = isDirNum.boolValue;
+            b.detailBadge = (!isDirNum.boolValue && allocSize) ? wq_size_text(allocSize.unsignedLongLongValue) : @"BACKUP";
+            [backups addObject:b];
         }
     }
-    @synchronized (NSNull.null) {
-        gWQSpotlightAppCache = apps;
+
+    // 3. Pre-index Favorites & Recent folder file entries.
+    NSMutableArray<NSString *> *fileRoots = [NSMutableArray new];
+    NSArray *favs = [NSUserDefaults.standardUserDefaults arrayForKey:@"WQFavorites"];
+    if ([favs isKindOfClass:NSArray.class]) {
+        for (id f in favs) if ([f isKindOfClass:NSString.class]) [fileRoots addObject:f];
     }
+    NSString *lastFolder = [NSUserDefaults.standardUserDefaults stringForKey:@"WQLastFolder"];
+    if (lastFolder.length && ![fileRoots containsObject:lastFolder]) [fileRoots addObject:lastFolder];
+
+    NSMutableArray<WQSpotlightResult *> *preFiles = [NSMutableArray new];
+    NSObject *filesLock = [NSObject new];
+    if (fileRoots.count) {
+        dispatch_apply(fileRoots.count, q, ^(size_t idx) {
+            @autoreleasepool {
+                NSString *root = fileRoots[idx];
+                NSArray<NSString *> *items = wq_list(root, NULL);
+                NSMutableArray<WQSpotlightResult *> *local = [NSMutableArray new];
+                for (NSString *name in items) {
+                    NSString *full = [root stringByAppendingPathComponent:name];
+                    struct stat st;
+                    BOOL ok = (lstat(full.fileSystemRepresentation, &st) == 0);
+                    BOOL isDir = ok && S_ISDIR(st.st_mode);
+                    WQSpotlightResult *r = [WQSpotlightResult new];
+                    r.category = WQSearchCategoryFile;
+                    r.title = name;
+                    r.subtitle = root;
+                    r.path = full;
+                    r.isDirectory = isDir;
+                    r.symbolName = isDir ? @"folder.fill" : @"doc.fill";
+                    r.detailBadge = (!isDir && ok) ? wq_size_text((unsigned long long)st.st_size) : @"DIR";
+                    [local addObject:r];
+                    if (local.count >= 80) break;
+                }
+                if (local.count) {
+                    @synchronized (filesLock) { [preFiles addObjectsFromArray:local]; }
+                }
+            }
+        });
+    }
+
+    @synchronized (gWQSpotlightIndexLock) {
+        gWQSpotlightAppCache = [apps copy];
+        gWQSpotlightBackupCache = [backups copy];
+        gWQSpotlightFileCache = [preFiles copy];
+        gWQSpotlightIndexWarm = YES;
+        gWQSpotlightWarmInFlight = NO;
+    }
+}
+
+static void wq_spotlight_warm_index_async(void)
+{
+    wq_spotlight_index_init();
+    @synchronized (gWQSpotlightIndexLock) {
+        if (gWQSpotlightIndexWarm || gWQSpotlightWarmInFlight) return;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        wq_spotlight_warm_index_sync();
+    });
 }
 
 @interface WQSpotlightViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate>
 @property (nonatomic, weak) UIViewController *hostVC;
 @property (nonatomic) BOOL showRecentsFirst;
++ (void)wq_prewarmOnLaunch;
 @end
 
 @implementation WQSpotlightViewController {
@@ -382,7 +496,12 @@ static void wq_spotlight_warm_apps_on_io(void)
     ]];
 
     [self loadEmptyState];
-    dispatch_async(wq_io(), ^{ wq_spotlight_warm_apps_on_io(); });
+    wq_spotlight_warm_index_async();
+}
+
++ (void)wq_prewarmOnLaunch
+{
+    wq_spotlight_warm_index_async();
 }
 
 - (void)handleSwipeDismiss:(UIPanGestureRecognizer *)pan
@@ -478,8 +597,8 @@ static void wq_spotlight_warm_apps_on_io(void)
         [self loadEmptyState];
         return;
     }
-    dispatch_async(wq_io(), ^{
-        wq_spotlight_warm_apps_on_io();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        wq_spotlight_warm_index_sync();
         NSMutableArray<WQSpotlightResult *> *cmds = [NSMutableArray new];
         for (WQSpotlightResult *c in wq_spotlight_quick_commands()) {
             if ([c.title localizedCaseInsensitiveContainsString:q] || [c.subtitle localizedCaseInsensitiveContainsString:q]) {
@@ -487,12 +606,18 @@ static void wq_spotlight_warm_apps_on_io(void)
             }
         }
 
+        NSArray<WQSpotlightResult *> *cachedApps = nil;
+        NSArray<WQSpotlightResult *> *cachedBackups = nil;
+        NSArray<WQSpotlightResult *> *cachedFiles = nil;
+        wq_spotlight_index_init();
+        @synchronized (gWQSpotlightIndexLock) {
+            cachedApps = gWQSpotlightAppCache;
+            cachedBackups = gWQSpotlightBackupCache;
+            cachedFiles = gWQSpotlightFileCache;
+        }
+
         NSMutableArray<WQSpotlightResult *> *apps = [NSMutableArray new];
         NSMutableArray<WQSpotlightResult *> *cachesAndBackups = [NSMutableArray new];
-        NSArray<WQSpotlightResult *> *cachedApps = nil;
-        @synchronized (NSNull.null) {
-            cachedApps = [gWQSpotlightAppCache copy];
-        }
         for (WQSpotlightResult *app in cachedApps) {
             if ([app.title localizedCaseInsensitiveContainsString:q] ||
                 (app.bundleID && [app.bundleID localizedCaseInsensitiveContainsString:q]) ||
@@ -514,65 +639,51 @@ static void wq_spotlight_warm_apps_on_io(void)
             }
         }
 
-        // Saved backups in File Backups & App Backups.
-        NSString *fileBackups = wq_backup_root();
-        NSString *appBackups = [fileBackups.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"App Backups"];
-        for (NSString *bRoot in @[fileBackups, appBackups]) {
-            NSArray<NSString *> *entries = [NSFileManager.defaultManager contentsOfDirectoryAtPath:bRoot error:nil];
-            for (NSString *entry in entries) {
-                if (![entry localizedCaseInsensitiveContainsString:q]) continue;
-                NSString *full = [bRoot stringByAppendingPathComponent:entry];
-                BOOL isDir = NO;
-                [NSFileManager.defaultManager fileExistsAtPath:full isDirectory:&isDir];
-                WQSpotlightResult *b = [WQSpotlightResult new];
-                b.category = WQSearchCategoryCacheOrBackup;
-                b.title = entry;
-                b.subtitle = bRoot.lastPathComponent;
-                b.path = full;
-                b.symbolName = @"clock.arrow.circlepath";
-                b.isDirectory = isDir;
-                b.detailBadge = @"BACKUP";
+        // Instant match against pre-warmed backup vault index.
+        for (WQSpotlightResult *b in cachedBackups) {
+            if ([b.title localizedCaseInsensitiveContainsString:q] ||
+                [b.subtitle localizedCaseInsensitiveContainsString:q]) {
                 [cachesAndBackups addObject:b];
                 if (cachesAndBackups.count >= 24) break;
             }
         }
 
-        // Fast indexed search across Favorites, Recent folder, and permitted paths.
-        NSMutableArray<NSString *> *searchRoots = [NSMutableArray new];
-        NSArray *favs = [NSUserDefaults.standardUserDefaults arrayForKey:@"WQFavorites"];
-        if ([favs isKindOfClass:NSArray.class]) {
-            for (id f in favs) if ([f isKindOfClass:NSString.class]) [searchRoots addObject:f];
-        }
-        NSString *lastFolder = [NSUserDefaults.standardUserDefaults stringForKey:@"WQLastFolder"];
-        if (lastFolder.length && ![searchRoots containsObject:lastFolder]) [searchRoots addObject:lastFolder];
-        for (WQSpotlightResult *a in apps) {
-            if (searchRoots.count >= 8) break;
-            if (a.path.length && ![searchRoots containsObject:a.path]) [searchRoots addObject:a.path];
-        }
-
+        // Instant match against pre-indexed Favorites / Recent files, supplemented
+        // by matching app container roots if needed.
         NSMutableArray<WQSpotlightResult *> *files = [NSMutableArray new];
         NSMutableSet<NSString *> *seen = [NSMutableSet new];
-        for (NSString *root in searchRoots) {
+        for (WQSpotlightResult *f in cachedFiles) {
             if (files.count >= 30) break;
-            NSArray<NSString *> *items = wq_list(root, NULL);
-            for (NSString *name in items) {
-                if (files.count >= 30) break;
-                NSString *full = [root stringByAppendingPathComponent:name];
-                if ([seen containsObject:full]) continue;
-                if ([name localizedCaseInsensitiveContainsString:q]) {
-                    [seen addObject:full];
-                    struct stat st;
-                    BOOL ok = (lstat(full.fileSystemRepresentation, &st) == 0);
-                    BOOL isDir = ok && S_ISDIR(st.st_mode);
-                    WQSpotlightResult *r = [WQSpotlightResult new];
-                    r.category = WQSearchCategoryFile;
-                    r.title = name;
-                    r.subtitle = root;
-                    r.path = full;
-                    r.isDirectory = isDir;
-                    r.symbolName = isDir ? @"folder.fill" : @"doc.fill";
-                    r.detailBadge = (!isDir && ok) ? wq_size_text((unsigned long long)st.st_size) : @"DIR";
-                    [files addObject:r];
+            if ([f.title localizedCaseInsensitiveContainsString:q]) {
+                if (f.path.length) [seen addObject:f.path];
+                [files addObject:f];
+            }
+        }
+        if (files.count < 30 && apps.count) {
+            NSUInteger cap = MIN((NSUInteger)6, apps.count);
+            for (NSUInteger i = 0; i < cap && files.count < 30; i++) {
+                NSString *root = apps[i].path;
+                if (!root.length) continue;
+                NSArray<NSString *> *items = wq_list(root, NULL);
+                for (NSString *name in items) {
+                    if (files.count >= 30) break;
+                    NSString *full = [root stringByAppendingPathComponent:name];
+                    if ([seen containsObject:full]) continue;
+                    if ([name localizedCaseInsensitiveContainsString:q]) {
+                        [seen addObject:full];
+                        struct stat st;
+                        BOOL ok = (lstat(full.fileSystemRepresentation, &st) == 0);
+                        BOOL isDir = ok && S_ISDIR(st.st_mode);
+                        WQSpotlightResult *r = [WQSpotlightResult new];
+                        r.category = WQSearchCategoryFile;
+                        r.title = name;
+                        r.subtitle = root;
+                        r.path = full;
+                        r.isDirectory = isDir;
+                        r.symbolName = isDir ? @"folder.fill" : @"doc.fill";
+                        r.detailBadge = (!isDir && ok) ? wq_size_text((unsigned long long)st.st_size) : @"DIR";
+                        [files addObject:r];
+                    }
                 }
             }
         }

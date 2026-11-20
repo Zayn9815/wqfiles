@@ -690,16 +690,23 @@ static WQAuroraEdgeOverlayView *wq_motion_aurora_overlay(UIScrollView *scrollVie
     return overlay;
 }
 
+static inline CGFloat wq_motion_smoothstep(CGFloat edge0, CGFloat edge1, CGFloat x)
+{
+    CGFloat denom = MAX(0.0001, edge1 - edge0);
+    CGFloat t = MAX(0.0, MIN(1.0, (x - edge0) / denom));
+    return t * t * (3.0 - 2.0 * t);
+}
+
 static void wq_motion_tint_focal_rim(UIView *view, CGFloat focus)
 {
     UIView *rim = wq_motion_rim_view(view, 1);
     if (!rim) return;
-    // Smoothly brighten rim from icy-teal (0.20) toward luminous glacial cyan/silver (0.56) at focal center.
+    // Smoothly brighten rim from subtle graphite-sapphire toward luminous silver-ice at focal center.
     CGFloat t = MAX(0.0, MIN(1.0, focus));
-    CGFloat r = 0.50 + 0.36 * t;
-    CGFloat g = 0.94 + 0.06 * t;
+    CGFloat r = 0.62 + 0.30 * t;
+    CGFloat g = 0.84 + 0.14 * t;
     CGFloat b = 1.0;
-    CGFloat a = 0.22 + 0.34 * t * t;
+    CGFloat a = 0.18 + 0.28 * t * t;
     rim.layer.borderColor = [UIColor colorWithRed:r green:g blue:b alpha:a].CGColor;
 }
 
@@ -711,42 +718,72 @@ void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView 
                                     scrollView.contentOffset.y + scrollView.adjustedContentInset.top,
                                     scrollView.bounds.size.width,
                                     MAX(1.0, scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
-    CGFloat viewportMidY = CGRectGetMidY(visibleRect);
-    CGFloat halfSpan = MAX(120.0, visibleRect.size.height * 0.56);
+    CGFloat topEdge = visibleRect.origin.y;
+    CGFloat botEdge = CGRectGetMaxY(visibleRect);
+    CGFloat topZone = MIN(96.0, MAX(58.0, visibleRect.size.height * 0.16));
+    CGFloat botZone = MIN(108.0, MAX(68.0, visibleRect.size.height * 0.18));
 
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
     for (UIView *v in views) {
         if (!v || v.hidden || !v.superview) continue;
         WQMotionPressTarget *press = objc_getAssociatedObject(v, kWQMotionPressKey);
         if (press && press.pressed) continue;
         BOOL isCell = [v isKindOfClass:UITableViewCell.class] || [v isKindOfClass:UICollectionViewCell.class];
         if (isCell) {
-            v.clipsToBounds = YES;
+            if (!v.clipsToBounds) v.clipsToBounds = YES;
             if ([v isKindOfClass:UITableViewCell.class]) {
-                ((UITableViewCell *)v).contentView.clipsToBounds = YES;
+                UIView *cv = ((UITableViewCell *)v).contentView;
+                if (!cv.clipsToBounds) cv.clipsToBounds = YES;
             }
         }
+        if (v.layer.shouldRasterize) v.layer.shouldRasterize = NO;
         if (reduced) {
-            if (!CATransform3DIsIdentity(v.transform3D)) {
-                v.transform3D = CATransform3DIdentity;
+            if (!CATransform3DIsIdentity(v.layer.transform)) {
+                v.layer.transform = CATransform3DIdentity;
             }
-            if (v.alpha < 0.99) v.alpha = 1.0;
+            if (v.layer.opacity < 0.99f) v.layer.opacity = 1.0f;
             continue;
         }
-        // Compute un-transformed layout center in scrollView coordinates.
+
+        // Compute un-transformed layout position in scrollView coordinates (no view/layer allocations).
         CGPoint centerInScroll = [v.superview convertPoint:v.center toView:scrollView];
-        CGFloat dist = centerInScroll.y - viewportMidY;
-        CGFloat norm = MAX(-1.0, MIN(1.0, dist / halfSpan));
-        CGFloat focus = 1.0 - fabs(norm);
+        CGFloat distFromTop = centerInScroll.y - topEdge;
+        CGFloat distFromBot = botEdge - centerInScroll.y;
 
-        // Safe 2D scale (0.975 -> 1.0) + edge fade (0.86 -> 1.0) with zero 3D
-        // X-axis pitch rotation so adjacent cells never slice or clip in Z-space.
-        CGFloat scale = 0.975 + 0.025 * focus;
-        v.transform3D = CATransform3DMakeScale(scale, scale, 1.0);
-        v.alpha = isCell ? (0.86 + 0.14 * focus) : (0.92 + 0.08 * focus);
+        CGFloat alpha = 1.0;
+        CGFloat scale = 1.0;
+        CGFloat shiftY = 0.0;
+        CGFloat focus = 1.0;
 
-        UIView *rimTarget = [v isKindOfClass:UITableViewCell.class] ? ((UITableViewCell *)v).backgroundView : v;
-        if (rimTarget) wq_motion_tint_focal_rim(rimTarget, focus);
+        if (distFromTop < topZone) {
+            // Smooth top-edge optical blur dissolve synchronized with upper curtain:
+            // opacity 1.0 -> 0.15, scale 1.0 -> 0.975, zero 3D m34 rotation.
+            CGFloat t = wq_motion_smoothstep(-16.0, topZone, distFromTop);
+            alpha = 0.15 + 0.85 * t;
+            scale = 0.975 + 0.025 * t;
+            focus = t;
+        } else if (distFromBot < botZone) {
+            // Smooth bottom emergence out of optical veil:
+            // opacity 0.22 -> 1.0, scale 0.972 -> 1.0, vertical settle 6pt -> 0pt.
+            CGFloat t = wq_motion_smoothstep(-14.0, botZone, distFromBot);
+            alpha = 0.22 + 0.78 * t;
+            scale = 0.972 + 0.028 * t;
+            shiftY = (1.0 - t) * 6.0;
+            focus = t;
+        }
+
+        CATransform3D xform = (scale < 0.9995 || shiftY > 0.05)
+            ? CATransform3DScale(CATransform3DMakeTranslation(0.0, shiftY, 0.0), scale, scale, 1.0)
+            : CATransform3DIdentity;
+        v.layer.transform = xform;
+        v.layer.opacity = (float)alpha;
+
+        if (!isCell) {
+            wq_motion_tint_focal_rim(v, focus);
+        }
     }
+    [CATransaction commit];
 }
 
 void wq_motion_apply_scroll_wave(UIScrollView *scrollView)
@@ -1651,6 +1688,8 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
     UIVisualEffectView *_bottomBlur;
     CAGradientLayer *_topMask;
     CAGradientLayer *_bottomMask;
+    CGFloat _lastTop;
+    CGFloat _lastBottom;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame
@@ -1659,33 +1698,45 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
         self.userInteractionEnabled = NO;
         self.backgroundColor = UIColor.clearColor;
         self.layer.zPosition = 550.0;
+        self.layer.shouldRasterize = NO;
+        _lastTop = -1.0;
+        _lastBottom = -1.0;
 
         UIBlurEffect *effect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark];
+
+        // Multi-stop 5-stop progressive optical blur dissolve at the top viewport edge.
         _topBlur = [[UIVisualEffectView alloc] initWithEffect:effect];
         _topBlur.userInteractionEnabled = NO;
-        _topBlur.alpha = 0.0;
+        _topBlur.layer.opacity = 0.0f;
+        _topBlur.layer.shouldRasterize = NO;
 
         _topMask = [CAGradientLayer layer];
         _topMask.colors = @[
-            (id)[UIColor colorWithWhite:1.0 alpha:0.95].CGColor,
-            (id)[UIColor colorWithWhite:1.0 alpha:0.42].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:1.00].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.78].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.44].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.14].CGColor,
             (id)[UIColor clearColor].CGColor,
         ];
-        _topMask.locations = @[@0.0, @0.45, @1.0];
+        _topMask.locations = @[@0.0, @0.22, @0.48, @0.76, @1.0];
         _topBlur.layer.mask = _topMask;
         [self addSubview:_topBlur];
 
+        // Multi-stop 5-stop progressive optical emergence veil at the bottom viewport edge.
         _bottomBlur = [[UIVisualEffectView alloc] initWithEffect:effect];
         _bottomBlur.userInteractionEnabled = NO;
-        _bottomBlur.alpha = 0.0;
+        _bottomBlur.layer.opacity = 0.0f;
+        _bottomBlur.layer.shouldRasterize = NO;
 
         _bottomMask = [CAGradientLayer layer];
         _bottomMask.colors = @[
             (id)[UIColor clearColor].CGColor,
-            (id)[UIColor colorWithWhite:1.0 alpha:0.42].CGColor,
-            (id)[UIColor colorWithWhite:1.0 alpha:0.95].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.14].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.44].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.78].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:1.00].CGColor,
         ];
-        _bottomMask.locations = @[@0.0, @0.55, @1.0];
+        _bottomMask.locations = @[@0.0, @0.24, @0.52, @0.78, @1.0];
         _bottomBlur.layer.mask = _bottomMask;
         [self addSubview:_bottomBlur];
     }
@@ -1699,12 +1750,12 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
     CGFloat h = self.bounds.size.height;
     CGFloat topInset = self.safeAreaInsets.top;
     CGFloat botInset = self.safeAreaInsets.bottom;
-    CGFloat topH = 44.0;
-    CGFloat botH = 64.0;
-    _topBlur.frame = CGRectMake(0, topInset, w, topH);
-    _bottomBlur.frame = CGRectMake(0, MAX(0, h - botInset - botH), w, botH);
+    CGFloat topH = 58.0;
+    CGFloat botH = 74.0;
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
+    _topBlur.frame = CGRectMake(0, topInset, w, topH);
+    _bottomBlur.frame = CGRectMake(0, MAX(0, h - botInset - botH), w, botH);
     _topMask.frame = _topBlur.bounds;
     _bottomMask.frame = _bottomBlur.bounds;
     [CATransaction commit];
@@ -1712,17 +1763,23 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
 
 - (void)setTopStrength:(CGFloat)top bottomStrength:(CGFloat)bottom animated:(BOOL)animated
 {
-    CGFloat t = MAX(0.0, MIN(0.92, top));
-    CGFloat b = MAX(0.0, MIN(0.92, bottom));
-    void (^apply)(void) = ^{
-        self->_topBlur.alpha = t;
-        self->_bottomBlur.alpha = b;
-    };
+    CGFloat t = MAX(0.0, MIN(0.96, top));
+    CGFloat b = MAX(0.0, MIN(0.94, bottom));
+    if (!animated && fabs(t - _lastTop) < 0.008 && fabs(b - _lastBottom) < 0.008) return;
+    _lastTop = t;
+    _lastBottom = b;
     if (!animated) {
-        apply();
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        _topBlur.layer.opacity = (float)t;
+        _bottomBlur.layer.opacity = (float)b;
+        [CATransaction commit];
         return;
     }
-    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.26 dampingRatio:0.86 animations:apply];
+    UIViewPropertyAnimator *anim = [[UIViewPropertyAnimator alloc] initWithDuration:0.26 dampingRatio:0.86 animations:^{
+        self->_topBlur.layer.opacity = (float)t;
+        self->_bottomBlur.layer.opacity = (float)b;
+    }];
     [anim startAnimation];
 }
 
@@ -1767,13 +1824,13 @@ void wq_motion_update_edge_blur(UIScrollView *scrollView, UIView *hostView)
     }
     WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
     CGFloat mag = fabs(state.smoothedVelocity);
-    CGFloat velBoost = MIN(0.55, MAX(0.0, (mag - 60.0) / 1400.0));
+    CGFloat velBoost = MIN(0.56, MAX(0.0, (mag - 45.0) / 1300.0));
     CGFloat y = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
     CGFloat maxY = MAX(0.0, scrollView.contentSize.height - (scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
-    CGFloat topBase = y > 6.0 ? 0.28 : 0.0;
-    CGFloat botBase = (maxY > 24.0 && y < maxY - 6.0) ? 0.30 : 0.0;
-    CGFloat topStrength = topBase + (state.smoothedVelocity > 0 ? velBoost : velBoost * 0.35);
-    CGFloat botStrength = botBase + (state.smoothedVelocity < 0 ? velBoost : velBoost * 0.35);
+    CGFloat topBase = y > 4.0 ? MIN(0.42, 0.16 + y / 44.0 * 0.26) : 0.0;
+    CGFloat botBase = (maxY > 24.0 && y < maxY - 4.0) ? 0.36 : 0.0;
+    CGFloat topStrength = topBase + (state.smoothedVelocity > 0 ? velBoost : velBoost * 0.30);
+    CGFloat botStrength = botBase + (state.smoothedVelocity < 0 ? velBoost : velBoost * 0.42);
     [curtain setTopStrength:topStrength bottomStrength:botStrength animated:NO];
 }
 
@@ -1788,8 +1845,8 @@ void wq_motion_settle_edge_blur(UIScrollView *scrollView, UIView *hostView)
     }
     CGFloat y = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
     CGFloat maxY = MAX(0.0, scrollView.contentSize.height - (scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
-    CGFloat topRest = y > 10.0 ? 0.22 : 0.0;
-    CGFloat botRest = (maxY > 24.0 && y < maxY - 10.0) ? 0.22 : 0.0;
+    CGFloat topRest = y > 8.0 ? 0.30 : 0.0;
+    CGFloat botRest = (maxY > 24.0 && y < maxY - 8.0) ? 0.26 : 0.0;
     [curtain setTopStrength:topRest bottomStrength:botRest animated:YES];
 }
 

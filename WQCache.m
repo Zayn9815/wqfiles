@@ -14,7 +14,9 @@
 #import "WQLaunchServices.h"
 #import "WQCacheSafety.h"
 
+#import <QuartzCore/QuartzCore.h>
 #import <errno.h>
+#import <stdatomic.h>
 #import <sys/stat.h>
 
 #pragma mark - Cache cleaner
@@ -419,6 +421,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     UIButton *_cleanPillButton;
     UIButton *_selectPillButton;
     BOOL _didCascade;
+    BOOL _forceFreshNextScan;
 }
 
 - (instancetype)init { return [super initWithStyle:UITableViewStyleInsetGrouped]; }
@@ -550,10 +553,113 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }
 }
 
+// Shared launch pre-warm cache & observer hub so Cache Cleaner opens
+// instantaneously (0ms) when pre-warmed, or attaches live to an in-flight scan.
+static NSObject *gWQCacheHubLock;
+static BOOL gWQCacheHubInFlight;
+static BOOL gWQCacheHubCompleted;
+static NSTimeInterval gWQCacheHubFinishedAt;
+static NSUInteger gWQCacheHubGeneration;
+static NSArray<WQCacheItem *> *gWQCacheHubItems;
+static BOOL gWQCacheHubLimited;
+static NSString *gWQCacheHubNote;
+static NSString *gWQCacheHubStatus;
+static float gWQCacheHubProgress;
+static unsigned long long gWQCacheHubFoundBytes;
+static WQScanCancellation *gWQCacheHubCancellation;
+static NSHashTable<WQCacheCleanerViewController *> *gWQCacheHubObservers;
+
+static void wq_cache_hub_init(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gWQCacheHubLock = [NSObject new];
+        gWQCacheHubObservers = [NSHashTable weakObjectsHashTable];
+    });
+}
+
+static NSArray<WQCacheCleanerViewController *> *wq_cache_hub_snapshot_observers(void)
+{
+    wq_cache_hub_init();
+    @synchronized (gWQCacheHubLock) {
+        return gWQCacheHubObservers.allObjects;
+    }
+}
+
+- (void)applySharedCacheProgress:(NSString *)status progress:(float)progress bytes:(unsigned long long)bytes
+{
+    if (!_scanning || _cleaning) return;
+    _scanBytes = bytes;
+    [self setStatus:status progress:progress];
+}
+
+- (void)applySharedCacheResult:(NSArray<WQCacheItem *> *)items
+                       limited:(BOOL)scanLimited
+                          note:(NSString *)note
+                    finishedAt:(NSTimeInterval)finishedAt
+{
+    if (_cleaning) return;
+    _items = items;
+    [self rebuildVisibleItems];
+    _scanning = NO;
+    _scanLimited = scanLimited;
+    _status = note;
+    _lastScanFinished = finishedAt;
+    [self.refreshControl endRefreshing];
+    [self.tableView reloadData];
+    [self.tableView layoutIfNeeded];
+    UITableViewCell *summaryCell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
+    if (summaryCell) wq_motion_trigger_scan_sweep(summaryCell.contentView);
+    if (!_didCascade && self.visibleItems.count) {
+        _didCascade = YES;
+        wq_motion_cascade_visible(self.tableView);
+    }
+    [self updateButtons];
+}
+
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
     [self syncFilterPills];
+    wq_cache_hub_init();
+    if (!_cleaning) {
+        BOOL hubInFlight = NO;
+        BOOL hubFresh = NO;
+        NSArray<WQCacheItem *> *cachedItems = nil;
+        BOOL cachedLimited = NO;
+        NSString *cachedNote = nil;
+        NSTimeInterval cachedAt = 0;
+        NSString *liveStatus = nil;
+        float liveProg = 0;
+        unsigned long long liveBytes = 0;
+        @synchronized (gWQCacheHubLock) {
+            hubInFlight = gWQCacheHubInFlight;
+            cachedAt = gWQCacheHubFinishedAt;
+            hubFresh = gWQCacheHubCompleted && gWQCacheHubItems != nil &&
+                       (NSDate.date.timeIntervalSinceReferenceDate - cachedAt <= 600.0);
+            if (hubFresh) {
+                cachedItems = gWQCacheHubItems;
+                cachedLimited = gWQCacheHubLimited;
+                cachedNote = gWQCacheHubNote;
+            }
+            liveStatus = gWQCacheHubStatus;
+            liveProg = gWQCacheHubProgress;
+            liveBytes = gWQCacheHubFoundBytes;
+        }
+        if (hubInFlight && !_items.count) {
+            @synchronized (gWQCacheHubLock) { [gWQCacheHubObservers addObject:self]; }
+            _scanning = YES;
+            _scanBytes = liveBytes;
+            _scanProgress = liveProg;
+            [self updateButtons];
+            [self setStatus:liveStatus ?: WQLocalizedNullable(@"Finding apps…") progress:liveProg];
+            return;
+        }
+        if (hubFresh && (!_items || _lastScanFinished < cachedAt)) {
+            [self applySharedCacheResult:cachedItems limited:cachedLimited note:cachedNote finishedAt:cachedAt];
+            return;
+        }
+    }
     if (_scanning && _scanCancellation.isCancelled) {
         [self scan];
         return;
@@ -562,6 +668,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     // list is old; pull to refresh rescans any time.
     if (!_scanning && !_cleaning && _lastScanFinished > 0 &&
         NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 600.0) {
+        _forceFreshNextScan = YES;
         [self scan];
     }
 }
@@ -569,7 +676,11 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
-    if (_scanning) [_scanCancellation cancel];
+    // Detach UI observer without cancelling a shared launch pre-warm scan.
+    wq_cache_hub_init();
+    @synchronized (gWQCacheHubLock) {
+        [gWQCacheHubObservers removeObject:self];
+    }
     if (_cleaning) [_cleanCancellation cancel];
     [self.refreshControl endRefreshing];
 }
@@ -752,6 +863,7 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
     }
     wq_enumerate_invalidate();
     wq_display_names_reset_miss();
+    _forceFreshNextScan = YES;
     [self scan];
 }
 
@@ -768,140 +880,195 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         wq_enumerate_invalidate();
         wq_display_names_reset_miss();
     }
+    _forceFreshNextScan = YES;
     [self scan];
     return YES;
 }
 
-- (void)scan
+static void wq_cache_start_shared_scan(BOOL forceFresh)
 {
-    if (_cleaning) {
-        _rescanAfterClean = YES;
-        [self.refreshControl endRefreshing];
-        return;
+    wq_cache_hub_init();
+    WQScanCancellation *cancellation = nil;
+    NSUInteger generation = 0;
+    @synchronized (gWQCacheHubLock) {
+        if (!forceFresh) {
+            if (gWQCacheHubInFlight) return;
+            if (gWQCacheHubCompleted && gWQCacheHubItems != nil &&
+                NSDate.date.timeIntervalSinceReferenceDate - gWQCacheHubFinishedAt <= 600.0) {
+                return;
+            }
+        }
+        [gWQCacheHubCancellation cancel];
+        cancellation = [WQScanCancellation new];
+        gWQCacheHubCancellation = cancellation;
+        generation = ++gWQCacheHubGeneration;
+        gWQCacheHubInFlight = YES;
+        gWQCacheHubStatus = WQLocalizedNullable(@"Finding apps…");
+        gWQCacheHubProgress = 0.0f;
+        gWQCacheHubFoundBytes = 0;
     }
-    [_scanCancellation cancel];
-    WQScanCancellation *cancellation = [WQScanCancellation new];
-    _scanCancellation = cancellation;
-    NSUInteger generation = ++_scanGeneration;
-    _scanning = YES;
-    _scanProgress = 0;
-    _scanBytes = 0;
-    _scanLimited = NO;
-    _cleanRequiresRescan = NO;
-    _result = nil;
-    [self updateButtons];
-    [self setStatus:WQLocalizedNullable(@"Finding apps…")];
-    dispatch_async(wq_io(), ^{
+
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_async(q, ^{
+        __block CFTimeInterval lastUIPush = 0;
+        NSObject *uiThrottleLock = [NSObject new];
+        void (^broadcastProgress)(NSString *, float, unsigned long long, BOOL) = ^(NSString *msg, float prog, unsigned long long bytes, BOOL force) {
+            CFTimeInterval now = CACurrentMediaTime();
+            @synchronized (uiThrottleLock) {
+                if (!force && (now - lastUIPush) < 0.033) return;
+                lastUIPush = now;
+            }
+            @synchronized (gWQCacheHubLock) {
+                if (generation != gWQCacheHubGeneration || cancellation.isCancelled) return;
+                gWQCacheHubStatus = msg;
+                gWQCacheHubProgress = MAX(gWQCacheHubProgress, MIN(1.0f, prog));
+                gWQCacheHubFoundBytes = bytes;
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (cancellation.isCancelled) return;
+                for (WQCacheCleanerViewController *vc in wq_cache_hub_snapshot_observers()) {
+                    [vc applySharedCacheProgress:msg progress:prog bytes:bytes];
+                }
+            });
+        };
+
         NSMutableArray<WQCacheItem *> *items = [NSMutableArray new];
         NSMutableArray<NSString *> *emptyRoots = [NSMutableArray new];
-        BOOL scanLimited = NO;
-        NSUInteger failedEnumerations = 0;
-        NSUInteger limitedContainers = 0;
-        NSUInteger limitedMeasurements = 0;
-        NSUInteger missingIdentities = 0;
+        __block BOOL scanLimited = NO;
+        __block NSUInteger failedEnumerations = 0;
+        __block NSUInteger limitedContainers = 0;
+        __block NSUInteger limitedMeasurements = 0;
+        __block NSUInteger missingIdentities = 0;
         NSUInteger checkedContainers = 0;
-        __block unsigned long long foundBytes = 0;
+        _Atomic uint64_t atomicFoundBytesVal = 0;
+        _Atomic uint64_t *atomicFoundBytesPtr = &atomicFoundBytesVal;
+        NSObject *aggLock = [NSObject new];
+
+        NSUInteger maxWorkers = MAX((NSUInteger)4, MIN((NSUInteger)8, NSProcessInfo.processInfo.activeProcessorCount));
+        dispatch_semaphore_t workerLimit = dispatch_semaphore_create((long)maxWorkers);
+
         NSArray *roots = @[@"/private/var/mobile/Containers/Data/Application",
                            @"/private/var/mobile/Containers/Data/PluginKitPlugin"];
         for (NSString *root in roots) {
-            if (cancellation.isCancelled) return;
+            if (cancellation.isCancelled) break;
             float share = 1.0f / (float)roots.count, base = (float)[roots indexOfObject:root] * share;
             NSString *kind = [root.lastPathComponent isEqualToString:@"Application"] ? @"apps" : @"extensions";
             NSArray *containers = wq_enumerate(root, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused f) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                    [self setStatus:WQLocalizedFormat(@"Finding %@… %lld%%", kind, (long long)(done * 100 / total))
-                           progress:base + share * 0.1f * (total ? (float)done / (float)total : 0)];
-                });
+                broadcastProgress(WQLocalizedFormat(@"Finding %@… %lld%%", kind, total ? (long long)(done * 100 / total) : 0),
+                                  base + share * 0.1f * (total ? (float)done / (float)total : 0),
+                                  (unsigned long long)atomic_load(atomicFoundBytesPtr),
+                                  NO);
             });
             if (!containers) {
-                if (cancellation.isCancelled) return;
+                if (cancellation.isCancelled) break;
                 scanLimited = YES;
                 failedEnumerations++;
                 wq_log(@"cache scan: %@ container enumeration failed", kind);
                 continue;
             }
             if (!cancellation.isCancelled && !wq_display_names_loaded()) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                [self setStatus:WQLocalizedNullable(@"Reading app names…")];
-            });
-            wq_load_display_names();
-        }
-            if (!containers.count) [emptyRoots addObject:kind];
-            NSUInteger idx = 0;
-            checkedContainers += containers.count;
-            for (NSString *c in containers) {
-                if (cancellation.isCancelled) return;
-                idx++;
-                if (idx % 10 == 0 || idx == containers.count) {
-                    unsigned long long soFar = foundBytes;
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                        self->_scanBytes = soFar;
-                        [self setStatus:WQLocalizedFormat(@"Measuring %@ %lu of %lu…", kind,
-                                         (unsigned long)idx, (unsigned long)containers.count)
-                               progress:base + share * (0.1f + 0.9f * (float)idx / (float)containers.count)];
-                    });
-                }
-                BOOL safeContainer = WQCacheSafetyHasNoSymlinkAncestry(c, NO);
-                BOOL granted = safeContainer && wq_grant(c);  // one token for the whole container
-                NSString *caches = [c stringByAppendingPathComponent:@"Library/Caches"];
-                NSString *tmp = [c stringByAppendingPathComponent:@"tmp"];
-                unsigned long long cacheBytes = 0, tempBytes = 0;
-                BOOL safeCaches = safeContainer &&
-                    WQCacheSafetyTargetMatchesContainer(caches, c, @"Library/Caches");
-                BOOL safeTmp = safeContainer &&
-                    WQCacheSafetyTargetMatchesContainer(tmp, c, @"tmp");
-                WQCacheMeasurementState cacheState = granted && safeCaches
-                    ? WQCacheMeasureDirectory(caches, cancellation, &cacheBytes)
-                    : WQCacheMeasurementLimited;
-                if (cacheState == WQCacheMeasurementCancelled) return;
-                WQCacheMeasurementState tempState = granted && safeTmp
-                    ? WQCacheMeasureDirectory(tmp, cancellation, &tempBytes)
-                    : WQCacheMeasurementLimited;
-                if (tempState == WQCacheMeasurementCancelled) return;
-                if (!granted || !safeContainer) {
-                    scanLimited = YES;
-                    limitedContainers++;
-                    wq_log(@"cache scan: %@ (%@) %@", c.lastPathComponent, wq_bundle_id_for_container(c) ?: @"unknown app",
-                           safeContainer ? @"refused access" : @"failed the path safety check");
-                }
-                if (cacheState == WQCacheMeasurementLimited || tempState == WQCacheMeasurementLimited) {
-                    scanLimited = YES;
-                    limitedMeasurements++;
-                }
-                BOOL cacheKnown = cacheState != WQCacheMeasurementLimited;
-                BOOL tempKnown = tempState != WQCacheMeasurementLimited;
-                foundBytes += cacheBytes + tempBytes;
-                if (cacheKnown && tempKnown && cacheBytes + tempBytes < 64 * 1024) continue;
-                WQCacheItem *item = [WQCacheItem new];
-                NSString *bid = granted ? wq_container_label(c) : nil;
-                item.bundleID = bid;
-                if (bid) (void)wq_app_icon(bid);   // warm the icon off the main thread
-                item.name = wq_display_name(bid) ?: bid ?: c.lastPathComponent;
-                item.targets = @[caches, tmp];
-                item.cacheBytes = cacheBytes;
-                item.tempBytes = tempBytes;
-                item.cacheKnown = cacheKnown;
-                item.tempKnown = tempKnown;
-                item.limited = !cacheKnown || !tempKnown;
-                item.containerPath = c;
-                item.targetRecords = @[
-                    WQCacheTargetRecordForPath(caches, @"Library/Caches"),
-                    WQCacheTargetRecordForPath(tmp, @"tmp"),
-                ];
-                WQCacheCaptureContainerIdentity(item);
-                if (!bid.length || !item.containerIdentityKnown) {
-                    item.limited = YES;
-                    scanLimited = YES;
-                    missingIdentities++;
-                }
-                item.selected = !item.limited;
-                [items addObject:item];
+                broadcastProgress(WQLocalizedNullable(@"Reading app names…"), base + share * 0.1f, (unsigned long long)atomic_load(atomicFoundBytesPtr), YES);
+                wq_load_display_names();
             }
+            if (!containers.count) [emptyRoots addObject:kind];
+            NSUInteger count = containers.count;
+            checkedContainers += count;
+            if (!count) continue;
+
+            _Atomic uint64_t doneInRootVal = 0;
+            _Atomic uint64_t *doneInRootPtr = &doneInRootVal;
+            dispatch_apply(count, q, ^(size_t idx) {
+                if (cancellation.isCancelled) return;
+                dispatch_semaphore_wait(workerLimit, DISPATCH_TIME_FOREVER);
+                @autoreleasepool {
+                    if (!cancellation.isCancelled) {
+                        NSString *c = containers[idx];
+                        BOOL safeContainer = WQCacheSafetyHasNoSymlinkAncestry(c, NO);
+                        BOOL granted = safeContainer && wq_grant(c);  // one token for the whole container
+                        NSString *caches = [c stringByAppendingPathComponent:@"Library/Caches"];
+                        NSString *tmp = [c stringByAppendingPathComponent:@"tmp"];
+                        unsigned long long cacheBytes = 0, tempBytes = 0;
+                        BOOL safeCaches = safeContainer &&
+                            WQCacheSafetyTargetMatchesContainer(caches, c, @"Library/Caches");
+                        BOOL safeTmp = safeContainer &&
+                            WQCacheSafetyTargetMatchesContainer(tmp, c, @"tmp");
+                        WQCacheMeasurementState cacheState = granted && safeCaches
+                            ? WQCacheMeasureDirectory(caches, cancellation, &cacheBytes)
+                            : WQCacheMeasurementLimited;
+                        if (cacheState != WQCacheMeasurementCancelled) {
+                            WQCacheMeasurementState tempState = granted && safeTmp
+                                ? WQCacheMeasureDirectory(tmp, cancellation, &tempBytes)
+                                : WQCacheMeasurementLimited;
+                            if (tempState != WQCacheMeasurementCancelled) {
+                                BOOL cacheKnown = cacheState != WQCacheMeasurementLimited;
+                                BOOL tempKnown = tempState != WQCacheMeasurementLimited;
+                                unsigned long long added = cacheBytes + tempBytes;
+                                unsigned long long soFar = (unsigned long long)atomic_fetch_add(atomicFoundBytesPtr, (uint64_t)added) + added;
+                                NSUInteger stepNum = (NSUInteger)atomic_fetch_add(doneInRootPtr, 1) + 1;
+                                broadcastProgress(WQLocalizedFormat(@"Measuring %@ %lu of %lu…", kind,
+                                                  (unsigned long)stepNum, (unsigned long)count),
+                                                  base + share * (0.1f + 0.9f * (float)stepNum / (float)count),
+                                                  soFar,
+                                                  stepNum == count);
+
+                                WQCacheItem *built = nil;
+                                BOOL missingId = NO;
+                                if (!(cacheKnown && tempKnown && cacheBytes + tempBytes < 64 * 1024)) {
+                                    WQCacheItem *item = [WQCacheItem new];
+                                    NSString *bid = granted ? wq_container_label(c) : nil;
+                                    item.bundleID = bid;
+                                    if (bid) (void)wq_app_icon(bid);   // warm the icon off the main thread
+                                    item.name = wq_display_name(bid) ?: bid ?: c.lastPathComponent;
+                                    item.targets = @[caches, tmp];
+                                    item.cacheBytes = cacheBytes;
+                                    item.tempBytes = tempBytes;
+                                    item.cacheKnown = cacheKnown;
+                                    item.tempKnown = tempKnown;
+                                    item.limited = !cacheKnown || !tempKnown;
+                                    item.containerPath = c;
+                                    item.targetRecords = @[
+                                        WQCacheTargetRecordForPath(caches, @"Library/Caches"),
+                                        WQCacheTargetRecordForPath(tmp, @"tmp"),
+                                    ];
+                                    WQCacheCaptureContainerIdentity(item);
+                                    if (!bid.length || !item.containerIdentityKnown) {
+                                        item.limited = YES;
+                                        missingId = YES;
+                                    }
+                                    item.selected = !item.limited;
+                                    built = item;
+                                }
+                                @synchronized (aggLock) {
+                                    if (!granted || !safeContainer) {
+                                        scanLimited = YES;
+                                        limitedContainers++;
+                                        wq_log(@"cache scan: %@ (%@) %@", c.lastPathComponent, wq_bundle_id_for_container(c) ?: @"unknown app",
+                                               safeContainer ? @"refused access" : @"failed the path safety check");
+                                    }
+                                    if (cacheState == WQCacheMeasurementLimited || tempState == WQCacheMeasurementLimited) {
+                                        scanLimited = YES;
+                                        limitedMeasurements++;
+                                    }
+                                    if (missingId) {
+                                        scanLimited = YES;
+                                        missingIdentities++;
+                                    }
+                                    if (built) [items addObject:built];
+                                }
+                            }
+                        }
+                    }
+                }
+                dispatch_semaphore_signal(workerLimit);
+            });
         }
-        if (cancellation.isCancelled) return;
+        if (cancellation.isCancelled) {
+            @synchronized (gWQCacheHubLock) {
+                if (generation == gWQCacheHubGeneration) gWQCacheHubInFlight = NO;
+            }
+            return;
+        }
+
         unsigned long long crash = 0;
         // Crash logs are in a system group, which worse_query reaches on iOS 27
         // only. On iOS 26 the section is left out instead of reported as limited.
@@ -910,7 +1077,12 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         WQCacheMeasurementState crashState = !crashReachable ? WQCacheMeasurementMissing
             : safeCrashPath ? WQCacheMeasureDirectory(kCrashLogsPath, cancellation, &crash)
                             : WQCacheMeasurementLimited;
-        if (crashState == WQCacheMeasurementCancelled) return;
+        if (crashState == WQCacheMeasurementCancelled) {
+            @synchronized (gWQCacheHubLock) {
+                if (generation == gWQCacheHubGeneration) gWQCacheHubInFlight = NO;
+            }
+            return;
+        }
         BOOL crashLimited = crashState == WQCacheMeasurementLimited;
         if (crashLimited) scanLimited = YES;
         if (crashState == WQCacheMeasurementLimited || crash > 0) {
@@ -956,10 +1128,6 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
                                                 [emptyRoots componentsJoinedByString:@" or "]);
             [notes insertObject:[empty stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@".。"]] atIndex:0];
         }
-        // Only app and extension problems make the scan incomplete; Crash
-        // Logs that can't be measured get their own sentence. A list without
-        // app rows says how many were checked (everything was already clean
-        // looked like a broken scan).
         NSUInteger appRows = 0;
         for (WQCacheItem *item in items) if (!item.crashLogs) appRows++;
         NSMutableArray<NSString *> *sentences = [NSMutableArray new];
@@ -975,28 +1143,103 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
         }
         if (crashLimited) [sentences addObject:WQLocalized(@"Crash Logs can't be fully measured on this device.")];
         if (sentences.count) note = [sentences componentsJoinedByString:@" "];
+        unsigned long long totalFoundBytes = (unsigned long long)atomic_load(atomicFoundBytesPtr);
         wq_log(@"cache scan: %lu containers checked, %lu rows, %@ found%@", (unsigned long)checkedContainers, (unsigned long)appRows,
-               wq_size_text(foundBytes), crashLimited ? @", Crash Logs limited" : @"");
+               wq_size_text(totalFoundBytes), crashLimited ? @", Crash Logs limited" : @"");
+
+        NSTimeInterval finishedAt = NSDate.date.timeIntervalSinceReferenceDate;
+        @synchronized (gWQCacheHubLock) {
+            if (generation != gWQCacheHubGeneration || cancellation.isCancelled) return;
+            gWQCacheHubInFlight = NO;
+            gWQCacheHubCompleted = YES;
+            gWQCacheHubFinishedAt = finishedAt;
+            gWQCacheHubItems = items;
+            gWQCacheHubLimited = scanLimited;
+            gWQCacheHubNote = note;
+            gWQCacheHubStatus = nil;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-            self->_items = items;
-            [self rebuildVisibleItems];
-            self->_scanning = NO;
-            self->_scanLimited = scanLimited;
-            self->_status = note;
-            self->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
-            [self.refreshControl endRefreshing];
-            [self.tableView reloadData];
-            [self.tableView layoutIfNeeded];
-            UITableViewCell *summaryCell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]];
-            if (summaryCell) wq_motion_trigger_scan_sweep(summaryCell.contentView);
-            if (!self->_didCascade && self.visibleItems.count) {
-                self->_didCascade = YES;
-                wq_motion_cascade_visible(self.tableView);
+            for (WQCacheCleanerViewController *vc in wq_cache_hub_snapshot_observers()) {
+                [vc applySharedCacheResult:items limited:scanLimited note:note finishedAt:finishedAt];
             }
-            [self updateButtons];
         });
     });
+}
+
++ (void)wq_prewarmOnLaunch
+{
+    wq_cache_start_shared_scan(NO);
+}
+
+- (void)scan
+{
+    if (_cleaning) {
+        _rescanAfterClean = YES;
+        [self.refreshControl endRefreshing];
+        return;
+    }
+    BOOL forceFresh = _forceFreshNextScan;
+    _forceFreshNextScan = NO;
+    wq_cache_hub_init();
+    _scanGeneration++;
+    _cleanRequiresRescan = NO;
+    _result = nil;
+
+    if (!forceFresh) {
+        BOOL hubFresh = NO;
+        NSArray<WQCacheItem *> *cachedItems = nil;
+        BOOL cachedLimited = NO;
+        NSString *cachedNote = nil;
+        NSTimeInterval cachedAt = 0;
+        BOOL hubInFlight = NO;
+        NSString *liveStatus = nil;
+        float liveProg = 0;
+        unsigned long long liveBytes = 0;
+        @synchronized (gWQCacheHubLock) {
+            cachedAt = gWQCacheHubFinishedAt;
+            hubFresh = gWQCacheHubCompleted && gWQCacheHubItems != nil &&
+                       (NSDate.date.timeIntervalSinceReferenceDate - cachedAt <= 600.0);
+            if (hubFresh) {
+                cachedItems = gWQCacheHubItems;
+                cachedLimited = gWQCacheHubLimited;
+                cachedNote = gWQCacheHubNote;
+            }
+            hubInFlight = gWQCacheHubInFlight;
+            liveStatus = gWQCacheHubStatus;
+            liveProg = gWQCacheHubProgress;
+            liveBytes = gWQCacheHubFoundBytes;
+            [gWQCacheHubObservers addObject:self];
+            _scanCancellation = gWQCacheHubCancellation;
+        }
+        if (hubFresh) {
+            [self applySharedCacheResult:cachedItems limited:cachedLimited note:cachedNote finishedAt:cachedAt];
+            return;
+        }
+        if (hubInFlight) {
+            _scanning = YES;
+            _scanProgress = liveProg;
+            _scanBytes = liveBytes;
+            [self updateButtons];
+            [self setStatus:liveStatus ?: WQLocalizedNullable(@"Finding apps…") progress:liveProg];
+            return;
+        }
+    } else {
+        [_scanCancellation cancel];
+        @synchronized (gWQCacheHubLock) {
+            [gWQCacheHubObservers addObject:self];
+        }
+    }
+
+    _scanning = YES;
+    _scanProgress = 0;
+    _scanBytes = 0;
+    _scanLimited = NO;
+    [self updateButtons];
+    [self setStatus:WQLocalizedNullable(@"Finding apps…")];
+    wq_cache_start_shared_scan(forceFresh);
+    @synchronized (gWQCacheHubLock) {
+        _scanCancellation = gWQCacheHubCancellation;
+    }
 }
 
 #pragma mark Table
@@ -1193,12 +1436,19 @@ static BOOL WQCacheValidateItem(WQCacheItem *item, NSString **reason)
             return;
         }
         NSUInteger i = 0;
+        CFTimeInterval lastCleanPush = 0;
         for (WQCacheItem *item in selected) {
             if (cancellation.isCancelled) { cancelled = YES; break; }
             i++;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self setStatus:WQLocalizedFormat(@"Cleaning %lu of %lu: %@", (unsigned long)i, (unsigned long)selected.count, item.name)];
-            });
+            CFTimeInterval now = CACurrentMediaTime();
+            if (i == 1 || i == selected.count || (now - lastCleanPush) >= 0.033) {
+                lastCleanPush = now;
+                NSUInteger idxSnapshot = i;
+                NSString *nameSnapshot = item.name;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self setStatus:WQLocalizedFormat(@"Cleaning %lu of %lu: %@", (unsigned long)idxSnapshot, (unsigned long)selected.count, nameSnapshot)];
+                });
+            }
             for (WQCacheTargetRecord *record in item.targetRecords) {
                 if (cancellation.isCancelled) { cancelled = YES; break; }
                 NSString *reason = nil;

@@ -9,7 +9,9 @@
 //
 
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <stdatomic.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import "WQAccess.h"
@@ -22,6 +24,16 @@
 #import "WQDir.h"
 #import "WQApps.h"
 #import "WQCache.h"
+
+@protocol WQLaunchPrewarmable <NSObject>
++ (void)wq_prewarmOnLaunch;
+@end
+
+@interface WQAppsViewController (WQLaunchPrewarm) <WQLaunchPrewarmable>
+@end
+
+@interface WQCacheCleanerViewController (WQLaunchPrewarm) <WQLaunchPrewarmable>
+@end
 #import "WQCore.h"
 #import "WQAccessSafety.h"
 #import <CommonCrypto/CommonDigest.h>
@@ -2643,7 +2655,11 @@ static NSString *wq_info_date(struct timespec ts)
                 [self updateHeader];
             });
             CFAbsoluteTime scanStarted = CFAbsoluteTimeGetCurrent();
-            childPaths = wq_enumerate(path, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused f) {
+            __block CFTimeInterval lastInodeUIPush = 0;
+            childPaths = wq_enumerate(path, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger f) {
+                CFTimeInterval now = CACurrentMediaTime();
+                if (done < total && (now - lastInodeUIPush) < 0.033) return;
+                lastInodeUIPush = now;
                 // Time left, once the rate is known: an iOS 26 id scan can take most of an hour.
                 double elapsed = CFAbsoluteTimeGetCurrent() - scanStarted;
                 NSString *left = @"";
@@ -2675,100 +2691,126 @@ static NSString *wq_info_date(struct timespec ts)
             });
             return;
         }
-        NSMutableArray<WQItem *> *items = [NSMutableArray new];
-        NSUInteger labelIssues = 0;
         NSArray *entries = names ?: childPaths;
         BOOL haveFullPaths = names == nil;
-        NSUInteger entryIndex = 0, entryCount = entries.count;
-        for (NSString *entry in entries) {
-            entryIndex++;
-            // Each container needs a token and its identifier: hundreds take a
-            // few seconds, so show where it is.
-            if (haveFullPaths && (entryIndex == 1 || entryIndex % 10 == 0)) {
-                NSUInteger shown = entryIndex;
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                    self->_scanStatus = WQLocalizedFormat(@"Reading containers… %lu of %lu", (unsigned long)shown, (unsigned long)entryCount);
-                    [self updateHeader];
-                });
-            }
-            if (cancellation.isCancelled) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (generation != self->_scanGeneration) return;
-                    self->_scanInFlight = NO;
-                    self->_scanNeedsRefresh = YES;
-                    self->_scanStatus = nil;
-                    [self.refreshControl endRefreshing];
-                    [self updateHeader];
-                });
-                return;
-            }
-            WQItem *item = [WQItem new];
-            item.name = haveFullPaths ? entry.lastPathComponent : entry;
-            item.path = haveFullPaths ? entry : [path stringByAppendingPathComponent:entry];
-            NSString *name = item.name;
-            // Enumerated containers need a token before they can be stat'd.
-            if (haveFullPaths) {
-                item.isDir = YES;
-                BOOL token = wq_grant(item.path);
-                NSString *bid = token ? wq_container_label(item.path) : nil;
-                if (!bid && bundleRoot) bid = wq_bundle_id_for_container(item.path);
-                item.bundleID = bid;
-                if (bid) (void)wq_app_icon(bid);   // warm the icon off the main thread
-                item.label = token || bid ? (wq_display_name(bid) ?: bid ?: WQLocalized(@"(no label)")) : WQLocalized(@"NO TOKEN");
-                if (!token && labelIssues < 3) {
-                    wq_log(@"label: no token for %@", item.path);
-                    labelIssues++;
-                } else if (token && !bid.length && labelIssues < 3) {
-                    // Once per container per launch; refreshes would repeat it.
-                    static NSMutableSet<NSString *> *reported;
-                    @synchronized ([WQItem class]) {
-                        if (!reported) reported = [NSMutableSet new];
-                        if (![reported containsObject:item.path]) {
-                            [reported addObject:item.path];
-                            wq_log(@"label: no container identifier for %@", item.path);
+        NSUInteger entryCount = entries.count;
+        NSMutableArray *slots = [NSMutableArray arrayWithCapacity:entryCount];
+        for (NSUInteger k = 0; k < entryCount; k++) [slots addObject:NSNull.null];
+        NSObject *slotLock = [NSObject new];
+        __block NSUInteger labelIssues = 0;
+        _Atomic uint64_t doneEntriesVal = 0;
+        _Atomic uint64_t *doneEntriesPtr = &doneEntriesVal;
+        __block CFTimeInterval lastEntryUIPush = 0;
+        NSObject *uiLock = [NSObject new];
+        NSString *backupParent = wq_backup_root().stringByDeletingLastPathComponent;
+
+        if (entryCount > 0) {
+            NSUInteger maxWorkers = MAX((NSUInteger)4, MIN((NSUInteger)8, NSProcessInfo.processInfo.activeProcessorCount));
+            dispatch_semaphore_t workerLimit = dispatch_semaphore_create((long)maxWorkers);
+            dispatch_queue_t pq = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+            dispatch_apply(entryCount, pq, ^(size_t idx) {
+                if (cancellation.isCancelled) return;
+                dispatch_semaphore_wait(workerLimit, DISPATCH_TIME_FOREVER);
+                @autoreleasepool {
+                    if (!cancellation.isCancelled) {
+                        NSString *entry = entries[idx];
+                        NSUInteger stepNum = (NSUInteger)atomic_fetch_add(doneEntriesPtr, 1) + 1;
+                        if (haveFullPaths) {
+                            CFTimeInterval now = CACurrentMediaTime();
+                            BOOL push = NO;
+                            @synchronized (uiLock) {
+                                if (stepNum == 1 || stepNum == entryCount || (now - lastEntryUIPush) >= 0.033) {
+                                    lastEntryUIPush = now;
+                                    push = YES;
+                                }
+                            }
+                            if (push) {
+                                dispatch_async(dispatch_get_main_queue(), ^{
+                                    if (generation != self->_scanGeneration || cancellation.isCancelled) return;
+                                    self->_scanStatus = WQLocalizedFormat(@"Reading containers… %lu of %lu", (unsigned long)stepNum, (unsigned long)entryCount);
+                                    [self updateHeader];
+                                });
+                            }
+                        }
+                        WQItem *item = [WQItem new];
+                        item.name = haveFullPaths ? entry.lastPathComponent : entry;
+                        item.path = haveFullPaths ? entry : [path stringByAppendingPathComponent:entry];
+                        NSString *name = item.name;
+                        // Enumerated containers need a token before they can be stat'd.
+                        if (haveFullPaths) {
+                            item.isDir = YES;
+                            BOOL token = wq_grant(item.path);
+                            NSString *bid = token ? wq_container_label(item.path) : nil;
+                            if (!bid && bundleRoot) bid = wq_bundle_id_for_container(item.path);
+                            item.bundleID = bid;
+                            if (bid) (void)wq_app_icon(bid);   // warm the icon off the main thread
+                            item.label = token || bid ? (wq_display_name(bid) ?: bid ?: WQLocalized(@"(no label)")) : WQLocalized(@"NO TOKEN");
+                            if (!token) {
+                                @synchronized (slotLock) {
+                                    if (labelIssues < 3) {
+                                        wq_log(@"label: no token for %@", item.path);
+                                        labelIssues++;
+                                    }
+                                }
+                            } else if (token && !bid.length) {
+                                static NSMutableSet<NSString *> *reported;
+                                @synchronized ([WQItem class]) {
+                                    if (!reported) reported = [NSMutableSet new];
+                                    if (labelIssues < 3 && ![reported containsObject:item.path]) {
+                                        [reported addObject:item.path];
+                                        wq_log(@"label: no container identifier for %@", item.path);
+                                        labelIssues++;
+                                    }
+                                }
+                            }
+                        }
+                        struct stat st;
+                        if (lstat(item.path.fileSystemRepresentation, &st) == 0) {
+                            item.isLink = S_ISLNK(st.st_mode);
+                            item.isDir = S_ISDIR(st.st_mode);
+                            item.isRegular = S_ISREG(st.st_mode);
+                            item.identity = wq_identity_for_stat(&st);
+                            item.size = (unsigned long long)st.st_size;
+                            item.mode = st.st_mode;
+                            item.uid = st.st_uid;
+                            item.modified = [NSDate dateWithTimeIntervalSince1970:st.st_mtimespec.tv_sec];
+                            item.created = [NSDate dateWithTimeIntervalSince1970:st.st_birthtimespec.tv_sec];
+                        }
+                        if (!haveFullPaths && labels && item.isDir && wq_looks_like_uuid(name)) {
+                            NSString *bid = wq_container_label(item.path);
+                            item.bundleID = bid;
+                            if (bid) (void)wq_app_icon(bid);   // warm the icon off the main thread
+                            item.label = wq_display_name(bid) ?: bid;
+                        }
+                        if (!haveFullPaths && item.isDir && !item.bundleID) {
+                            // App backups: AppBackups/<bundle id>/...
+                            if ([path.lastPathComponent isEqualToString:@"AppBackups"]) {
+                                item.bundleID = name;
+                                item.label = wq_display_name(name) ?: name;
+                            }
+                            // File backups mirror the original path; label container UUIDs
+                            // from the live container they came from.
+                            NSString *live = wq_backup_original_path(item.path);
+                            if (live && wq_looks_like_uuid(name)) {
+                                NSString *bid = wq_container_label(live);
+                                if (bid) { item.bundleID = bid; item.label = wq_display_name(bid) ?: bid; (void)wq_app_icon(bid); }
+                            }
+                            if ([path isEqualToString:backupParent]) {
+                                if ([name isEqualToString:@"Backups"]) item.label = WQLocalized(@"File Backups");
+                                if ([name isEqualToString:@"AppBackups"]) item.label = WQLocalized(@"App Backups");
+                            }
+                        }
+                        @synchronized (slotLock) {
+                            slots[idx] = item;
                         }
                     }
-                    labelIssues++;
                 }
-            }
-            struct stat st;
-            if (lstat(item.path.fileSystemRepresentation, &st) == 0) {
-                item.isLink = S_ISLNK(st.st_mode);
-                item.isDir = S_ISDIR(st.st_mode);
-                item.isRegular = S_ISREG(st.st_mode);
-                item.identity = wq_identity_for_stat(&st);
-                item.size = (unsigned long long)st.st_size;
-                item.mode = st.st_mode;
-                item.uid = st.st_uid;
-                item.modified = [NSDate dateWithTimeIntervalSince1970:st.st_mtimespec.tv_sec];
-                item.created = [NSDate dateWithTimeIntervalSince1970:st.st_birthtimespec.tv_sec];
-            }
-            if (!haveFullPaths && labels && item.isDir && wq_looks_like_uuid(name)) {
-                NSString *bid = wq_container_label(item.path);
-                item.bundleID = bid;
-                if (bid) (void)wq_app_icon(bid);   // warm the icon off the main thread
-                item.label = wq_display_name(bid) ?: bid;
-            }
-            if (!haveFullPaths && item.isDir && !item.bundleID) {
-                // App backups: AppBackups/<bundle id>/...
-                if ([path.lastPathComponent isEqualToString:@"AppBackups"]) {
-                    item.bundleID = name;
-                    item.label = wq_display_name(name) ?: name;
-                }
-                // File backups mirror the original path; label container UUIDs
-                // from the live container they came from.
-                NSString *live = wq_backup_original_path(item.path);
-                if (live && wq_looks_like_uuid(name)) {
-                    NSString *bid = wq_container_label(live);
-                    if (bid) { item.bundleID = bid; item.label = wq_display_name(bid) ?: bid; (void)wq_app_icon(bid); }
-                }
-                if ([path isEqualToString:wq_backup_root().stringByDeletingLastPathComponent]) {
-                    if ([name isEqualToString:@"Backups"]) item.label = WQLocalized(@"File Backups");
-                    if ([name isEqualToString:@"AppBackups"]) item.label = WQLocalized(@"App Backups");
-                }
-            }
-            [items addObject:item];
+                dispatch_semaphore_signal(workerLimit);
+            });
+        }
+        NSMutableArray<WQItem *> *items = [NSMutableArray arrayWithCapacity:entryCount];
+        for (id obj in slots) {
+            if ([obj isKindOfClass:WQItem.class]) [items addObject:obj];
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != self->_scanGeneration) return;
@@ -6019,18 +6061,75 @@ static void wq_apply_design(void);
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// MARK: Access check
+// MARK: Access check & Launch Pre-Warm
+
+static NSObject *gWQHomeHealthLock;
+static BOOL gWQHomeHealthInFlight;
+static BOOL gWQHomeHealthDone;
+static NSArray<WQHealthCheck *> *gWQHomeHealthChecks;
+static NSString *gWQHomeHealthGroup;
+static NSHashTable<WQPrismHomeViewController *> *gWQHomeHealthObservers;
+
+static void wq_home_health_init(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gWQHomeHealthLock = [NSObject new];
+        gWQHomeHealthObservers = [NSHashTable weakObjectsHashTable];
+    });
+}
 
 - (void)runHealthCheck
 {
+    [self runHealthCheckForceFresh:NO];
+}
+
+- (void)runHealthCheckForceFresh:(BOOL)forceFresh
+{
     if (_checkingAccess) return;
+    wq_home_health_init();
+    if (!forceFresh) {
+        BOOL prewarmDone = NO;
+        BOOL prewarmInFlight = NO;
+        NSArray<WQHealthCheck *> *cachedChecks = nil;
+        NSString *cachedGroup = nil;
+        @synchronized (gWQHomeHealthLock) {
+            prewarmDone = gWQHomeHealthDone && gWQHomeHealthChecks != nil;
+            prewarmInFlight = gWQHomeHealthInFlight;
+            if (prewarmDone) {
+                cachedChecks = gWQHomeHealthChecks;
+                cachedGroup = gWQHomeHealthGroup;
+            } else if (prewarmInFlight) {
+                [gWQHomeHealthObservers addObject:self];
+            }
+        }
+        if (prewarmDone) {
+            if (cachedGroup.length) _appGroupName = cachedGroup;
+            [self healthCheckFinished:cachedChecks];
+            return;
+        }
+        if (prewarmInFlight) {
+            _checkingAccess = YES;
+            [self updateHealthUI];
+            return;
+        }
+    }
     _checkingAccess = YES;
     [self updateHealthUI];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *group = wq_app_group();
         NSArray<WQHealthCheck *> *checks = wq_health_run(nil);
+        @synchronized (gWQHomeHealthLock) {
+            gWQHomeHealthDone = YES;
+            gWQHomeHealthGroup = group;
+            gWQHomeHealthChecks = checks;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf healthCheckFinished:checks];
+            WQPrismHomeViewController *me = weakSelf;
+            if (!me) return;
+            if (group.length) me->_appGroupName = group;
+            [me healthCheckFinished:checks];
         });
     });
 }
@@ -6062,12 +6161,43 @@ static void wq_apply_design(void);
     [self presentPendingHealthFailure];
 }
 
+static void wq_home_prewarm_health_on_launch(void)
+{
+    wq_home_health_init();
+    @synchronized (gWQHomeHealthLock) {
+        if (gWQHomeHealthInFlight || gWQHomeHealthDone) return;
+        gWQHomeHealthInFlight = YES;
+    }
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *group = wq_app_group();
+        if (!wq_display_names_loaded()) wq_load_display_names();
+        NSArray<WQHealthCheck *> *checks = wq_health_run(nil);
+        NSArray<WQPrismHomeViewController *> *targets = nil;
+        @synchronized (gWQHomeHealthLock) {
+            gWQHomeHealthInFlight = NO;
+            gWQHomeHealthDone = YES;
+            gWQHomeHealthGroup = group;
+            gWQHomeHealthChecks = checks;
+            targets = gWQHomeHealthObservers.allObjects;
+            [gWQHomeHealthObservers removeAllObjects];
+        }
+        if (targets.count) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                for (WQPrismHomeViewController *vc in targets) {
+                    if (group.length) vc->_appGroupName = group;
+                    [vc healthCheckFinished:checks];
+                }
+            });
+        }
+    });
+}
+
 - (void)quickCheckTapped
 {
     if (_checkingAccess) return;
     wq_haptic_impact(UIImpactFeedbackStyleMedium);
     _hapticOnFinish = YES;
-    [self runHealthCheck];
+    [self runHealthCheckForceFresh:YES];
 }
 
 - (void)fullScanTapped
@@ -6078,7 +6208,7 @@ static void wq_apply_design(void);
     wq_display_names_reset_miss();
     wq_log(@"home: full scan requested; listing caches cleared");
     _hapticOnFinish = YES;
-    [self runHealthCheck];
+    [self runHealthCheckForceFresh:YES];
 }
 
 - (void)updateHealthBadgeTint:(UIColor *)tint
@@ -6735,10 +6865,34 @@ static NSString *const kWQTroubleshootingFooter =
 - (void)reloadVaultCounts
 {
     __weak typeof(self) weakSelf = self;
-    dispatch_async(wq_io(), ^{
-        NSUInteger appCount = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:wq_app_backup_root() error:nil] count];
-        NSUInteger fileCount = [[NSFileManager.defaultManager contentsOfDirectoryAtPath:wq_backup_root() error:nil] count];
-        NSUInteger delCount = [wq_recently_deleted_checked(nil) count];
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_async(q, ^{
+        __block NSUInteger appCount = 0;
+        __block NSUInteger fileCount = 0;
+        __block NSUInteger delCount = 0;
+        NSArray<NSURLResourceKey> *keys = @[
+            NSURLTotalFileAllocatedSizeKey,
+            NSURLIsDirectoryKey,
+            NSURLContentModificationDateKey,
+        ];
+        NSUInteger (^countDir)(NSString *) = ^NSUInteger(NSString *dir) {
+            if (!dir.length) return 0;
+            NSUInteger c = 0;
+            NSDirectoryEnumerator<NSURL *> *en = [NSFileManager.defaultManager
+                enumeratorAtURL:[NSURL fileURLWithPath:dir]
+                includingPropertiesForKeys:keys
+                options:NSDirectoryEnumerationSkipsSubdirectoryDescendants
+                errorHandler:nil];
+            for (NSURL *__unused u in en) c++;
+            return c;
+        };
+        dispatch_apply(3, q, ^(size_t idx) {
+            @autoreleasepool {
+                if (idx == 0) appCount = countDir(wq_app_backup_root());
+                else if (idx == 1) fileCount = countDir(wq_backup_root());
+                else delCount = [wq_recently_deleted_checked(nil) count];
+            }
+        });
         NSString *appLbl = WQLocalized(@"App Backups");
         NSString *fileLbl = WQLocalized(@"File Backups");
         NSString *delLbl = WQLocalized(@"Recently Deleted");
@@ -7636,6 +7790,25 @@ static UIViewController *wq_make_root_view_controller(void)
 @property (nonatomic, strong) UIWindow *window;
 @end
 
+// Coordinated Zero-Wait Launch Pre-Warm Pipeline: triggered immediately after
+// the first UI frame appears on QOS_CLASS_USER_INITIATED so Home health, Apps,
+// Cache Cleaner, and Spotlight search are all pre-loaded in parallel.
+static void wq_launch_prewarm_pipeline(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            wq_home_prewarm_health_on_launch();
+            [WQAppsViewController wq_prewarmOnLaunch];
+            [WQCacheCleanerViewController wq_prewarmOnLaunch];
+            Class spotlightCls = NSClassFromString(@"WQSpotlightViewController");
+            if (spotlightCls && [spotlightCls respondsToSelector:@selector(wq_prewarmOnLaunch)]) {
+                [(Class<WQLaunchPrewarmable>)spotlightCls wq_prewarmOnLaunch];
+            }
+        });
+    });
+}
+
 @implementation WQSceneDelegate
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options
@@ -7646,6 +7819,10 @@ static UIViewController *wq_make_root_view_controller(void)
     window.rootViewController = wq_make_root_view_controller();
     [window makeKeyAndVisible];
     self.window = window;
+    // Schedule pre-warm right after the first frame commits so launch is instantaneous.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        wq_launch_prewarm_pipeline();
+    });
 }
 
 @end

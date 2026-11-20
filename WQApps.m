@@ -17,8 +17,10 @@
 #import "WQCore.h"
 #import "WQAppsSupport.h"
 #import "WQArchive.h"
+#import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <errno.h>
+#import <stdatomic.h>
 #import <sys/mount.h>
 #import <sys/stat.h>
 
@@ -311,15 +313,17 @@ static NSArray<NSDictionary *> *wq_app_backups(NSString *bundleID)
         NSString *path = [root stringByAppendingPathComponent:name];
         struct stat st;
         if (lstat(path.fileSystemRepresentation, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        time_t dirMtime = st.st_mtime;
         NSString *validationError = nil;
         NSArray *parts = nil;
         NSDictionary *manifest = nil;
         BOOL verified = NO;
         BOOL valid = wq_validate_backup(path, bundleID, YES, &parts, &manifest, &verified, &validationError);
-        BOOL hasManifest = lstat([[path stringByAppendingPathComponent:kBackupManifest] fileSystemRepresentation], &st) == 0;
+        struct stat mst;
+        BOOL hasManifest = lstat([[path stringByAppendingPathComponent:kBackupManifest] fileSystemRepresentation], &mst) == 0;
         if (!valid && !hasManifest) continue;
-        NSDate *created = [manifest[@"Created"] isKindOfClass:NSDate.class] ? manifest[@"Created"] :
-            [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil][NSFileModificationDate] ?: NSDate.distantPast;
+        NSDate *created = [manifest[@"Created"] isKindOfClass:NSDate.class] ? manifest[@"Created"]
+            : (dirMtime > 0 ? [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)dirMtime] : NSDate.distantPast);
         NSUInteger sequence = WQAppsSupportBackupSequence(name);
         if (WQAppsSupportIsInteger(manifest[@"Sequence"]) && [manifest[@"Sequence"] unsignedIntegerValue])
             sequence = [manifest[@"Sequence"] unsignedIntegerValue];
@@ -807,35 +811,122 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     }
 }
 
+// Shared launch pre-warm cache & in-flight observer hub so opening Apps renders
+// instantaneously (0ms) when pre-warmed, or seamlessly attaches to the active
+// background scan without starting a duplicate scan.
+static NSObject *gWQAppsHubLock;
+static BOOL gWQAppsHubInFlight;
+static BOOL gWQAppsHubCompleted;
+static NSTimeInterval gWQAppsHubFinishedAt;
+static NSUInteger gWQAppsHubGeneration;
+static NSArray<WQAppItem *> *gWQAppsHubApps;
+static NSString *gWQAppsHubNote;
+static NSString *gWQAppsHubProgress;
+static WQScanCancellation *gWQAppsHubCancellation;
+static NSHashTable<WQAppsViewController *> *gWQAppsHubObservers;
+
+static void wq_apps_hub_init(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gWQAppsHubLock = [NSObject new];
+        gWQAppsHubObservers = [NSHashTable weakObjectsHashTable];
+    });
+}
+
+static NSArray<WQAppsViewController *> *wq_apps_hub_snapshot_observers(void)
+{
+    wq_apps_hub_init();
+    @synchronized (gWQAppsHubLock) {
+        return gWQAppsHubObservers.allObjects;
+    }
+}
+
+- (void)applySharedScanProgress:(NSString *)status
+{
+    if (!_scanning) return;
+    _status = status;
+    [self updateAppsSummary];
+    [self.tableView reloadData];
+}
+
+- (void)applySharedScanResult:(NSArray<WQAppItem *> *)apps note:(NSString *)note finishedAt:(NSTimeInterval)finishedAt
+{
+    _scanning = NO;
+    _lastScanFinished = finishedAt;
+    _apps = apps;
+    [self rebuildVisibleApps];
+    [self.refreshControl endRefreshing];
+    [self setBusy:NO status:note];
+    [self offerPendingRestore];
+}
+
 // Pull to refresh: rescan the containers instead of reusing the shared scan,
 // and look for the app name database again if it wasn't found before.
 - (void)userRefresh
 {
     wq_enumerate_invalidate();
     wq_display_names_reset_miss();
-    [self scan];
+    [self scanForceFresh:YES];
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
     [self syncFilterPills];
+    wq_apps_hub_init();
+    BOOL hubInFlight = NO;
+    BOOL hubFresh = NO;
+    NSArray<WQAppItem *> *cachedApps = nil;
+    NSString *cachedNote = nil;
+    NSString *liveProgress = nil;
+    NSTimeInterval cachedAt = 0;
+    @synchronized (gWQAppsHubLock) {
+        hubInFlight = gWQAppsHubInFlight;
+        cachedAt = gWQAppsHubFinishedAt;
+        hubFresh = gWQAppsHubCompleted && gWQAppsHubApps != nil &&
+                   (NSDate.date.timeIntervalSinceReferenceDate - cachedAt <= 600.0);
+        if (hubFresh) {
+            cachedApps = gWQAppsHubApps;
+            cachedNote = gWQAppsHubNote;
+        }
+        liveProgress = gWQAppsHubProgress;
+    }
+    if (hubInFlight && !_apps) {
+        @synchronized (gWQAppsHubLock) { [gWQAppsHubObservers addObject:self]; }
+        _scanning = YES;
+        [self setBusy:YES status:liveProgress ?: WQLocalizedNullable(@"Finding apps…")];
+        return;
+    }
+    if (hubFresh && (!_apps || _lastScanFinished < cachedAt)) {
+        [self applySharedScanResult:cachedApps note:cachedNote finishedAt:cachedAt];
+        [self refreshBackups];
+        return;
+    }
     if (_scanning && _scanCancellation.isCancelled) { [self scan]; return; }
     if (_scanning || !_apps) return;
     // The start screen keeps this screen between visits: rescan on its own
     // only when the list is old (pull to refresh rescans any time). Backups
     // may have been made or deleted elsewhere, so reread those (cheap).
-    if (NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 600.0) { [self scan]; return; }
+    if (NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 600.0) { [self scanForceFresh:YES]; return; }
     [self refreshBackups];
 }
 
 - (void)refreshBackups
 {
     NSArray<WQAppItem *> *apps = _apps;
+    if (!apps.count) return;
     NSUInteger generation = _scanGeneration;
-    dispatch_async(wq_io(), ^{
-        NSMutableArray *lists = [NSMutableArray arrayWithCapacity:apps.count];
-        for (WQAppItem *app in apps) [lists addObject:app.bundleID.length ? wq_app_backups(app.bundleID) : @[]];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSUInteger count = apps.count;
+        NSMutableArray *lists = [NSMutableArray arrayWithCapacity:count];
+        for (NSUInteger i = 0; i < count; i++) [lists addObject:@[]];
+        NSObject *slotLock = [NSObject new];
+        dispatch_apply(count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t i) {
+            WQAppItem *app = apps[i];
+            NSArray *b = app.bundleID.length ? wq_app_backups(app.bundleID) : @[];
+            @synchronized (slotLock) { lists[i] = b; }
+        });
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != self->_scanGeneration || self->_scanning) return;
             BOOL changed = NO;
@@ -854,7 +945,12 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
-    if (_scanning) [_scanCancellation cancel];
+    // Detach UI observer without cancelling a shared launch pre-warm scan so
+    // returning to Apps renders the finished list immediately.
+    wq_apps_hub_init();
+    @synchronized (gWQAppsHubLock) {
+        [gWQAppsHubObservers removeObject:self];
+    }
 }
 
 - (void)setBusy:(BOOL)busy status:(NSString *)status
@@ -912,33 +1008,60 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
     });
 }
 
-- (void)scan
+static void wq_apps_start_shared_scan(BOOL forceFresh)
 {
-    [_scanCancellation cancel];
-    WQScanCancellation *cancellation = [WQScanCancellation new];
-    _scanCancellation = cancellation;
-    NSUInteger generation = ++_scanGeneration;
-    _scanning = YES;
-    [self setBusy:YES status:WQLocalizedNullable(@"Finding apps…")];
+    wq_apps_hub_init();
+    WQScanCancellation *cancellation = nil;
+    NSUInteger generation = 0;
+    @synchronized (gWQAppsHubLock) {
+        if (!forceFresh) {
+            if (gWQAppsHubInFlight) return;
+            if (gWQAppsHubCompleted && gWQAppsHubApps != nil &&
+                NSDate.date.timeIntervalSinceReferenceDate - gWQAppsHubFinishedAt <= 600.0) {
+                return;
+            }
+        }
+        [gWQAppsHubCancellation cancel];
+        cancellation = [WQScanCancellation new];
+        gWQAppsHubCancellation = cancellation;
+        generation = ++gWQAppsHubGeneration;
+        gWQAppsHubInFlight = YES;
+        gWQAppsHubProgress = WQLocalizedNullable(@"Finding apps…");
+    }
+
     NSString *home = [NSHomeDirectory() stringByResolvingSymlinksInPath];
     WQAppScanStep(@"finding app containers");
     WQAppScanWatch(cancellation, 0, 0);
-    dispatch_async(wq_io(), ^{
+
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_async(q, ^{
         CFAbsoluteTime scanStarted = CFAbsoluteTimeGetCurrent();
+        __block CFTimeInterval lastUIPush = 0;
+        NSObject *uiThrottleLock = [NSObject new];
+        void (^broadcastProgress)(NSString *, BOOL) = ^(NSString *msg, BOOL force) {
+            CFTimeInterval now = CACurrentMediaTime();
+            @synchronized (uiThrottleLock) {
+                if (!force && (now - lastUIPush) < 0.033) return;
+                lastUIPush = now;
+            }
+            @synchronized (gWQAppsHubLock) {
+                if (generation != gWQAppsHubGeneration || cancellation.isCancelled) return;
+                gWQAppsHubProgress = msg;
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (cancellation.isCancelled) return;
+                for (WQAppsViewController *vc in wq_apps_hub_snapshot_observers()) {
+                    [vc applySharedScanProgress:msg];
+                }
+            });
+        };
+
         NSArray *containers = wq_enumerate(@"/private/var/mobile/Containers/Data/Application", 0, cancellation,
             ^(int64_t done, int64_t total, NSUInteger __unused f) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                    self->_status = WQLocalizedFormat(@"Finding apps… %lld%%", total ? (long long)(done * 100 / total) : 0);
-                    [self.tableView reloadData];
-                });
+                broadcastProgress(WQLocalizedFormat(@"Finding apps… %lld%%", total ? (long long)(done * 100 / total) : 0), NO);
             });
         if (!cancellation.isCancelled && !wq_display_names_loaded()) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                self->_status = WQLocalized(@"Reading app names…");
-                [self.tableView reloadData];
-            });
+            broadcastProgress(WQLocalized(@"Reading app names…"), YES);
             WQAppScanStep(@"reading app names");
             CFAbsoluteTime namesStarted = CFAbsoluteTimeGetCurrent();
             wq_load_display_names();
@@ -949,87 +1072,119 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
                                CFAbsoluteTimeGetCurrent() - scanStarted);
         if (!containers && !cancellation.isCancelled) wq_log(@"app scan: container enumeration failed; see the preceding enumerate log");
         else if (containers && containers.count == 0) wq_log(@"app scan: enumeration returned no container paths; check the base path and inode bound");
-        NSMutableArray<WQAppItem *> *apps = [NSMutableArray new];
+
+        NSUInteger totalContainers = containers.count;
+        NSMutableArray *slots = [NSMutableArray arrayWithCapacity:totalContainers];
+        for (NSUInteger k = 0; k < totalContainers; k++) [slots addObject:NSNull.null];
         NSMutableArray<NSString *> *refused = [NSMutableArray new];
-        NSUInteger i = 0, missingLabels = 0, limited = 0, sizeLimited = 0;
-        NSUInteger installCounts[3] = {0}, installNotes = 0;
         NSMutableDictionary<NSString *, NSNumber *> *installReasons = [NSMutableDictionary new];
         NSMutableArray<WQAppItem *> *refusedBundles = [NSMutableArray new];
-        for (NSString *c in containers) {
-            if (cancellation.isCancelled) { WQAppScanStep(nil); return; }
-            i++;
-            if ([[c stringByResolvingSymlinksInPath] isEqualToString:home]) continue;  // ourselves
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-                self->_status = WQLocalizedFormat(@"Measuring %lu/%lu…", (unsigned long)i, (unsigned long)containers.count);
-                [self.tableView reloadData];
+        __block NSUInteger missingLabels = 0, limited = 0, sizeLimited = 0, installNotes = 0;
+        __block NSUInteger installInstalled = 0, installOffloaded = 0, installUnknown = 0;
+        NSObject *aggLock = [NSObject new];
+        _Atomic uint64_t doneCountVal = 0;
+        _Atomic uint64_t *doneCountPtr = &doneCountVal;
+
+        // Multi-core parallel scan bounded to hardware core count so all P-cores stay
+        // saturated without exhausting iOS open file descriptors.
+        NSUInteger maxWorkers = MAX((NSUInteger)4, MIN((NSUInteger)8, NSProcessInfo.processInfo.activeProcessorCount));
+        dispatch_semaphore_t workerLimit = dispatch_semaphore_create((long)maxWorkers);
+
+        if (totalContainers > 0 && !cancellation.isCancelled) {
+            dispatch_apply(totalContainers, q, ^(size_t idx) {
+                if (cancellation.isCancelled) return;
+                dispatch_semaphore_wait(workerLimit, DISPATCH_TIME_FOREVER);
+                @autoreleasepool {
+                    if (!cancellation.isCancelled) {
+                        NSString *c = containers[idx];
+                        NSUInteger stepNum = (NSUInteger)atomic_fetch_add(doneCountPtr, 1) + 1;
+                        if (![[c stringByResolvingSymlinksInPath] isEqualToString:home]) {
+                            broadcastProgress(WQLocalizedFormat(@"Measuring %lu/%lu…",
+                                              (unsigned long)stepNum, (unsigned long)totalContainers),
+                                              stepNum == totalContainers);
+                            NSString *shortName = c.lastPathComponent;
+                            WQAppScanStep([NSString stringWithFormat:@"measuring %@ (%lu/%lu)", shortName,
+                                          (unsigned long)stepNum, (unsigned long)totalContainers]);
+                            BOOL granted = wq_grant(c);
+                            NSString *bid = wq_container_label(c);
+                            struct stat identity;
+                            BOOL validBundle = WQAppsSupportBundleIDValid(bid);
+                            BOOL hasIdentity = validBundle && wq_stat(c, &identity) && S_ISDIR(identity.st_mode);
+                            WQAppItem *app = [WQAppItem new];
+                            app.container = c;
+                            app.bundleID = bid;
+                            app.hasAccess = granted;
+                            app.hasIdentity = hasIdentity;
+                            app.containerDevice = hasIdentity ? identity.st_dev : 0;
+                            app.containerInode = hasIdentity ? identity.st_ino : 0;
+                            if (bid.length) (void)wq_app_icon(bid);   // warm icon off the main thread
+                            app.name = bid.length ? (wq_display_name(bid) ?: bid)
+                                                  : WQLocalizedFormat(@"Unknown container (%@)", shortName);
+                            unsigned long long appSize = 0;
+                            BOOL sizeKnown = NO;
+                            if (!granted || !hasIdentity || wq_dir_size_cancellable(c, cancellation, &appSize, &sizeKnown)) {
+                                app.bytes = appSize;
+                                app.sizeKnown = sizeKnown;
+                                app.backups = bid.length ? wq_app_backups(bid) : @[];
+                                NSString *why = nil;
+                                app.installState = bid.length ? wq_app_install_state(bid, &why) : WQInstallUnknown;
+                                NSString *reasonKind = [why componentsSeparatedByString:@":"].firstObject ?: @"no identifier";
+                                @synchronized (aggLock) {
+                                    if (!granted) {
+                                        [refused addObject:[NSString stringWithFormat:@"%@ (%@)", shortName,
+                                                            wq_bundle_id_for_container(c) ?: @"unknown app"]];
+                                    }
+                                    if (!bid.length) {
+                                        missingLabels++;
+                                        if (missingLabels <= 3) wq_log(@"app scan: no container identifier for %@", c);
+                                    }
+                                    if (!granted || !validBundle || !hasIdentity) limited++;
+                                    if (granted && hasIdentity && !sizeKnown) sizeLimited++;
+                                    if (app.installState == WQInstallInstalled) installInstalled++;
+                                    else if (app.installState == WQInstallOffloaded) installOffloaded++;
+                                    else installUnknown++;
+                                    if ([reasonKind isEqualToString:@"refused"]) [refusedBundles addObject:app];
+                                    installReasons[reasonKind] = @([installReasons[reasonKind] unsignedIntegerValue] + 1);
+                                    if (app.installState == WQInstallOffloaded || (app.installState == WQInstallUnknown && installNotes < 6)) {
+                                        if (app.installState == WQInstallUnknown) installNotes++;
+                                        wq_log(@"install state: %@: %@", bid ?: shortName, why ?: @"no identifier");
+                                    }
+                                    slots[idx] = app;
+                                }
+                            }
+                        }
+                    }
+                }
+                dispatch_semaphore_signal(workerLimit);
             });
-            NSString *shortName = c.lastPathComponent;
-            WQAppScanStep([NSString stringWithFormat:@"getting access to %@ (%lu/%lu)", shortName, (unsigned long)i, (unsigned long)containers.count]);
-            BOOL granted = wq_grant(c);
-            if (!granted) {
-                [refused addObject:[NSString stringWithFormat:@"%@ (%@)", c.lastPathComponent,
-                                    wq_bundle_id_for_container(c) ?: @"unknown app"]];
-            }
-            WQAppScanStep([NSString stringWithFormat:@"reading the identifier of %@", shortName]);
-            NSString *bid = wq_container_label(c);
-            if (!bid.length) {
-                missingLabels++;
-                if (missingLabels <= 3) wq_log(@"app scan: no container identifier for %@", c);
-            }
-            struct stat identity;
-            BOOL validBundle = WQAppsSupportBundleIDValid(bid);
-            BOOL hasIdentity = validBundle && wq_stat(c, &identity) && S_ISDIR(identity.st_mode);
-            if (!granted || !validBundle || !hasIdentity) limited++;
-            WQAppItem *app = [WQAppItem new];
-            app.container = c;
-            app.bundleID = bid;
-            app.hasAccess = granted;
-            app.hasIdentity = hasIdentity;
-            app.containerDevice = hasIdentity ? identity.st_dev : 0;
-            app.containerInode = hasIdentity ? identity.st_ino : 0;
-            if (bid.length) (void)wq_app_icon(bid);   // warm the icon off the main thread
-            app.name = bid.length ? (wq_display_name(bid) ?: bid)
-                                  : WQLocalizedFormat(@"Unknown container (%@)", c.lastPathComponent);
-            app.bytes = 0;
-            app.sizeKnown = NO;
-            unsigned long long appSize = 0;
-            BOOL sizeKnown = NO;
-            WQAppScanStep([NSString stringWithFormat:@"measuring %@ (%@)", shortName, bid ?: @"no identifier"]);
-            if (granted && hasIdentity && !wq_dir_size_cancellable(c, cancellation, &appSize, &sizeKnown)) { WQAppScanStep(nil); return; }
-            app.bytes = appSize;
-            app.sizeKnown = sizeKnown;
-            if (granted && hasIdentity && !sizeKnown) sizeLimited++;
-            app.backups = bid.length ? wq_app_backups(bid) : @[];
-            NSString *why = nil;
-            app.installState = bid.length ? wq_app_install_state(bid, &why) : WQInstallUnknown;
-            installCounts[app.installState]++;
-            NSString *reasonKind = [why componentsSeparatedByString:@":"].firstObject ?: @"no identifier";
-            if ([reasonKind isEqualToString:@"refused"]) [refusedBundles addObject:app];
-            installReasons[reasonKind] = @([installReasons[reasonKind] unsignedIntegerValue] + 1);
-            // Every offloaded app (there are few, and they're the claim to check),
-            // and a few of the unknown ones.
-            if (app.installState == WQInstallOffloaded || (app.installState == WQInstallUnknown && installNotes < 6)) {
-                if (app.installState == WQInstallUnknown) installNotes++;
-                wq_log(@"install state: %@: %@", bid ?: c.lastPathComponent, why ?: @"no identifier");
-            }
-            [apps addObject:app];
         }
+
         WQAppScanStep(nil);
-        if (cancellation.isCancelled) return;
+        if (cancellation.isCancelled) {
+            @synchronized (gWQAppsHubLock) {
+                if (generation == gWQAppsHubGeneration) gWQAppsHubInFlight = NO;
+            }
+            return;
+        }
+
+        NSMutableArray<WQAppItem *> *apps = [NSMutableArray arrayWithCapacity:totalContainers];
+        for (id obj in slots) {
+            if ([obj isKindOfClass:WQAppItem.class]) [apps addObject:obj];
+        }
+
         // Offloaded apps' placeholder bundles can be read while installed
         // apps' bundles refuse: once a placeholder was read on this device, a
         // refused bundle is an installed app.
-        if (installCounts[WQInstallOffloaded] && refusedBundles.count) {
+        if (installOffloaded && refusedBundles.count) {
             for (WQAppItem *app in refusedBundles) app.installState = WQInstallInstalled;
-            installCounts[WQInstallInstalled] += refusedBundles.count;
-            installCounts[WQInstallUnknown] -= refusedBundles.count;
+            installInstalled += refusedBundles.count;
+            installUnknown -= refusedBundles.count;
             wq_log(@"install state: %lu refused bundles counted as installed (offloaded placeholders are readable here)",
                    (unsigned long)refusedBundles.count);
         }
         wq_log(@"app scan: %lu apps measured in %.1f s", (unsigned long)apps.count, CFAbsoluteTimeGetCurrent() - scanStarted);
-        wq_log(@"app scan: %lu installed, %lu offloaded, %lu unknown", (unsigned long)installCounts[WQInstallInstalled],
-               (unsigned long)installCounts[WQInstallOffloaded], (unsigned long)installCounts[WQInstallUnknown]);
+        wq_log(@"app scan: %lu installed, %lu offloaded, %lu unknown", (unsigned long)installInstalled,
+               (unsigned long)installOffloaded, (unsigned long)installUnknown);
         NSMutableArray *reasonParts = [NSMutableArray new];
         for (NSString *kind in [installReasons keysSortedByValueUsingSelector:@selector(compare:)].reverseObjectEnumerator)
             [reasonParts addObject:[NSString stringWithFormat:@"%@ %@", installReasons[kind], kind]];
@@ -1045,17 +1200,79 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
         else if (!containers) note = WQLocalized(@"Container enumeration failed. See Log for the statfs/inode reason.");
         else if (!containers.count) note = WQLocalized(@"No app containers were found. Refresh, and check Log for the enumeration reason.");
         else if (limited || sizeLimited) note = WQLocalizedFormat(@"%lu containers · %lu with limited access, identity, size, or no identifier. See Log.", (unsigned long)apps.count, (unsigned long)(limited + sizeLimited));
+
+        NSTimeInterval finishedAt = NSDate.date.timeIntervalSinceReferenceDate;
+        @synchronized (gWQAppsHubLock) {
+            if (generation != gWQAppsHubGeneration || cancellation.isCancelled) return;
+            gWQAppsHubInFlight = NO;
+            gWQAppsHubCompleted = YES;
+            gWQAppsHubFinishedAt = finishedAt;
+            gWQAppsHubApps = apps;
+            gWQAppsHubNote = note;
+            gWQAppsHubProgress = nil;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != self->_scanGeneration || cancellation.isCancelled) return;
-            self->_scanning = NO;
-            self->_lastScanFinished = NSDate.date.timeIntervalSinceReferenceDate;
-            self->_apps = apps;
-            [self rebuildVisibleApps];
-            [self.refreshControl endRefreshing];
-            [self setBusy:NO status:note];
-            [self offerPendingRestore];
+            for (WQAppsViewController *vc in wq_apps_hub_snapshot_observers()) {
+                [vc applySharedScanResult:apps note:note finishedAt:finishedAt];
+            }
         });
     });
+}
+
++ (void)wq_prewarmOnLaunch
+{
+    wq_apps_start_shared_scan(NO);
+}
+
+- (void)scan
+{
+    [self scanForceFresh:NO];
+}
+
+- (void)scanForceFresh:(BOOL)forceFresh
+{
+    wq_apps_hub_init();
+    _scanGeneration++;
+    if (!forceFresh) {
+        BOOL hubFresh = NO;
+        NSArray<WQAppItem *> *cachedApps = nil;
+        NSString *cachedNote = nil;
+        NSTimeInterval cachedAt = 0;
+        BOOL hubInFlight = NO;
+        NSString *liveProgress = nil;
+        @synchronized (gWQAppsHubLock) {
+            cachedAt = gWQAppsHubFinishedAt;
+            hubFresh = gWQAppsHubCompleted && gWQAppsHubApps != nil &&
+                       (NSDate.date.timeIntervalSinceReferenceDate - cachedAt <= 600.0);
+            if (hubFresh) {
+                cachedApps = gWQAppsHubApps;
+                cachedNote = gWQAppsHubNote;
+            }
+            hubInFlight = gWQAppsHubInFlight;
+            liveProgress = gWQAppsHubProgress;
+            [gWQAppsHubObservers addObject:self];
+            _scanCancellation = gWQAppsHubCancellation;
+        }
+        if (hubFresh) {
+            [self applySharedScanResult:cachedApps note:cachedNote finishedAt:cachedAt];
+            return;
+        }
+        if (hubInFlight) {
+            _scanning = YES;
+            [self setBusy:YES status:liveProgress ?: WQLocalizedNullable(@"Finding apps…")];
+            return;
+        }
+    } else {
+        @synchronized (gWQAppsHubLock) {
+            [gWQAppsHubObservers addObject:self];
+        }
+    }
+    _scanning = YES;
+    [self setBusy:YES status:WQLocalizedNullable(@"Finding apps…")];
+    wq_apps_start_shared_scan(forceFresh);
+    @synchronized (gWQAppsHubLock) {
+        _scanCancellation = gWQAppsHubCancellation;
+    }
 }
 
 - (NSArray<WQAppItem *> *)visibleApps
@@ -1368,7 +1585,7 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
 {
     [self setBusy:NO status:nil];
     wq_alert(self, title, message);
-    [self scan];
+    [self scanForceFresh:YES];
 }
 
 // Import as Backup: a folder or ZIP with Documents and/or Library (from the
@@ -1482,11 +1699,11 @@ static void WQAppScanWatch(WQScanCancellation *cancellation, NSUInteger lastSeri
                                                   [ignored componentsJoinedByString:@", "]) : @"");
             UIAlertController *done = wq_alert_controller(@"Imported", message, UIAlertControllerStyleAlert);
             [done addAction:wq_alert_action(@"Done", UIAlertActionStyleCancel, ^(UIAlertAction *__unused a) {
-                [self scan];
+                [self scanForceFresh:YES];
             })];
             [done addAction:wq_alert_action(@"Restore Now…", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
                 self->_restoreBundleID = bundleID;   // offered once the list is read again
-                [self scan];
+                [self scanForceFresh:YES];
             })];
             [self presentViewController:done animated:YES completion:nil];
         });
