@@ -20,15 +20,14 @@ static inline BOOL WQAppsSupportIsBool(id value)
 static inline BOOL WQAppsSupportBundleIDValid(NSString *bundleID)
 {
     if (![bundleID isKindOfClass:NSString.class] || bundleID.length < 3 || bundleID.length > 255) return NO;
-    if ([bundleID hasPrefix:@"."] || [bundleID hasSuffix:@"."] || [bundleID containsString:@".."]) return NO;
+    if (![bundleID containsString:@"."] || [bundleID hasPrefix:@"."] ||
+        [bundleID hasSuffix:@"."] || [bundleID containsString:@".."]) return NO;
     static NSCharacterSet *bad;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         bad = [[NSCharacterSet characterSetWithCharactersInString:
                 @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"] invertedSet];
     });
-    // No dot required: some older App Store apps have one-word bundle ids
-    // (Pinterest's is "pinterest"); the characters above keep it a safe folder name.
     return [bundleID rangeOfCharacterFromSet:bad].location == NSNotFound;
 }
 
