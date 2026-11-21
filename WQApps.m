@@ -598,7 +598,6 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     wq_install_header_shield(self);
-    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.tableView.tableHeaderView = [self buildGlassAppsHeader];
     self.tableView.tableFooterView = [self buildAppsFooter];
@@ -606,7 +605,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
-    [self scan];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(cancelInFlightScan) name:UIApplicationDidEnterBackgroundNotification object:nil];
 }
 
 - (void)dealloc
@@ -916,13 +915,35 @@ static NSArray<WQAppsViewController *> *wq_apps_hub_snapshot_observers(void)
         [self refreshBackups];
         return;
     }
-    if (_scanning && _scanCancellation.isCancelled) { [self scan]; return; }
+    if (_scanning && _scanCancellation.isCancelled) { return; }
     if (_scanning || !_apps) return;
-    // The start screen keeps this screen between visits: rescan on its own
-    // only when the list is old (pull to refresh rescans any time). Backups
-    // may have been made or deleted elsewhere, so reread those (cheap).
-    if (NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 600.0) { [self scanForceFresh:YES]; return; }
     [self refreshBackups];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    if (!_apps && !_scanning) {
+        [self scan];
+    }
+}
+
+- (void)cancelInFlightScan
+{
+    wq_apps_hub_init();
+    @synchronized (gWQAppsHubLock) {
+        [gWQAppsHubObservers removeObject:self];
+        if (gWQAppsHubInFlight) {
+            [gWQAppsHubCancellation cancel];
+            gWQAppsHubInFlight = NO;
+        }
+    }
+    if (_scanning) {
+        [_scanCancellation cancel];
+        _scanning = NO;
+        [self setBusy:NO status:nil];
+    }
+    [self.refreshControl endRefreshing];
 }
 
 - (void)refreshBackups
@@ -930,15 +951,21 @@ static NSArray<WQAppsViewController *> *wq_apps_hub_snapshot_observers(void)
     NSArray<WQAppItem *> *apps = _apps;
     if (!apps.count) return;
     NSUInteger generation = _scanGeneration;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+    dispatch_async(q, ^{
         NSUInteger count = apps.count;
         NSMutableArray *lists = [NSMutableArray arrayWithCapacity:count];
         for (NSUInteger i = 0; i < count; i++) [lists addObject:@[]];
         NSObject *slotLock = [NSObject new];
-        dispatch_apply(count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t i) {
-            WQAppItem *app = apps[i];
-            NSArray *b = app.bundleID.length ? wq_app_backups(app.bundleID) : @[];
-            @synchronized (slotLock) { lists[i] = b; }
+        dispatch_semaphore_t limit = dispatch_semaphore_create(2);
+        dispatch_apply(count, q, ^(size_t i) {
+            dispatch_semaphore_wait(limit, DISPATCH_TIME_FOREVER);
+            @autoreleasepool {
+                WQAppItem *app = apps[i];
+                NSArray *b = app.bundleID.length ? wq_app_backups(app.bundleID) : @[];
+                @synchronized (slotLock) { lists[i] = b; }
+            }
+            dispatch_semaphore_signal(limit);
         });
         dispatch_async(dispatch_get_main_queue(), ^{
             if (generation != self->_scanGeneration || self->_scanning) return;
@@ -958,12 +985,7 @@ static NSArray<WQAppsViewController *> *wq_apps_hub_snapshot_observers(void)
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
-    // Detach UI observer without cancelling a shared launch pre-warm scan so
-    // returning to Apps renders the finished list immediately.
-    wq_apps_hub_init();
-    @synchronized (gWQAppsHubLock) {
-        [gWQAppsHubObservers removeObject:self];
-    }
+    [self cancelInFlightScan];
 }
 
 - (void)setBusy:(BOOL)busy status:(NSString *)status
@@ -1046,7 +1068,7 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
     WQAppScanStep(@"finding app containers");
     WQAppScanWatch(cancellation, 0, 0);
 
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
     dispatch_async(q, ^{
         CFAbsoluteTime scanStarted = CFAbsoluteTimeGetCurrent();
         __block CFTimeInterval lastUIPush = 0;
@@ -1054,7 +1076,7 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
         void (^broadcastProgress)(NSString *, BOOL) = ^(NSString *msg, BOOL force) {
             CFTimeInterval now = CACurrentMediaTime();
             @synchronized (uiThrottleLock) {
-                if (!force && (now - lastUIPush) < 0.033) return;
+                if (!force && (now - lastUIPush) < 0.05) return;
                 lastUIPush = now;
             }
             @synchronized (gWQAppsHubLock) {
@@ -1098,9 +1120,8 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
         _Atomic uint64_t doneCountVal = 0;
         _Atomic uint64_t *doneCountPtr = &doneCountVal;
 
-        // Multi-core parallel scan bounded to hardware core count so all P-cores stay
-        // saturated without exhausting iOS open file descriptors.
-        NSUInteger maxWorkers = MAX((NSUInteger)4, MIN((NSUInteger)8, NSProcessInfo.processInfo.activeProcessorCount));
+        // Efficiency-core bounded concurrency (max 2 workers) for ultra-low battery draw.
+        NSUInteger maxWorkers = 2;
         dispatch_semaphore_t workerLimit = dispatch_semaphore_create((long)maxWorkers);
 
         if (totalContainers > 0 && !cancellation.isCancelled) {
@@ -1234,7 +1255,7 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
 
 + (void)wq_prewarmOnLaunch
 {
-    wq_apps_start_shared_scan(NO);
+    // Disabled for zero launch battery/CPU overhead; Apps loads lazily on first visit.
 }
 
 - (void)scan
@@ -1452,23 +1473,16 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
     if (_appsCornerRail) wq_motion_set_visible(_appsCornerRail, YES, YES);
 }
 
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+- (void)scrollViewDidScroll:(UIScrollView *__unused)scrollView
 {
-    wq_motion_apply_scroll_wave(scrollView);
-    wq_motion_update_scroll_aurora(scrollView, self.view);
-    wq_motion_apply_header_parallax(scrollView, _summaryCard);
-    NSIndexPath *top = self.tableView.indexPathsForVisibleRows.firstObject;
-    if (top) wq_motion_scroll_detent(scrollView, top.row / 8);
 }
 
-- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+- (void)scrollViewDidEndDecelerating:(UIScrollView *__unused)scrollView
 {
-    wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
-- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+- (void)scrollViewDidEndDragging:(UIScrollView *__unused)scrollView willDecelerate:(BOOL __unused)decelerate
 {
-    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section

@@ -501,7 +501,6 @@ void wq_cache_custom_target_remove(NSString *bundleID, NSString *relative)
     }
     self.tableView.tableHeaderView = [self buildGlassCacheHeader];
     wq_install_header_shield(self);
-    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     [self buildCacheCornerRail];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -515,7 +514,7 @@ void wq_cache_custom_target_remove(NSString *bundleID, NSString *relative)
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
-    [self scan];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(cancelInFlightScan) name:UIApplicationDidEnterBackgroundNotification object:nil];
 }
 
 - (void)dealloc
@@ -738,11 +737,10 @@ static NSArray<WQCacheCleanerViewController *> *wq_cache_hub_snapshot_observers(
         }
     }
     if (_scanning && _scanCancellation.isCancelled) {
-        [self scan];
         return;
     }
-    // The screen is kept between visits: rescan on its own only when the
-    // list is old; pull to refresh rescans any time.
+    // Cached for the session (10 min window) with zero disk I/O when switching back;
+    // only rescan if the user returns after data has gone stale.
     if (!_scanning && !_cleaning && _lastScanFinished > 0 &&
         NSDate.date.timeIntervalSinceReferenceDate - _lastScanFinished > 600.0) {
         _forceFreshNextScan = YES;
@@ -750,16 +748,38 @@ static NSArray<WQCacheCleanerViewController *> *wq_cache_hub_snapshot_observers(
     }
 }
 
-- (void)viewWillDisappear:(BOOL)animated
+- (void)viewDidAppear:(BOOL)animated
 {
-    [super viewWillDisappear:animated];
-    // Detach UI observer without cancelling a shared launch pre-warm scan.
+    [super viewDidAppear:animated];
+    if (!_items && !_scanning && !_cleaning) {
+        [self scan];
+    }
+}
+
+- (void)cancelInFlightScan
+{
     wq_cache_hub_init();
     @synchronized (gWQCacheHubLock) {
         [gWQCacheHubObservers removeObject:self];
+        if (gWQCacheHubInFlight) {
+            [gWQCacheHubCancellation cancel];
+            gWQCacheHubInFlight = NO;
+        }
+    }
+    if (_scanning) {
+        [_scanCancellation cancel];
+        _scanning = NO;
+        [self setStatus:nil progress:0];
+        [self updateButtons];
     }
     if (_cleaning) [_cleanCancellation cancel];
     [self.refreshControl endRefreshing];
+}
+
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    [self cancelInFlightScan];
 }
 
 - (NSArray<WQCacheItem *> *)visibleItems
@@ -985,14 +1005,14 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
         gWQCacheHubFoundBytes = 0;
     }
 
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
     dispatch_async(q, ^{
         __block CFTimeInterval lastUIPush = 0;
         NSObject *uiThrottleLock = [NSObject new];
         void (^broadcastProgress)(NSString *, float, unsigned long long, BOOL) = ^(NSString *msg, float prog, unsigned long long bytes, BOOL force) {
             CFTimeInterval now = CACurrentMediaTime();
             @synchronized (uiThrottleLock) {
-                if (!force && (now - lastUIPush) < 0.033) return;
+                if (!force && (now - lastUIPush) < 0.05) return;
                 lastUIPush = now;
             }
             @synchronized (gWQCacheHubLock) {
@@ -1021,7 +1041,7 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
         _Atomic uint64_t *atomicFoundBytesPtr = &atomicFoundBytesVal;
         NSObject *aggLock = [NSObject new];
 
-        NSUInteger maxWorkers = MAX((NSUInteger)4, MIN((NSUInteger)8, NSProcessInfo.processInfo.activeProcessorCount));
+        NSUInteger maxWorkers = 2;
         dispatch_semaphore_t workerLimit = dispatch_semaphore_create((long)maxWorkers);
 
         NSArray *roots = @[@"/private/var/mobile/Containers/Data/Application",
@@ -1245,7 +1265,7 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
 
 + (void)wq_prewarmOnLaunch
 {
-    wq_cache_start_shared_scan(NO);
+    // Disabled for zero launch battery/CPU overhead; Cache Cleaner loads lazily on first visit.
 }
 
 - (void)scan
@@ -1574,23 +1594,16 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
     });
 }
 
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+- (void)scrollViewDidScroll:(UIScrollView *__unused)scrollView
 {
-    wq_motion_apply_scroll_wave(scrollView);
-    wq_motion_update_scroll_aurora(scrollView, self.view);
-    wq_motion_apply_header_parallax(scrollView, _headerPillScroll);
-    NSIndexPath *top = self.tableView.indexPathsForVisibleRows.firstObject;
-    if (top) wq_motion_scroll_detent(scrollView, top.section == 0 ? -1 : (top.row / 6));
 }
 
-- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+- (void)scrollViewDidEndDecelerating:(UIScrollView *__unused)scrollView
 {
-    wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
-- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+- (void)scrollViewDidEndDragging:(UIScrollView *__unused)scrollView willDecelerate:(BOOL __unused)decelerate
 {
-    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 @end

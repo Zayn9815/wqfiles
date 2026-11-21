@@ -521,7 +521,7 @@ void wq_theme_add_spring_tap(UIControl *control)
 
 UIVisualEffect *wq_theme_glass_effect(BOOL interactive)
 {
-    if (UIAccessibilityIsReduceTransparencyEnabled()) return nil;
+    if (UIAccessibilityIsReduceTransparencyEnabled() || NSProcessInfo.processInfo.isLowPowerModeEnabled) return nil;
     if (wq_theme_is_classic_stock()) {
         return [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterialDark];
     }
@@ -812,7 +812,7 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
         : [UIBackgroundConfiguration clearConfiguration];
     BOOL pressed = state.isHighlighted || (state.isSelected && !state.isEditing);
     BOOL isPlain = table.style == UITableViewStylePlain;
-    BOOL reduceTransparency = UIAccessibilityIsReduceTransparencyEnabled();
+    BOOL reduceTransparency = UIAccessibilityIsReduceTransparencyEnabled() || NSProcessInfo.processInfo.isLowPowerModeEnabled;
     BOOL compact = wq_theme_is_compact_pro();
     BOOL fullGlass = wq_theme_is_full_liquid_glass();
     if (pressed) {
@@ -832,6 +832,10 @@ static void wq_theme_cell_update(UITableViewCell *cell, SEL cmd, UICellConfigura
     }
     background.visualEffect = nil;
     cell.backgroundConfiguration = background;
+    if (NSProcessInfo.processInfo.isLowPowerModeEnabled) {
+        cell.layer.shadowOpacity = 0.0f;
+        cell.layer.shouldRasterize = NO;
+    }
     cell.clipsToBounds = YES;
     cell.contentView.clipsToBounds = YES;
 
@@ -856,6 +860,14 @@ void wq_theme_install(void)
         wq_theme_hook(UITableViewCell.class, @selector(updateConfigurationUsingState:),
                       (IMP)wq_theme_cell_update, &wq_orig_cell_update);
         wq_theme_apply_live_appearance();
+        [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoPowerStateDidChangeNotification
+                                                        object:nil
+                                                         queue:NSOperationQueue.mainQueue
+                                                    usingBlock:^(NSNotification *__unused note) {
+            wq_theme_apply_live_appearance();
+            [NSNotificationCenter.defaultCenter postNotificationName:WQThemeDidChangeNotification
+                                                              object:wq_theme_selected_id()];
+        }];
     });
 }
 

@@ -24,7 +24,7 @@ static const void *kWQMotionRollupLastValKey = &kWQMotionRollupLastValKey;
 
 BOOL wq_motion_reduced(void)
 {
-    return UIAccessibilityIsReduceMotionEnabled();
+    return UIAccessibilityIsReduceMotionEnabled() || NSProcessInfo.processInfo.isLowPowerModeEnabled;
 }
 
 #pragma mark - Haptics
@@ -658,215 +658,41 @@ static WQMotionScrollState *wq_motion_scroll_state(UIScrollView *scrollView)
 
 @end
 
-static WQAuroraEdgeOverlayView *wq_motion_aurora_overlay(UIScrollView *scrollView, UIView *hostView)
-{
-    if (!hostView) return nil;
-    WQAuroraEdgeOverlayView *overlay = objc_getAssociatedObject(hostView, kWQMotionAuroraOverlayKey);
-    if (!overlay) {
-        overlay = [[WQAuroraEdgeOverlayView alloc] initWithFrame:hostView.bounds];
-        overlay.translatesAutoresizingMaskIntoConstraints = NO;
-        [hostView addSubview:overlay];
-        if ([hostView isKindOfClass:UIScrollView.class]) {
-            UILayoutGuide *frameGuide = ((UIScrollView *)hostView).frameLayoutGuide;
-            [NSLayoutConstraint activateConstraints:@[
-                [overlay.topAnchor constraintEqualToAnchor:frameGuide.topAnchor],
-                [overlay.bottomAnchor constraintEqualToAnchor:frameGuide.bottomAnchor],
-                [overlay.leadingAnchor constraintEqualToAnchor:frameGuide.leadingAnchor],
-                [overlay.trailingAnchor constraintEqualToAnchor:frameGuide.trailingAnchor],
-            ]];
-        } else {
-            [NSLayoutConstraint activateConstraints:@[
-                [overlay.topAnchor constraintEqualToAnchor:hostView.topAnchor],
-                [overlay.bottomAnchor constraintEqualToAnchor:hostView.bottomAnchor],
-                [overlay.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor],
-                [overlay.trailingAnchor constraintEqualToAnchor:hostView.trailingAnchor],
-            ]];
-        }
-        objc_setAssociatedObject(hostView, kWQMotionAuroraOverlayKey, overlay, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    } else if (overlay.superview == hostView) {
-        [hostView bringSubviewToFront:overlay];
-    }
-    (void)scrollView;
-    return overlay;
-}
-
-static inline CGFloat wq_motion_smoothstep(CGFloat edge0, CGFloat edge1, CGFloat x)
-{
-    CGFloat denom = MAX(0.0001, edge1 - edge0);
-    CGFloat t = MAX(0.0, MIN(1.0, (x - edge0) / denom));
-    return t * t * (3.0 - 2.0 * t);
-}
-
-static void wq_motion_tint_focal_rim(UIView *view, CGFloat focus)
-{
-    UIView *rim = wq_motion_rim_view(view, 1);
-    if (!rim) return;
-    CGFloat t = MAX(0.0, MIN(1.0, focus));
-    CGFloat a = 0.18 + 0.30 * t * t;
-    UIColor *base = t > 0.65 ? wq_theme_rim() : wq_theme_rim_teal();
-    rim.layer.borderColor = [base colorWithAlphaComponent:a].CGColor;
-}
-
 void wq_motion_apply_scroll_wave_views(UIScrollView *scrollView, NSArray<UIView *> *views)
 {
-    if (!scrollView || !views.count) return;
-    BOOL reduced = wq_motion_reduced();
-    CGRect visibleRect = CGRectMake(scrollView.contentOffset.x,
-                                    scrollView.contentOffset.y + scrollView.adjustedContentInset.top,
-                                    scrollView.bounds.size.width,
-                                    MAX(1.0, scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
-    CGFloat topEdge = visibleRect.origin.y;
-    CGFloat botEdge = CGRectGetMaxY(visibleRect);
-    CGFloat topZone = MIN(96.0, MAX(58.0, visibleRect.size.height * 0.16));
-    CGFloat botZone = MIN(108.0, MAX(68.0, visibleRect.size.height * 0.18));
-
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    for (UIView *v in views) {
-        if (!v || v.hidden || !v.superview) continue;
-        WQMotionPressTarget *press = objc_getAssociatedObject(v, kWQMotionPressKey);
-        if (press && press.pressed) continue;
-        BOOL isCell = [v isKindOfClass:UITableViewCell.class] || [v isKindOfClass:UICollectionViewCell.class];
-        if (isCell) {
-            if (!v.clipsToBounds) v.clipsToBounds = YES;
-            if ([v isKindOfClass:UITableViewCell.class]) {
-                UIView *cv = ((UITableViewCell *)v).contentView;
-                if (!cv.clipsToBounds) cv.clipsToBounds = YES;
-            }
-        }
-        if (v.layer.shouldRasterize) v.layer.shouldRasterize = NO;
-        if (reduced) {
-            if (!CATransform3DIsIdentity(v.layer.transform)) {
-                v.layer.transform = CATransform3DIdentity;
-            }
-            if (v.layer.opacity < 0.99f) v.layer.opacity = 1.0f;
-            continue;
-        }
-
-        // Compute un-transformed layout position in scrollView coordinates (no view/layer allocations).
-        CGPoint centerInScroll = [v.superview convertPoint:v.center toView:scrollView];
-        CGFloat distFromTop = centerInScroll.y - topEdge;
-        CGFloat distFromBot = botEdge - centerInScroll.y;
-
-        CGFloat alpha = 1.0;
-        CGFloat scale = 1.0;
-        CGFloat shiftY = 0.0;
-        CGFloat focus = 1.0;
-
-        if (distFromTop < topZone) {
-            // Smooth top-edge optical blur dissolve synchronized with upper curtain:
-            // opacity 1.0 -> 0.15, scale 1.0 -> 0.975, zero 3D m34 rotation.
-            CGFloat t = wq_motion_smoothstep(-16.0, topZone, distFromTop);
-            alpha = 0.15 + 0.85 * t;
-            scale = 0.975 + 0.025 * t;
-            focus = t;
-        } else if (distFromBot < botZone) {
-            // Smooth bottom emergence out of optical veil:
-            // opacity 0.22 -> 1.0, scale 0.972 -> 1.0, vertical settle 6pt -> 0pt.
-            CGFloat t = wq_motion_smoothstep(-14.0, botZone, distFromBot);
-            alpha = 0.22 + 0.78 * t;
-            scale = 0.972 + 0.028 * t;
-            shiftY = (1.0 - t) * 6.0;
-            focus = t;
-        }
-
-        CATransform3D xform = (scale < 0.9995 || shiftY > 0.05)
-            ? CATransform3DScale(CATransform3DMakeTranslation(0.0, shiftY, 0.0), scale, scale, 1.0)
-            : CATransform3DIdentity;
-        v.layer.transform = xform;
-        v.layer.opacity = (float)alpha;
-
-        if (!isCell) {
-            wq_motion_tint_focal_rim(v, focus);
-        }
-    }
-    [CATransaction commit];
+    (void)scrollView;
+    (void)views;
 }
 
 void wq_motion_apply_scroll_wave(UIScrollView *scrollView)
 {
-    if (!scrollView) return;
-    NSArray<UIView *> *cells = nil;
-    if ([scrollView isKindOfClass:UITableView.class]) {
-        cells = [(UITableView *)scrollView visibleCells];
-    } else if ([scrollView isKindOfClass:UICollectionView.class]) {
-        cells = [(UICollectionView *)scrollView visibleCells];
-    }
-    if (cells.count) wq_motion_apply_scroll_wave_views(scrollView, cells);
+    (void)scrollView;
 }
 
 void wq_motion_update_scroll_aurora(UIScrollView *scrollView, UIView *hostView)
 {
-    if (!scrollView || !hostView) return;
-    wq_motion_update_edge_blur(scrollView, hostView);
-    WQAuroraEdgeOverlayView *overlay = wq_motion_aurora_overlay(scrollView, hostView);
-    if (!overlay) return;
-    if (wq_motion_reduced()) {
-        [overlay setTopIntensity:0 bottomIntensity:0 animated:NO];
-        return;
+    (void)scrollView;
+    if (!hostView) return;
+    UIView *overlay = objc_getAssociatedObject(hostView, kWQMotionAuroraOverlayKey);
+    if (overlay) {
+        [overlay removeFromSuperview];
+        objc_setAssociatedObject(hostView, kWQMotionAuroraOverlayKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
-    CFTimeInterval now = CACurrentMediaTime();
-    CGFloat y = scrollView.contentOffset.y;
-    if (!state.hasOffset) {
-        state.lastOffsetY = y;
-        state.lastTimestamp = now;
-        state.hasOffset = YES;
-        return;
-    }
-    CFTimeInterval dt = now - state.lastTimestamp;
-    if (dt < 0.002) return;
-    CGFloat rawVel = (y - state.lastOffsetY) / (CGFloat)dt;   // pts/sec (>0 scrolling down)
-    state.lastOffsetY = y;
-    state.lastTimestamp = now;
-    if (dt > 0.15) state.smoothedVelocity = 0;
-    state.smoothedVelocity = state.smoothedVelocity * 0.68 + rawVel * 0.32;
-
-    CGFloat mag = fabs(state.smoothedVelocity);
-    CGFloat intensity = MIN(0.58, MAX(0.0, (mag - 120.0) / 1700.0));
-    CGFloat topGlow = state.smoothedVelocity < 0 ? intensity : intensity * 0.18;
-    CGFloat botGlow = state.smoothedVelocity > 0 ? intensity : intensity * 0.18;
-    [overlay setTopIntensity:topGlow bottomIntensity:botGlow animated:NO];
 }
 
 void wq_motion_settle_scroll_aurora(UIScrollView *scrollView, UIView *hostView)
 {
-    if (!scrollView || !hostView) return;
-    wq_motion_settle_edge_blur(scrollView, hostView);
-    WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
-    state.smoothedVelocity = 0;
-    WQAuroraEdgeOverlayView *overlay = objc_getAssociatedObject(hostView, kWQMotionAuroraOverlayKey);
-    if (overlay) [overlay setTopIntensity:0 bottomIntensity:0 animated:YES];
+    wq_motion_update_scroll_aurora(scrollView, hostView);
 }
 
 void wq_motion_apply_header_parallax(UIScrollView *scrollView, UIView *headerView)
 {
-    if (!scrollView || !headerView) return;
-    if (wq_motion_reduced()) {
-        if (!CGAffineTransformIsIdentity(headerView.transform)) {
-            headerView.transform = CGAffineTransformIdentity;
-        }
-        headerView.alpha = 1.0;
-        return;
+    (void)scrollView;
+    if (!headerView) return;
+    if (!CGAffineTransformIsIdentity(headerView.transform)) {
+        headerView.transform = CGAffineTransformIdentity;
     }
-    // Elastic collapsing Duo header: scrolling up glides and cross-fades the
-    // large header away (the frosted nav pill takes over); pulling down at the
-    // top stretches it with rubber-band elasticity.
-    CGFloat scrollY = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
-    CGFloat h = MAX(1.0, headerView.bounds.size.height);
-    if (scrollY > 0) {
-        CGFloat shift = MIN(48.0, scrollY * 0.45);
-        headerView.transform = CGAffineTransformMakeTranslation(0, shift);
-        headerView.alpha = MAX(0.0, 1.0 - scrollY / (h * 0.9));
-    } else {
-        CGFloat pull = -scrollY;
-        // Rubber-band: diminishing returns toward a 10% stretch.
-        CGFloat stretch = 0.10 * (1.0 - 1.0 / (1.0 + pull / 90.0));
-        CGFloat sc = 1.0 + stretch;
-        headerView.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(sc, sc),
-                                                       CGAffineTransformMakeTranslation(0, (sc - 1.0) * h * 0.5));
-        headerView.alpha = 1.0;
-    }
+    if (headerView.alpha < 0.99) headerView.alpha = 1.0;
 }
 
 void wq_motion_scroll_detent(UIScrollView *scrollView, NSInteger detentIndex)
@@ -1077,29 +903,8 @@ void wq_motion_add_hud_brackets(UIView *view, CGFloat inset, CGFloat armLength)
 - (void)updateAnimationState
 {
     static NSString *const kSweepKey = @"wq.hud.scan.repeat";
-    if (!self.window || wq_motion_reduced() || !_repeating || self.bounds.size.width < 8) {
-        [_beam removeAnimationForKey:kSweepKey];
-        if (wq_motion_reduced()) _beam.opacity = 0.0f;
-        return;
-    }
-    if ([_beam animationForKey:kSweepKey]) return;
-    CGFloat w = self.bounds.size.width;
-    CGFloat beamW = _beam.bounds.size.width;
-    CAKeyframeAnimation *pos = [CAKeyframeAnimation animationWithKeyPath:@"position.x"];
-    pos.values = @[@(-beamW), @(w + beamW), @(w + beamW)];
-    pos.keyTimes = @[@0.0, @0.28, @1.0];
-    pos.timingFunctions = @[
-        [CAMediaTimingFunction functionWithControlPoints:0.25f :0.1f :0.25f :1.0f],
-        [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionLinear],
-    ];
-    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"opacity"];
-    fade.values = @[@0.0, @0.85, @0.95, @0.0, @0.0];
-    fade.keyTimes = @[@0.0, @0.06, @0.22, @0.28, @1.0];
-    CAAnimationGroup *group = [CAAnimationGroup animation];
-    group.animations = @[pos, fade];
-    group.duration = 5.4;
-    group.repeatCount = HUGE_VALF;
-    [_beam addAnimation:group forKey:kSweepKey];
+    [_beam removeAnimationForKey:kSweepKey];
+    _beam.opacity = 0.0f;
 }
 
 - (void)triggerOnce
@@ -1328,12 +1133,16 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
 
         self.layer.shadowOffset = CGSizeZero;
         self.layer.shadowRadius = 7.0;
-        self.layer.shadowOpacity = 0.50;
+        self.layer.shadowOpacity = NSProcessInfo.processInfo.isLowPowerModeEnabled ? 0.0f : 0.25f;
 
         [self refreshColors];
         [NSNotificationCenter.defaultCenter addObserver:self
                                                selector:@selector(updateAuroraShimmer)
                                                    name:UIAccessibilityReduceMotionStatusDidChangeNotification
+                                                 object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self
+                                               selector:@selector(updateAuroraShimmer)
+                                                   name:NSProcessInfoPowerStateDidChangeNotification
                                                  object:nil];
     }
     return self;
@@ -1354,30 +1163,10 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
 {
     static NSString *const kAuroraSpinKey = @"wq.aurora.shimmer";
     static NSString *const kRingScanKey = @"wq.ring.scanline";
-    if (!self.window || wq_motion_reduced()) {
-        [_aurora removeAnimationForKey:kAuroraSpinKey];
-        [_scanBeam removeAnimationForKey:kRingScanKey];
-        _scanBeam.opacity = 0.0f;
-        return;
-    }
-    if (![_aurora animationForKey:kAuroraSpinKey]) {
-        CABasicAnimation *rot = [CABasicAnimation animationWithKeyPath:@"transform.rotation.z"];
-        rot.fromValue = @0;
-        rot.toValue = @(M_PI * 2.0);
-        rot.duration = 4.2;
-        rot.repeatCount = HUGE_VALF;
-        [_aurora addAnimation:rot forKey:kAuroraSpinKey];
-    }
-    if (![_scanBeam animationForKey:kRingScanKey]) {
-        _scanBeam.opacity = 0.72f;
-        CABasicAnimation *sweep = [CABasicAnimation animationWithKeyPath:@"locations"];
-        sweep.fromValue = @[@(-0.45), @(-0.20), @(0.05)];
-        sweep.toValue = @[@(0.95), @(1.20), @(1.45)];
-        sweep.duration = 2.6;
-        sweep.repeatCount = HUGE_VALF;
-        sweep.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [_scanBeam addAnimation:sweep forKey:kRingScanKey];
-    }
+    [_aurora removeAnimationForKey:kAuroraSpinKey];
+    [_scanBeam removeAnimationForKey:kRingScanKey];
+    _scanBeam.opacity = 0.0f;
+    self.layer.shadowOpacity = NSProcessInfo.processInfo.isLowPowerModeEnabled ? 0.0f : 0.25f;
 }
 
 - (void)refreshColors
@@ -1628,19 +1417,7 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
 - (void)updateShimmer
 {
     static NSString *const kShimmerKey = @"wq.bar.shimmer";
-    if (!self.window || wq_motion_reduced()) {
-        [_shimmer removeAnimationForKey:kShimmerKey];
-        return;
-    }
-    if (![_shimmer animationForKey:kShimmerKey]) {
-        CABasicAnimation *sweep = [CABasicAnimation animationWithKeyPath:@"locations"];
-        sweep.fromValue = @[@(-0.45), @(-0.20), @(0.05)];
-        sweep.toValue = @[@(0.95), @(1.20), @(1.45)];
-        sweep.duration = 1.9;
-        sweep.repeatCount = HUGE_VALF;
-        sweep.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [_shimmer addAnimation:sweep forKey:kShimmerKey];
-    }
+    [_shimmer removeAnimationForKey:kShimmerKey];
 }
 
 - (CGFloat)progress { return _value; }
@@ -1784,67 +1561,25 @@ void wq_motion_cross_fade(UIView *view, void (^changes)(void))
 
 void wq_motion_install_edge_blur(UIScrollView *scrollView, UIView *hostView)
 {
-    if (!scrollView || !hostView) return;
-    if (objc_getAssociatedObject(hostView, kWQMotionEdgeBlurKey)) return;
-
-    WQDuoEdgeBlurCurtainView *curtain = [[WQDuoEdgeBlurCurtainView alloc] initWithFrame:hostView.bounds];
-    curtain.translatesAutoresizingMaskIntoConstraints = NO;
-    [hostView addSubview:curtain];
-
-    if ([hostView isKindOfClass:UIScrollView.class]) {
-        UILayoutGuide *frameGuide = ((UIScrollView *)hostView).frameLayoutGuide;
-        [NSLayoutConstraint activateConstraints:@[
-            [curtain.topAnchor constraintEqualToAnchor:frameGuide.topAnchor],
-            [curtain.bottomAnchor constraintEqualToAnchor:frameGuide.bottomAnchor],
-            [curtain.leadingAnchor constraintEqualToAnchor:frameGuide.leadingAnchor],
-            [curtain.trailingAnchor constraintEqualToAnchor:frameGuide.trailingAnchor],
-        ]];
-    } else {
-        [NSLayoutConstraint activateConstraints:@[
-            [curtain.topAnchor constraintEqualToAnchor:hostView.topAnchor],
-            [curtain.bottomAnchor constraintEqualToAnchor:hostView.bottomAnchor],
-            [curtain.leadingAnchor constraintEqualToAnchor:hostView.leadingAnchor],
-            [curtain.trailingAnchor constraintEqualToAnchor:hostView.trailingAnchor],
-        ]];
+    (void)scrollView;
+    if (!hostView) return;
+    UIView *existing = objc_getAssociatedObject(hostView, kWQMotionEdgeBlurKey);
+    if (existing) {
+        [existing removeFromSuperview];
+        objc_setAssociatedObject(hostView, kWQMotionEdgeBlurKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    objc_setAssociatedObject(hostView, kWQMotionEdgeBlurKey, curtain, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 void wq_motion_update_edge_blur(UIScrollView *scrollView, UIView *hostView)
 {
-    if (!scrollView || !hostView) return;
-    WQDuoEdgeBlurCurtainView *curtain = objc_getAssociatedObject(hostView, kWQMotionEdgeBlurKey);
-    if (!curtain) return;
-    if (wq_motion_reduced() || UIAccessibilityIsReduceTransparencyEnabled()) {
-        [curtain setTopStrength:0.0 bottomStrength:0.0 animated:NO];
-        return;
-    }
-    WQMotionScrollState *state = wq_motion_scroll_state(scrollView);
-    CGFloat mag = fabs(state.smoothedVelocity);
-    CGFloat velBoost = MIN(0.56, MAX(0.0, (mag - 45.0) / 1300.0));
-    CGFloat y = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
-    CGFloat maxY = MAX(0.0, scrollView.contentSize.height - (scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
-    CGFloat topBase = y > 4.0 ? MIN(0.42, 0.16 + y / 44.0 * 0.26) : 0.0;
-    CGFloat botBase = (maxY > 24.0 && y < maxY - 4.0) ? 0.36 : 0.0;
-    CGFloat topStrength = topBase + (state.smoothedVelocity > 0 ? velBoost : velBoost * 0.30);
-    CGFloat botStrength = botBase + (state.smoothedVelocity < 0 ? velBoost : velBoost * 0.42);
-    [curtain setTopStrength:topStrength bottomStrength:botStrength animated:NO];
+    (void)scrollView;
+    (void)hostView;
 }
 
 void wq_motion_settle_edge_blur(UIScrollView *scrollView, UIView *hostView)
 {
-    if (!scrollView || !hostView) return;
-    WQDuoEdgeBlurCurtainView *curtain = objc_getAssociatedObject(hostView, kWQMotionEdgeBlurKey);
-    if (!curtain) return;
-    if (wq_motion_reduced() || UIAccessibilityIsReduceTransparencyEnabled()) {
-        [curtain setTopStrength:0.0 bottomStrength:0.0 animated:NO];
-        return;
-    }
-    CGFloat y = scrollView.contentOffset.y + scrollView.adjustedContentInset.top;
-    CGFloat maxY = MAX(0.0, scrollView.contentSize.height - (scrollView.bounds.size.height - scrollView.adjustedContentInset.top - scrollView.adjustedContentInset.bottom));
-    CGFloat topRest = y > 8.0 ? 0.30 : 0.0;
-    CGFloat botRest = (maxY > 24.0 && y < maxY - 8.0) ? 0.26 : 0.0;
-    [curtain setTopStrength:topRest bottomStrength:botRest animated:YES];
+    (void)scrollView;
+    (void)hostView;
 }
 
 #pragma mark - Progressive Haptic Feedback on Press-and-Hold

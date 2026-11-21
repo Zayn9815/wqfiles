@@ -565,46 +565,12 @@ NSString *wq_size_text(unsigned long long size)
     static NSString *const kBandKey = @"wq.polar.band";
     static NSString *const kDriftKey = @"wq.polar.drift";
     static NSString *const kPulseKey = @"wq.polar.pulse";
-    if (!self.window || UIAccessibilityIsReduceMotionEnabled()) {
-        [_polarBand removeAnimationForKey:kBandKey];
-        for (CAGradientLayer *g in _glows) {
-            [g removeAnimationForKey:kDriftKey];
-            [g removeAnimationForKey:kPulseKey];
-        }
-        return;
-    }
-    if (![_polarBand animationForKey:kBandKey]) {
-        CABasicAnimation *sweep = [CABasicAnimation animationWithKeyPath:@"locations"];
-        sweep.fromValue = @[@(-0.35), @(0.05), @(0.35), @(0.70)];
-        sweep.toValue = @[@(0.30), @(0.65), @(0.95), @(1.35)];
-        sweep.duration = 11.5;
-        sweep.autoreverses = YES;
-        sweep.repeatCount = HUGE_VALF;
-        sweep.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-        [_polarBand addAnimation:sweep forKey:kBandKey];
-    }
-    for (NSUInteger i = 0; i < 2; i++) {
-        CAGradientLayer *g = _glows[i];
-        if (![g animationForKey:kDriftKey]) {
-            CABasicAnimation *drift = [CABasicAnimation animationWithKeyPath:@"transform.translation.x"];
-            drift.fromValue = @(i == 0 ? -18.0 : 18.0);
-            drift.toValue = @(i == 0 ? 22.0 : -22.0);
-            drift.duration = i == 0 ? 9.5 : 12.5;
-            drift.autoreverses = YES;
-            drift.repeatCount = HUGE_VALF;
-            drift.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-            [g addAnimation:drift forKey:kDriftKey];
-        }
-        if (![g animationForKey:kPulseKey]) {
-            CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"opacity"];
-            pulse.fromValue = @(0.72);
-            pulse.toValue = @(1.0);
-            pulse.duration = i == 0 ? 7.0 : 8.5;
-            pulse.autoreverses = YES;
-            pulse.repeatCount = HUGE_VALF;
-            pulse.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
-            [g addAnimation:pulse forKey:kPulseKey];
-        }
+    // Keep the theme backdrop completely static at rest so ProMotion drops to 1-10Hz
+    // with zero continuous GPU wake-ups.
+    [_polarBand removeAnimationForKey:kBandKey];
+    for (CAGradientLayer *g in _glows) {
+        [g removeAnimationForKey:kDriftKey];
+        [g removeAnimationForKey:kPulseKey];
     }
 }
 

@@ -175,10 +175,11 @@ static void wq_spotlight_warm_index_sync(void)
         gWQSpotlightWarmInFlight = YES;
     }
 
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
+    dispatch_semaphore_t limit = dispatch_semaphore_create(2);
     if (!wq_display_names_loaded()) wq_load_display_names();
 
-    // 1. Parallel app & extension container index across cores.
+    // 1. Efficiency-core bounded app & extension container index (built lazily on first query).
     NSMutableArray<WQSpotlightResult *> *apps = [NSMutableArray new];
     NSObject *appsLock = [NSObject new];
     NSArray<NSString *> *roots = @[
@@ -190,6 +191,7 @@ static void wq_spotlight_warm_index_sync(void)
         if (!containers.count) continue;
         NSString *badge = [root.lastPathComponent isEqualToString:@"Application"] ? @"APP" : @"EXT";
         dispatch_apply(containers.count, q, ^(size_t idx) {
+            dispatch_semaphore_wait(limit, DISPATCH_TIME_FOREVER);
             @autoreleasepool {
                 NSString *c = containers[idx];
                 NSString *bid = wq_container_label(c);
@@ -205,6 +207,7 @@ static void wq_spotlight_warm_index_sync(void)
                 item.detailBadge = badge;
                 @synchronized (appsLock) { [apps addObject:item]; }
             }
+            dispatch_semaphore_signal(limit);
         });
     }
 
@@ -241,7 +244,7 @@ static void wq_spotlight_warm_index_sync(void)
         }
     }
 
-    // 3. Pre-index Favorites & Recent folder file entries.
+    // 3. Index Favorites & Recent folder file entries.
     NSMutableArray<NSString *> *fileRoots = [NSMutableArray new];
     NSArray *favs = [NSUserDefaults.standardUserDefaults arrayForKey:@"WQFavorites"];
     if ([favs isKindOfClass:NSArray.class]) {
@@ -254,6 +257,7 @@ static void wq_spotlight_warm_index_sync(void)
     NSObject *filesLock = [NSObject new];
     if (fileRoots.count) {
         dispatch_apply(fileRoots.count, q, ^(size_t idx) {
+            dispatch_semaphore_wait(limit, DISPATCH_TIME_FOREVER);
             @autoreleasepool {
                 NSString *root = fileRoots[idx];
                 NSArray<NSString *> *items = wq_list(root, NULL);
@@ -278,6 +282,7 @@ static void wq_spotlight_warm_index_sync(void)
                     @synchronized (filesLock) { [preFiles addObjectsFromArray:local]; }
                 }
             }
+            dispatch_semaphore_signal(limit);
         });
     }
 
@@ -288,17 +293,6 @@ static void wq_spotlight_warm_index_sync(void)
         gWQSpotlightIndexWarm = YES;
         gWQSpotlightWarmInFlight = NO;
     }
-}
-
-static void wq_spotlight_warm_index_async(void)
-{
-    wq_spotlight_index_init();
-    @synchronized (gWQSpotlightIndexLock) {
-        if (gWQSpotlightIndexWarm || gWQSpotlightWarmInFlight) return;
-    }
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        wq_spotlight_warm_index_sync();
-    });
 }
 
 @interface WQSpotlightViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, UITextFieldDelegate>
@@ -456,8 +450,6 @@ static void wq_spotlight_warm_index_async(void)
     [_panel.contentView addSubview:_hintLabel];
     [_panel.contentView addSubview:_tableView];
 
-    wq_motion_install_edge_blur(_tableView, _tableView);
-
     // Interactive swipe-down dismissal on the panel header / overlay.
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipeDismiss:)];
     [_panel addGestureRecognizer:pan];
@@ -498,7 +490,6 @@ static void wq_spotlight_warm_index_async(void)
     [self loadEmptyState];
     [self applyThemeLive];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyThemeLive) name:WQThemeDidChangeNotification object:nil];
-    wq_spotlight_warm_index_async();
 }
 
 - (void)dealloc
@@ -523,7 +514,7 @@ static void wq_spotlight_warm_index_async(void)
 
 + (void)wq_prewarmOnLaunch
 {
-    wq_spotlight_warm_index_async();
+    // Disabled for zero launch battery/CPU overhead; Spotlight indexes only when typing.
 }
 
 - (void)handleSwipeDismiss:(UIPanGestureRecognizer *)pan
@@ -619,7 +610,7 @@ static void wq_spotlight_warm_index_async(void)
         [self loadEmptyState];
         return;
     }
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         wq_spotlight_warm_index_sync();
         NSMutableArray<WQSpotlightResult *> *cmds = [NSMutableArray new];
         for (WQSpotlightResult *c in wq_spotlight_quick_commands()) {
@@ -796,20 +787,16 @@ static void wq_spotlight_warm_index_async(void)
     }];
 }
 
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+- (void)scrollViewDidScroll:(UIScrollView *__unused)scrollView
 {
-    wq_motion_apply_scroll_wave(scrollView);
-    wq_motion_update_edge_blur(scrollView, scrollView);
 }
 
-- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+- (void)scrollViewDidEndDecelerating:(UIScrollView *__unused)scrollView
 {
-    wq_motion_settle_edge_blur(scrollView, scrollView);
 }
 
-- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+- (void)scrollViewDidEndDragging:(UIScrollView *__unused)scrollView willDecelerate:(BOOL __unused)decelerate
 {
-    if (!decelerate) wq_motion_settle_edge_blur(scrollView, scrollView);
 }
 
 @end

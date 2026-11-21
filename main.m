@@ -207,7 +207,7 @@ static UIColor *wq_syntax_color(WQSyntaxKind kind)
         if (!strongSelf || generation != strongSelf->_syntaxGeneration) return;
         NSString *text = [strongSelf->_textView.text copy];
         if (text.length > kWQSyntaxMaxLength) return;
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             NSData *tokens = wq_syntax_tokens(text, language, ^BOOL {
                 WQFileViewController *s = weakSelf;
                 return !s || generation != s->_syntaxGeneration;
@@ -799,7 +799,7 @@ static void wq_open_file(UINavigationController *nav, NSString *path, BOOL readO
     }
     if (mode == WQOpenAuto && wq_is_media_name(path)) mode = WQOpenMedia;
     if (mode != WQOpenAuto) { push(mode); return; }
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSData *head = wq_permission_hint(path, NO) ? nil : wq_read_range(path, 0, 4096, NULL);
         WQOpenMode m = head ? wq_sniff(head) : WQOpenText;   // unreadable: the file viewer shows why
         dispatch_async(dispatch_get_main_queue(), ^{ push(m); });
@@ -1022,7 +1022,7 @@ static NSString *wq_info_date(struct timespec ts)
     _cancellation = cancellation;
     __weak typeof(self) weakSelf = self;
     [self setValue:WQVerbatim(path) forRow:WQLocalized(@"Path")];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         struct stat st;
         BOOL found = wq_stat(path, &st);
         void (^show)(NSString *, NSString *) = ^(NSString *title, NSString *value) {
@@ -1402,7 +1402,6 @@ static NSString *wq_info_date(struct timespec ts)
         self.tableView.backgroundColor = [UIColor clearColor];
     }
     wq_install_header_shield(self);
-    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.refreshControl = [UIRefreshControl new];
     [self.refreshControl addTarget:self action:@selector(userRefresh) forControlEvents:UIControlEventValueChanged];
@@ -1509,6 +1508,8 @@ static NSString *wq_info_date(struct timespec ts)
                                                name:kWQMoveChanged object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyThemeLive)
                                                name:WQThemeDidChangeNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(cancelBackgroundScan)
+                                               name:UIApplicationDidEnterBackgroundNotification object:nil];
     [self updateToolbar];
     [self updateHeader];
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -1522,6 +1523,16 @@ static NSString *wq_info_date(struct timespec ts)
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
     [self reload];
+}
+
+- (void)cancelBackgroundScan
+{
+    if (_scanInFlight) {
+        _scanNeedsRefresh = YES;
+        [_scanCancellation cancel];
+        _scanStatus = nil;
+        [self.refreshControl endRefreshing];
+    }
 }
 
 - (void)dealloc
@@ -2164,23 +2175,6 @@ static NSString *wq_info_date(struct timespec ts)
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView
 {
-    wq_motion_apply_scroll_wave(scrollView);
-    wq_motion_update_scroll_aurora(scrollView, self.view);
-    wq_motion_apply_header_parallax(scrollView, _pathCard);
-
-    // Tactile detent when crossing alphabet groups or major row buckets.
-    NSIndexPath *topRow = self.tableView.indexPathsForVisibleRows.firstObject;
-    if (topRow && topRow.row < (NSInteger)_items.count) {
-        NSInteger detent = topRow.row / 8;
-        if (_indexTitles.count && wq_sort_key() == WQSortName) {
-            WQItem *item = _items[(NSUInteger)topRow.row];
-            NSString *letter = wq_index_letter(item.label ?: item.name);
-            NSUInteger idx = [_indexTitles indexOfObject:letter];
-            if (idx != NSNotFound) detent = (NSInteger)idx;
-        }
-        wq_motion_scroll_detent(scrollView, detent);
-    }
-
     // Morph Orbital Command HUD <-> Glacier Telemetry Pill on vertical scroll direction.
     if (_actionDock && !_actionDock.hidden && !_selectingFiles && !_selectingBackups && !_searchPresenting) {
         CGFloat y = scrollView.contentOffset.y;
@@ -2741,9 +2735,9 @@ static NSString *wq_info_date(struct timespec ts)
         NSString *backupParent = wq_backup_root().stringByDeletingLastPathComponent;
 
         if (entryCount > 0) {
-            NSUInteger maxWorkers = MAX((NSUInteger)4, MIN((NSUInteger)8, NSProcessInfo.processInfo.activeProcessorCount));
+            NSUInteger maxWorkers = 2;
             dispatch_semaphore_t workerLimit = dispatch_semaphore_create((long)maxWorkers);
-            dispatch_queue_t pq = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+            dispatch_queue_t pq = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
             dispatch_apply(entryCount, pq, ^(size_t idx) {
                 if (cancellation.isCancelled) return;
                 dispatch_semaphore_wait(workerLimit, DISPATCH_TIME_FOREVER);
@@ -2755,7 +2749,7 @@ static NSString *wq_info_date(struct timespec ts)
                             CFTimeInterval now = CACurrentMediaTime();
                             BOOL push = NO;
                             @synchronized (uiLock) {
-                                if (stepNum == 1 || stepNum == entryCount || (now - lastEntryUIPush) >= 0.033) {
+                                if (stepNum == 1 || stepNum == entryCount || (now - lastEntryUIPush) >= 0.05) {
                                     lastEntryUIPush = now;
                                     push = YES;
                                 }
@@ -3589,7 +3583,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
     // a single file) or Keep Both ("Name 2.ext").
     NSString *dir = _path;
     NSArray<NSString *> *sources = [urls valueForKey:@"path"];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSMutableDictionary<NSString *, NSDictionary *> *conflicts = [NSMutableDictionary new];
         for (NSString *source in sources) {
             NSString *destination = [dir stringByAppendingPathComponent:source.lastPathComponent];
@@ -3697,7 +3691,7 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
     // never read into memory, and the existence check runs off the main thread.
     NSString *dest = [_path stringByAppendingPathComponent:source.lastPathComponent];
     void (^cleanup)(void) = ^{ [NSFileManager.defaultManager removeItemAtPath:source error:nil]; };
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         struct stat st;
         BOOL exists = wq_stat(dest, &st);
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -5224,7 +5218,11 @@ static void wq_apply_design(void);
     if (![NSUserDefaults.standardUserDefaults boolForKey:kWQReopenOffPref] && [last[@"path"] isKindOfClass:NSString.class])
         _reopenFolder = last;
     [self checkForUpdate];
-    [self runHealthCheck];
+    // Zero automatic disk/container scan on launch: show lightweight entitlement
+    // metadata immediately and run full health checks only when Quick Check or Full Scan is tapped.
+    if (!_appGroupName.length) _appGroupName = wq_app_group();
+    [self updateHealthUI];
+    [self reopenLastFolder];
 }
 
 - (UIButton *)headerIconButton:(NSString *)symbol label:(NSString *)label selector:(SEL)sel
@@ -5265,7 +5263,6 @@ static void wq_apply_design(void);
     _scroll.contentInset = UIEdgeInsetsMake(76, 0, 156, 0);
     _scroll.verticalScrollIndicatorInsets = UIEdgeInsetsMake(76, 0, 156, 0);
     [self.view addSubview:_scroll];
-    wq_motion_install_edge_blur(_scroll, self.view);
 
     _contentStack = [[UIStackView alloc] initWithFrame:CGRectZero];
     _contentStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -6174,7 +6171,7 @@ static void wq_home_health_init(void)
     _checkingAccess = YES;
     [self updateHealthUI];
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSString *group = wq_app_group();
         NSArray<WQHealthCheck *> *checks = wq_health_run(nil);
         @synchronized (gWQHomeHealthLock) {
@@ -6216,37 +6213,6 @@ static void wq_home_health_init(void)
     if (worst == WQHealthWarning) { [self showHealthWarnings:checks]; return; }
     if (worst < WQHealthFailed) return;
     [self presentPendingHealthFailure];
-}
-
-static void wq_home_prewarm_health_on_launch(void)
-{
-    wq_home_health_init();
-    @synchronized (gWQHomeHealthLock) {
-        if (gWQHomeHealthInFlight || gWQHomeHealthDone) return;
-        gWQHomeHealthInFlight = YES;
-    }
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSString *group = wq_app_group();
-        if (!wq_display_names_loaded()) wq_load_display_names();
-        NSArray<WQHealthCheck *> *checks = wq_health_run(nil);
-        NSArray<WQPrismHomeViewController *> *targets = nil;
-        @synchronized (gWQHomeHealthLock) {
-            gWQHomeHealthInFlight = NO;
-            gWQHomeHealthDone = YES;
-            gWQHomeHealthGroup = group;
-            gWQHomeHealthChecks = checks;
-            targets = gWQHomeHealthObservers.allObjects;
-            [gWQHomeHealthObservers removeAllObjects];
-        }
-        if (targets.count) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                for (WQPrismHomeViewController *vc in targets) {
-                    if (group.length) vc->_appGroupName = group;
-                    [vc healthCheckFinished:checks];
-                }
-            });
-        }
-    });
 }
 
 - (void)quickCheckTapped
@@ -6380,33 +6346,16 @@ static void wq_home_prewarm_health_on_launch(void)
     return targets;
 }
 
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+- (void)scrollViewDidScroll:(UIScrollView *__unused)scrollView
 {
-    wq_motion_apply_scroll_wave_views(scrollView, [self homeScrollWaveTargets]);
-    wq_motion_update_scroll_aurora(scrollView, self.view);
-    wq_motion_apply_header_parallax(scrollView, _heroView);
-
-    if (_sectionAnchors.count) {
-        CGFloat topEdge = scrollView.contentOffset.y + scrollView.adjustedContentInset.top + 48.0;
-        NSInteger activeSection = 0;
-        for (NSUInteger i = 0; i < _sectionAnchors.count; i++) {
-            UIView *anchor = _sectionAnchors[i];
-            if (!anchor.superview) continue;
-            CGPoint pt = [anchor.superview convertPoint:anchor.frame.origin toView:scrollView];
-            if (topEdge >= pt.y) activeSection = (NSInteger)i;
-        }
-        wq_motion_scroll_detent(scrollView, activeSection);
-    }
 }
 
-- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+- (void)scrollViewDidEndDecelerating:(UIScrollView *__unused)scrollView
 {
-    wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
-- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+- (void)scrollViewDidEndDragging:(UIScrollView *__unused)scrollView willDecelerate:(BOOL __unused)decelerate
 {
-    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 - (BOOL)healthFailureCanPresent
@@ -7032,7 +6981,6 @@ static NSString *const kWQTroubleshootingFooter =
     [super viewDidLoad];
     wq_prism_install_background(self);
     wq_install_header_shield(self);
-    wq_motion_install_edge_blur(self.tableView, self.tableView);
     wq_theme_apply_scroll_insets(self.tableView, 156.0);
     self.tableView.backgroundColor = [UIColor clearColor];
     wq_theme_apply_scroll_insets(self.tableView, 28.0);
@@ -7135,7 +7083,7 @@ static NSString *const kWQTroubleshootingFooter =
 - (void)reloadVaultCounts
 {
     __weak typeof(self) weakSelf = self;
-    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_UTILITY, 0);
     dispatch_async(q, ^{
         __block NSUInteger appCount = 0;
         __block NSUInteger fileCount = 0;
@@ -7156,12 +7104,15 @@ static NSString *const kWQTroubleshootingFooter =
             for (NSURL *__unused u in en) c++;
             return c;
         };
+        dispatch_semaphore_t limit = dispatch_semaphore_create(2);
         dispatch_apply(3, q, ^(size_t idx) {
+            dispatch_semaphore_wait(limit, DISPATCH_TIME_FOREVER);
             @autoreleasepool {
                 if (idx == 0) appCount = countDir(wq_app_backup_root());
                 else if (idx == 1) fileCount = countDir(wq_backup_root());
                 else delCount = [wq_recently_deleted_checked(nil) count];
             }
+            dispatch_semaphore_signal(limit);
         });
         NSString *appLbl = WQLocalized(@"App Backups");
         NSString *fileLbl = WQLocalized(@"File Backups");
@@ -7246,21 +7197,16 @@ static NSString *const kWQTroubleshootingFooter =
     [self openVaultRow:indexPath.row];
 }
 
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+- (void)scrollViewDidScroll:(UIScrollView *__unused)scrollView
 {
-    wq_motion_apply_scroll_wave(scrollView);
-    wq_motion_update_scroll_aurora(scrollView, self.view);
-    wq_motion_apply_header_parallax(scrollView, _vaultHeaderCard);
 }
 
-- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView
+- (void)scrollViewDidEndDecelerating:(UIScrollView *__unused)scrollView
 {
-    wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
-- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate
+- (void)scrollViewDidEndDragging:(UIScrollView *__unused)scrollView willDecelerate:(BOOL __unused)decelerate
 {
-    if (!decelerate) wq_motion_settle_scroll_aurora(scrollView, self.view);
 }
 
 @end
@@ -7498,7 +7444,7 @@ static NSString *const kWQTroubleshootingFooter =
     [spinner startAnimating];
     spinner.accessibilityLabel = WQLocalized(@"Checking access…");
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:spinner];
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSArray<WQHealthCheck *> *checks = wq_health_run(nil);
         dispatch_async(dispatch_get_main_queue(), ^{ [self healthCheckFinished:checks]; });
     });
@@ -7937,7 +7883,7 @@ static NSString *const kWQTroubleshootingFooter =
     [self.tableView reloadData];
     wq_enumerate_invalidate();
     wq_display_names_reset_miss();
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSArray *checks = wq_health_run(^(NSString *text) {
             dispatch_async(dispatch_get_main_queue(), ^{ self->_stage = text; [self.tableView reloadData]; });
         });
@@ -8079,25 +8025,6 @@ static UIViewController *wq_make_root_view_controller(void)
 @property (nonatomic, strong) UIWindow *window;
 @end
 
-// Coordinated Zero-Wait Launch Pre-Warm Pipeline: triggered immediately after
-// the first UI frame appears on QOS_CLASS_USER_INITIATED so Home health, Apps,
-// Cache Cleaner, and Spotlight search are all pre-loaded in parallel.
-static void wq_launch_prewarm_pipeline(void)
-{
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            wq_home_prewarm_health_on_launch();
-            [WQAppsViewController wq_prewarmOnLaunch];
-            [WQCacheCleanerViewController wq_prewarmOnLaunch];
-            Class spotlightCls = NSClassFromString(@"WQSpotlightViewController");
-            if (spotlightCls && [spotlightCls respondsToSelector:@selector(wq_prewarmOnLaunch)]) {
-                [(Class<WQLaunchPrewarmable>)spotlightCls wq_prewarmOnLaunch];
-            }
-        });
-    });
-}
-
 @implementation WQSceneDelegate
 
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options
@@ -8108,10 +8035,6 @@ static void wq_launch_prewarm_pipeline(void)
     window.rootViewController = wq_make_root_view_controller();
     [window makeKeyAndVisible];
     self.window = window;
-    // Schedule pre-warm right after the first frame commits so launch is instantaneous.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        wq_launch_prewarm_pipeline();
-    });
 }
 
 @end
