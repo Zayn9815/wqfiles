@@ -920,14 +920,6 @@ static NSArray<WQAppsViewController *> *wq_apps_hub_snapshot_observers(void)
     [self refreshBackups];
 }
 
-- (void)viewDidAppear:(BOOL)animated
-{
-    [super viewDidAppear:animated];
-    if (!_apps && !_scanning) {
-        [self scan];
-    }
-}
-
 - (void)cancelInFlightScan
 {
     wq_apps_hub_init();
@@ -1798,6 +1790,10 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
+    if (!_apps && !_scanning) {
+        [self scan];
+        return;
+    }
     if (_apps && !_scanning) [self offerPendingRestore];   // the list was read before the push finished
 }
 
