@@ -3774,17 +3774,17 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                     UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Compare with…"), WQVerbatim(latest.name), UIAlertControllerStyleActionSheet);
                     NSString *backup = wq_latest_backup_for_file(latest.path);
                     if (backup.length) {
-                        [sheet addAction:wq_alert_action(WQLocalized(@"Compare with Latest Backup"), UIAlertActionStyleDefault, ^(UIAction *__unused act) {
+                        [sheet addAction:wq_alert_action(WQLocalized(@"Compare with Latest Backup"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
                             [dirVC.navigationController pushViewController:[[WQDiffViewController alloc] initWithLeftPath:backup rightPath:latest.path] animated:YES];
                         })];
                     }
                     if (gWQDiffCompareSourcePath.length && ![gWQDiffCompareSourcePath isEqualToString:latest.path]) {
                         NSString *src = [gWQDiffCompareSourcePath copy];
-                        [sheet addAction:wq_alert_action(WQLocalizedFormat(@"Compare with %@", src.lastPathComponent), UIAlertActionStyleDefault, ^(UIAction *__unused act) {
+                        [sheet addAction:wq_alert_action(WQLocalizedFormat(@"Compare with %@", src.lastPathComponent), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
                             [dirVC.navigationController pushViewController:[[WQDiffViewController alloc] initWithLeftPath:src rightPath:latest.path] animated:YES];
                         })];
                     }
-                    [sheet addAction:wq_alert_action(WQLocalized(@"Select as First File to Compare"), UIAlertActionStyleDefault, ^(UIAction *__unused act) {
+                    [sheet addAction:wq_alert_action(WQLocalized(@"Select as First File to Compare"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
                         gWQDiffCompareSourcePath = [latest.path copy];
                         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
                         wq_alert(dirVC, WQLocalized(@"Compare Target Set"),
