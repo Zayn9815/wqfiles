@@ -114,13 +114,13 @@ if [[ "${WQ_SKIP_IOS_CHECK:-0}" != 1 ]]; then
     printf '\n== Strict iOS arm64 syntax/link checks ==\n'
     IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
     MIN_OS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' Info.plist)
-    SOURCES=(WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQScanTask.m WQWebServer.m WQInspector.m WQSecurity.m WQTheme.m WQMotion.m WQGlobalSearch.m main.m)
+    SOURCES=(WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQScanTask.m WQWebServer.m WQInspector.m WQSecurity.m WQSystemMonitor.m WQDocStudio.m WQMediaTools.m WQWorkbench.m WQDuplicates.m WQVault.m WQTheme.m WQMotion.m WQGlobalSearch.m main.m)
     FLAGS=(-fobjc-arc -fmodules "-fmodules-cache-path=$OUT/modules-ios" -arch arm64 "-miphoneos-version-min=$MIN_OS" -isysroot "$IOS_SDK" -Wall -Wextra -Werror -O2)
     xcrun --sdk iphoneos clang -fsyntax-only "${FLAGS[@]}" "${SOURCES[@]}" > "$OUT/ios-syntax.log" 2>&1 || {
         cat "$OUT/ios-syntax.log" >&2
         exit 1
     }
-    xcrun --sdk iphoneos clang "${FLAGS[@]}" -framework UIKit -framework QuartzCore -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore -framework LocalAuthentication -lsqlite3 -lz \
+    xcrun --sdk iphoneos clang "${FLAGS[@]}" -framework UIKit -framework QuartzCore -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore -framework LocalAuthentication -framework PDFKit -framework CoreImage -framework ImageIO -framework AVFoundation -lsqlite3 -lz \
         "${SOURCES[@]}" -o "$OUT/WQFiles-link-check" > "$OUT/ios-link.log" 2>&1 || {
         cat "$OUT/ios-link.log" >&2
         exit 1
