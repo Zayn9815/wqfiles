@@ -81,9 +81,41 @@
 }
 
 static NSString *const kWQAppsSortByNamePref = @"WQAppsSortByName";
-// 0 all apps, 1 Apple's, 2 everyone else's, 3 apps with a backup.
+// 0 all apps, 1 Apple's, 2 everyone else's, 3 apps with a backup, 4 installed, 5 offloaded, 6 starred.
 static NSString *const kWQAppsFilterPref = @"WQAppsFilter";
-// 4 installed, 5 offloaded (issue #28).
+static NSString *const kWQStarredAppsPref = @"WQStarredApps";
+
+static NSString *wq_app_star_key(WQAppItem *app)
+{
+    return app.bundleID.length ? app.bundleID : (app.container.lastPathComponent ?: @"");
+}
+
+static NSSet<NSString *> *wq_apps_starred_set(void)
+{
+    NSArray *saved = [NSUserDefaults.standardUserDefaults arrayForKey:kWQStarredAppsPref];
+    if (![saved isKindOfClass:NSArray.class]) return [NSSet set];
+    NSMutableSet<NSString *> *set = [NSMutableSet set];
+    for (id obj in saved) {
+        if ([obj isKindOfClass:NSString.class] && [(NSString *)obj length]) [set addObject:obj];
+    }
+    return set;
+}
+
+static BOOL wq_apps_is_starred(WQAppItem *app)
+{
+    NSString *key = wq_app_star_key(app);
+    return key.length > 0 && [wq_apps_starred_set() containsObject:key];
+}
+
+static void wq_apps_set_starred(WQAppItem *app, BOOL starred)
+{
+    NSString *key = wq_app_star_key(app);
+    if (!key.length) return;
+    NSMutableSet<NSString *> *set = [wq_apps_starred_set() mutableCopy];
+    if (starred) [set addObject:key];
+    else [set removeObject:key];
+    [NSUserDefaults.standardUserDefaults setObject:set.allObjects forKey:kWQStarredAppsPref];
+}
 
 typedef NS_ENUM(NSInteger, WQInstallState) { WQInstallUnknown = 0, WQInstallInstalled, WQInstallOffloaded };
 
@@ -596,8 +628,11 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
     search.delegate = self;
     search.obscuresBackgroundDuringPresentation = NO;
     search.searchBar.placeholder = WQLocalizedNullable(@"Search apps");
-    // Controls float in the bottom-trailing Glacier corner pill cluster.
-    self.navigationItem.rightBarButtonItem = nil;
+    // Back Up Starred shortcut in top-trailing navigation bar; Sort/Search/Rescan float in the Glacier corner rail.
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Back Up ★")
+                                                                              style:UIBarButtonItemStylePlain
+                                                                             target:self
+                                                                             action:@selector(backUpStarredApps)];
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
@@ -746,15 +781,18 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
 
     _filterPills = [NSMutableArray new];
     NSInteger current = [NSUserDefaults.standardUserDefaults integerForKey:kWQAppsFilterPref];
-    NSArray<NSString *> *titles = @[
-        WQLocalized(@"All Apps"),
-        WQLocalized(@"Apple Apps"),
-        WQLocalized(@"Other Apps"),
-        WQLocalized(@"Backed Up"),
+    NSArray<NSArray *> *pillSpecs = @[
+        @[@(0), WQLocalized(@"All Apps")],
+        @[@(6), WQLocalized(@"★ Starred")],
+        @[@(1), WQLocalized(@"Apple Apps")],
+        @[@(2), WQLocalized(@"Other Apps")],
+        @[@(3), WQLocalized(@"Backed Up")],
     ];
-    [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger idx, BOOL *__unused stop) {
-        UIButton *pill = wq_theme_pill_button(title, (NSInteger)idx == current);
-        pill.tag = (NSInteger)idx;
+    for (NSArray *spec in pillSpecs) {
+        NSInteger tag = [spec[0] integerValue];
+        NSString *title = spec[1];
+        UIButton *pill = wq_theme_pill_button(title, tag == current);
+        pill.tag = tag;
         __weak UIButton *weakPill = pill;
         [pill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
             UIButton *sender = weakPill;
@@ -769,7 +807,7 @@ static BOOL wq_dir_size_cancellable(NSString *dir, WQScanCancellation *cancellat
         }] forControlEvents:UIControlEventTouchUpInside];
         [self->_filterPills addObject:pill];
         [pillStack addArrangedSubview:pill];
-    }];
+    }
 
     CGFloat cardHeight = 72.0;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + cardHeight + 52)];
@@ -1320,6 +1358,7 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
             if (filter == 2) return !wq_app_is_apple(a);
             if (filter == 4) return a.installState == WQInstallInstalled;
             if (filter == 5) return a.installState == WQInstallOffloaded;
+            if (filter == 6) return wq_apps_is_starred(a);
             return a.backups.count > 0;
         }]];
     }
@@ -1382,7 +1421,7 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
         UIMenu *sort = [UIMenu menuWithTitle:WQLocalizedNullable(@"Sort By") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[size, name]];
         NSInteger current = [NSUserDefaults.standardUserDefaults integerForKey:kWQAppsFilterPref];
         NSArray *titles = @[WQLocalized(@"All Apps"), WQLocalized(@"Apple Apps"), WQLocalized(@"Other Apps"), WQLocalized(@"Backed Up"),
-                            WQLocalized(@"Installed"), WQLocalized(@"Offloaded")];
+                            WQLocalized(@"Installed"), WQLocalized(@"Offloaded"), WQLocalized(@"Starred")];
         // Installed/Offloaded only where bundles could be checked (not on iOS 26).
         WQAppsViewController *strongSelf = weakSelf;
         // Only offer Installed/Offloaded when nearly every app's state is
@@ -1393,7 +1432,7 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
         BOOL installKnown = all.count > 0 && unknown * 10 <= all.count;
         NSMutableArray *filters = [NSMutableArray new];
         for (NSInteger i = 0; i < (NSInteger)titles.count; i++) {
-            if (i >= 4 && !installKnown && i != current) continue;
+            if ((i == 4 || i == 5) && !installKnown && i != current) continue;
             UIAction *f = [UIAction actionWithTitle:WQLocalizedNullable(titles[(NSUInteger)i]) image:nil identifier:nil handler:^(UIAction *__unused a) {
                 [NSUserDefaults.standardUserDefaults setInteger:i forKey:kWQAppsFilterPref];
                 [weakSelf syncFilterPills];
@@ -1403,7 +1442,14 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
             [filters addObject:f];
         }
         UIMenu *show = [UIMenu menuWithTitle:WQLocalizedNullable(@"Show") image:nil identifier:nil options:UIMenuOptionsDisplayInline children:filters];
-        completion(@[sort, show]);
+        UIAction *batchStar = [UIAction actionWithTitle:WQLocalizedNullable(@"Back Up Starred Apps…")
+                                                  image:[UIImage systemImageNamed:@"star.fill"]
+                                             identifier:nil
+                                                handler:^(UIAction *__unused a) {
+            [weakSelf backUpStarredApps];
+        }];
+        UIMenu *batchMenu = [UIMenu menuWithTitle:@"" image:nil identifier:nil options:UIMenuOptionsDisplayInline children:@[batchStar]];
+        completion(@[sort, show, batchMenu]);
     }];
     return [UIMenu menuWithChildren:@[items]];
 }
@@ -1415,7 +1461,7 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
     [self.tableView reloadSectionIndexTitles];
 }
 
-// Long-press: copy the bundle ID or container path, open the data folder.
+// Long-press: copy the bundle ID or container path, star/unstar, or open the data folder.
 - (UIContextMenuConfiguration *)tableView:(UITableView *)tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath point:(CGPoint)point
 {
@@ -1425,6 +1471,15 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil
         actionProvider:^UIMenu *(NSArray<UIMenuElement *> *__unused suggested) {
         NSMutableArray *actions = [NSMutableArray new];
+        BOOL starred = wq_apps_is_starred(app);
+        [actions addObject:[UIAction actionWithTitle:starred ? WQLocalizedNullable(@"Remove Star") : WQLocalizedNullable(@"Star App for Batch Backup")
+                                               image:[UIImage systemImageNamed:starred ? @"star.slash" : @"star.fill"]
+                                          identifier:nil
+                                             handler:^(UIAction *__unused a) {
+            wq_apps_set_starred(app, !starred);
+            wq_haptic_selection();
+            [weakSelf resortApps];
+        }]];
         if (app.bundleID.length) {
             [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Copy Bundle ID") image:[UIImage systemImageNamed:@"tag"] identifier:nil
                                                   handler:^(UIAction *__unused a) { UIPasteboard.generalPasteboard.string = app.bundleID; }]];
@@ -1450,6 +1505,28 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
         }
         return [UIMenu menuWithChildren:actions];
     }];
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *__unused)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (_busy || (NSUInteger)indexPath.row >= self.visibleApps.count) return nil;
+    WQAppItem *app = self.visibleApps[(NSUInteger)indexPath.row];
+    BOOL starred = wq_apps_is_starred(app);
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *starAct = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
+                                                                          title:starred ? WQLocalized(@"Unstar") : WQLocalized(@"Star")
+                                                                        handler:^(UIContextualAction *__unused act, UIView *__unused src, void (^done)(BOOL)) {
+        wq_apps_set_starred(app, !starred);
+        wq_haptic_selection();
+        [weakSelf resortApps];
+        done(YES);
+    }];
+    starAct.backgroundColor = starred ? UIColor.systemGrayColor : UIColor.systemOrangeColor;
+    starAct.image = [UIImage systemImageNamed:starred ? @"star.slash.fill" : @"star.fill"];
+    UISwipeActionsConfiguration *cfg = [UISwipeActionsConfiguration configurationWithActions:@[starAct]];
+    cfg.performsFirstActionWithFullSwipe = YES;
+    return cfg;
 }
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController
@@ -1509,7 +1586,8 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
         return cell;
     }
     WQAppItem *app = self.visibleApps[(NSUInteger)indexPath.row];
-    c.text = app.name;
+    BOOL starred = wq_apps_is_starred(app);
+    c.text = starred ? [@"★ " stringByAppendingString:app.name ?: @""] : app.name;
     NSString *identifier = app.bundleID.length ? app.bundleID : app.container.lastPathComponent;
     BOOL hasBackup = app.backups.count > 0;
     if (!app.hasAccess) {
@@ -1688,6 +1766,66 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
             [self finish:dest ? WQLocalized(@"Backed up") : WQLocalized(@"Backup failed")
                  message:dest ? WQLocalizedFormat(@"Saved to AppBackups/%@/%@", app.bundleID, dest.lastPathComponent)
                               : WQLocalizedFormat(@"Nothing was saved: %@", error ?: @"see Log")];
+        });
+    });
+}
+
+- (void)backUpStarredApps
+{
+    if (_busy || _scanning) return;
+    NSMutableArray<WQAppItem *> *targets = [NSMutableArray new];
+    for (WQAppItem *app in _apps ?: @[]) {
+        if (wq_apps_is_starred(app) && app.hasAccess && app.bundleID.length && app.hasIdentity) {
+            [targets addObject:app];
+        }
+    }
+    if (!targets.count) {
+        wq_alert(self, WQLocalized(@"No Starred Apps"),
+                 WQLocalized(@"Swipe left on any app (or long-press it) and tap Star to build your one-tap batch backup profile."));
+        return;
+    }
+    NSUInteger count = targets.count;
+    wq_present_glass_confirm(self,
+                             WQLocalizedFormat(@"Back Up %lu Starred Apps?", (unsigned long)count),
+                             WQLocalized(@"Each starred app's Documents and Library will be backed up sequentially into AppBackups. Close target apps first for consistent snapshots."),
+                             WQLocalized(@"Back Up All"),
+                             NO,
+                             ^{
+        [self setBusy:YES status:WQLocalizedFormat(@"Backing up 1 of %lu…", (unsigned long)count)];
+        NSArray<WQAppItem *> *batch = [targets copy];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSUInteger okCount = 0;
+            NSMutableArray<NSString *> *failed = [NSMutableArray new];
+            for (NSUInteger i = 0; i < batch.count; i++) {
+                WQAppItem *app = batch[i];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self->_status = WQLocalizedFormat(@"Backing up %lu of %lu: %@…",
+                                                      (unsigned long)(i + 1), (unsigned long)batch.count, app.name ?: app.bundleID);
+                    [self updateAppsSummary];
+                    [self.tableView reloadData];
+                });
+                __block NSString *dest = nil;
+                __block NSString *err = nil;
+                dispatch_sync(wq_io(), ^{
+                    dest = wq_make_app_backup(app.bundleID, app.container, app.containerDevice,
+                                              app.containerInode, @"Batch Starred", &err);
+                });
+                if (dest) {
+                    okCount++;
+                } else {
+                    [failed addObject:[NSString stringWithFormat:@"%@ (%@)", app.name ?: app.bundleID, err ?: @"failed"]];
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString *summary = failed.count
+                    ? WQLocalizedFormat(@"Backed up %lu of %lu starred apps.\n\nSkipped/Failed:\n%@",
+                                        (unsigned long)okCount, (unsigned long)batch.count,
+                                        [failed componentsJoinedByString:@"\n"])
+                    : WQLocalizedFormat(@"Successfully backed up all %lu starred apps to WQ Glass/AppBackups.", (unsigned long)okCount);
+                wq_haptic_notify(failed.count ? UINotificationFeedbackTypeWarning : UINotificationFeedbackTypeSuccess);
+                [self finish:failed.count ? WQLocalized(@"Batch Backup Finished") : WQLocalized(@"Starred Apps Backed Up")
+                     message:summary];
+            });
         });
     });
 }
@@ -2270,6 +2408,7 @@ NSString *wq_recover_interrupted_restore(void)
 - (void)pickImportFor:(WQAppItem *)app;
 - (void)pickBackupToRestore:(WQAppItem *)app from:(UIView *_Nullable)source;
 - (void)confirmClear:(WQAppItem *)app;
+- (void)resortApps;
 @end
 
 @implementation WQAppDetailViewController {
@@ -2335,6 +2474,12 @@ NSString *wq_recover_interrupted_restore(void)
 {
     NSMutableArray<NSDictionary<NSString *, id> *> *list = [NSMutableArray new];
     BOOL fullControl = _app.hasAccess && _app.bundleID.length > 0 && _app.hasIdentity;
+    BOOL starred = wq_apps_is_starred(_app);
+    [list addObject:@{
+        @"id": @"toggle_star",
+        @"title": starred ? WQLocalized(@"Remove from Starred Batch Profile") : WQLocalized(@"Star App for Batch Backup"),
+        @"symbol": starred ? @"star.slash.fill" : @"star.fill",
+    }];
     if (fullControl) {
         [list addObject:@{ @"id": @"backup", @"title": WQLocalized(@"Back Up Data"), @"symbol": @"arrow.down.doc.fill" }];
         [list addObject:@{ @"id": @"import", @"title": WQLocalized(@"Import as Backup…"), @"symbol": @"square.and.arrow.down" }];
@@ -2625,7 +2770,13 @@ NSString *wq_recover_interrupted_restore(void)
     NSDictionary *act = _actions[(NSUInteger)indexPath.row];
     NSString *aid = act[@"id"];
     WQAppsViewController *owner = _owner;
-    if ([aid isEqualToString:@"backup"]) {
+    if ([aid isEqualToString:@"toggle_star"]) {
+        wq_apps_set_starred(_app, !wq_apps_is_starred(_app));
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        [self rebuildActions];
+        [self.tableView reloadData];
+        [owner resortApps];
+    } else if ([aid isEqualToString:@"backup"]) {
         [self.navigationController popViewControllerAnimated:YES];
         [owner backUp:_app then:nil];
     } else if ([aid isEqualToString:@"import"]) {

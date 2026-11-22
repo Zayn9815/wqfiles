@@ -131,6 +131,13 @@ static void wq_spotlight_save_recent(NSString *query)
 static NSArray<WQSpotlightResult *> *wq_spotlight_quick_commands(void)
 {
     NSArray<NSArray<NSString *> *> *specs = @[
+        @[@"Utility Hub", @"All-in-One iOS Super-Utility Toolkit", @"square.grid.2x2.fill", @"utility_hub"],
+        @[@"System & Network Monitor", @"Live RAM, Battery, Thermal, IP & Ping", @"cpu.fill", @"system_monitor"],
+        @[@"PDF & Document Studio", @"Images to PDF, Merge & Split Pages", @"doc.richtext.fill", @"pdf_studio"],
+        @[@"Privacy Photo & Media Studio", @"EXIF Scrubber, Resizer & Extract Audio", @"camera.filters", @"media_tools"],
+        @[@"Utility Workbench", @"QR Studio, Passwords, Scratchpad & Dev Tools", @"wrench.and.screwdriver.fill", @"workbench"],
+        @[@"Duplicate File Hunter", @"Find & safely clean duplicate files", @"doc.on.doc.fill", @"find_duplicates"],
+        @[@"Private Encrypted Vault", @"Face ID AES-256 encrypted files & notes", @"lock.shield.fill", @"private_vault"],
         @[@"Run Full Scan", @"Scan containers & permissions", @"arrow.triangle.2.circlepath", @"full_scan"],
         @[@"Quick Health Check", @"Verify sandbox access status", @"checkmark.shield.fill", @"quick_check"],
         @[@"Clean Selected Caches", @"Open Cache Cleaner to free space", @"sparkles", @"clean_caches"],

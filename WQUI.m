@@ -409,10 +409,24 @@ dispatch_queue_t wq_io(void)
     return queue;
 }
 
+NSNotificationName const WQSafeReadOnlyDidChangeNotification = @"WQSafeReadOnlyDidChangeNotification";
+static NSString *const kWQSafeReadOnlyPref = @"WQSafeReadOnlyMode";
 static NSString *const kWQDeletingDisabledPref = @"WQDeletingDisabled";
+
+BOOL wq_safe_read_only_enabled(void)
+{
+    return [NSUserDefaults.standardUserDefaults boolForKey:kWQSafeReadOnlyPref];
+}
+
+void wq_set_safe_read_only_enabled(BOOL enabled)
+{
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:kWQSafeReadOnlyPref];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQSafeReadOnlyDidChangeNotification object:nil];
+}
 
 BOOL wq_deleting_allowed(void)
 {
+    if (wq_safe_read_only_enabled()) return NO;
     return ![NSUserDefaults.standardUserDefaults boolForKey:kWQDeletingDisabledPref];
 }
 
@@ -436,6 +450,13 @@ void wq_set_keep_before_restore(BOOL keep)
 BOOL wq_refuse_if_deleting_off(UIViewController *host)
 {
     if (wq_deleting_allowed()) return NO;
+    if (wq_safe_read_only_enabled()) {
+        UIAlertController *alert = wq_alert_controller(@"Safe Read-Only Mode Active",
+            @"Safe Mode is currently protecting your files from writes and deletions. Turn off Safe Mode on the Home screen to proceed.", UIAlertControllerStyleAlert);
+        [alert addAction:wq_alert_action(@"OK", UIAlertActionStyleDefault, nil)];
+        [host presentViewController:alert animated:YES completion:nil];
+        return YES;
+    }
     UIAlertController *alert = wq_alert_controller(@"Deleting is turned off",
         @"Turn on Allow Deleting on the start screen of WQ Glass to delete, clear or clean.", UIAlertControllerStyleAlert);
     [alert addAction:wq_alert_action(@"OK", UIAlertActionStyleDefault, nil)];

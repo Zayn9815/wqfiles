@@ -85,8 +85,8 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 xcrun --sdk iphoneos clang -fobjc-arc -fmodules -fmodules-cache-path="$OUT/ModuleCache" -arch arm64 \
     -miphoneos-version-min="$MINIMUM_IOS_VERSION" \
     -isysroot "$SDK" -Wall -Wextra -Werror -O2 \
-    -framework UIKit -framework QuartzCore -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore -framework LocalAuthentication \
-    WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQScanTask.m WQWebServer.m WQInspector.m WQSecurity.m WQTheme.m WQMotion.m WQGlobalSearch.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
+    -framework UIKit -framework QuartzCore -framework Foundation -framework Security -framework UniformTypeIdentifiers -framework JavaScriptCore -framework LocalAuthentication -framework PDFKit -framework CoreImage -framework ImageIO -framework AVFoundation \
+    WQCore.m WQAccess.m WQLocalization.m WQLaunchServices.m WQUI.m WQSharing.m WQApps.m WQCache.m WQPlistEditor.m WQHexViewer.m WQSQLiteViewer.m WQSQLiteSave.m WQHealth.m WQTrash.m WQArchive.m WQSyntax.m WQMediaStream.m WQScanTask.m WQWebServer.m WQInspector.m WQSecurity.m WQSystemMonitor.m WQDocStudio.m WQMediaTools.m WQWorkbench.m WQDuplicates.m WQVault.m WQTheme.m WQMotion.m WQGlobalSearch.m main.m -lsqlite3 -lz -o "$APP/WQFiles"
 cp Info.plist "$APP/Info.plist"
 cp icons/AppIcon*.png "$APP/"
 for lproj in "$ROOT"/*.lproj; do

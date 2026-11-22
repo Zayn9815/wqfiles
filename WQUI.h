@@ -20,11 +20,16 @@ void wq_alert(UIViewController *host, NSString *title, NSString *_Nullable messa
 // clean action is hidden or refused.
 BOOL wq_deleting_allowed(void);
 void wq_set_deleting_allowed(BOOL allowed);
+// Home → Safe Mode (Read-Only Shield). When on, all writes, renames, clears, and
+// deletes are globally disabled until turned off.
+extern NSNotificationName const WQSafeReadOnlyDidChangeNotification;
+BOOL wq_safe_read_only_enabled(void);
+void wq_set_safe_read_only_enabled(BOOL enabled);
 // Settings → Keep Data Before Restore (on by default). When off, the safety
 // backup an app restore makes first is deleted once the restore succeeded.
 BOOL wq_keep_before_restore(void);
 void wq_set_keep_before_restore(BOOL keep);
-// YES (after telling the user) when deleting is turned off.
+// YES (after telling the user) when deleting is turned off or Safe Mode is active.
 BOOL wq_refuse_if_deleting_off(UIViewController *host);
 // title/message/action titles are localization keys. Pass already-localized
 // text and raw data (names, keys, error strings) as WQVerbatim(text) so it is

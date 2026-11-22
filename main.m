@@ -50,6 +50,12 @@
 #import "WQScanTask.h"
 #import "WQSecurity.h"
 #import "WQMediaStream.h"
+#import "WQSystemMonitor.h"
+#import "WQDocStudio.h"
+#import "WQMediaTools.h"
+#import "WQWorkbench.h"
+#import "WQDuplicates.h"
+#import "WQVault.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
@@ -2035,6 +2041,13 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                 readOnly:folder.readOnly || folder->_backupStorage];
             [folder.navigationController pushViewController:largest animated:YES];
         }]];
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Find Duplicates…") image:[UIImage systemImageNamed:@"doc.on.doc.fill"]
+                                          identifier:nil handler:^(UIAction *__unused action) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            WQDuplicatesViewController *dups = [[WQDuplicatesViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
+            [folder.navigationController pushViewController:dups animated:YES];
+        }]];
     }
     // Built when the menu opens, so the checkmarks show the current order.
     UIMenuElement *sortFilterElement = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
@@ -2097,6 +2110,8 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
     [self restoreRightItems];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateToolbar)
                                                name:kWQMoveChanged object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateToolbar)
+                                               name:WQSafeReadOnlyDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(applyThemeLive)
                                                name:WQThemeDidChangeNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(cancelBackgroundScan)
@@ -2506,7 +2521,7 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
 // read-only areas, not backup storage, not the container lists themselves.
 - (BOOL)canEditHere
 {
-    return !self.readOnly && !_backupStorage && !_labels;
+    return !self.readOnly && !_backupStorage && !_labels && !wq_safe_read_only_enabled();
 }
 
 - (void)restoreRightItems
@@ -2602,6 +2617,14 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
     if (!_labels) {
         [coreActions addObject:[UIAction actionWithTitle:WQLocalized(@"Search Inside Folders…") image:[UIImage systemImageNamed:@"magnifyingglass"] identifier:nil
                                                  handler:^(UIAction *__unused a) { wq_haptic_selection(); [weakSelf promptFolderSearch]; }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalized(@"Find Duplicates…") image:[UIImage systemImageNamed:@"doc.on.doc.fill"] identifier:nil
+                                                 handler:^(UIAction *__unused a) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            wq_haptic_selection();
+            WQDuplicatesViewController *dups = [[WQDuplicatesViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
+            [folder.navigationController pushViewController:dups animated:YES];
+        }]];
     }
     _dockCoreButton.menu = [UIMenu menuWithTitle:WQLocalized(@"Command HUD") children:coreActions];
     _dockCoreButton.showsMenuAsPrimaryAction = YES;
@@ -2826,10 +2849,10 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
         UIBarButtonItem *del = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Delete") style:UIBarButtonItemStylePlain
                                                                target:self action:@selector(deleteSelectedFiles)];
         del.tintColor = [UIColor colorWithRed:0.677 green:0.845 blue:1.000 alpha:1.0];
-        UIBarButtonItem *rename = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Rename") style:UIBarButtonItemStylePlain
+        NSString *renameTitle = _selectedFiles.count > 1 ? WQLocalizedNullable(@"Batch Rename") : WQLocalizedNullable(@"Rename");
+        UIBarButtonItem *rename = [[UIBarButtonItem alloc] initWithTitle:renameTitle style:UIBarButtonItemStylePlain
                                                                   target:self action:@selector(renameSelectedFile)];
-        move.enabled = zip.enabled = del.enabled = any;
-        rename.enabled = _selectedFiles.count == 1;   // issue #41
+        move.enabled = zip.enabled = del.enabled = rename.enabled = any;
         self.toolbarItems = wq_deleting_allowed() ? @[move, flex, rename, flex, zip, flex, del] : @[move, flex, rename, flex, zip];
     } else if (gWQMovePaths.count) {
         UIBarButtonItem *cancel = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Cancel") style:UIBarButtonItemStylePlain
@@ -3853,6 +3876,38 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                     [dirVC presentViewController:sheet animated:YES completion:nil];
                 }]];
             }
+            NSSet<NSString *> *imgExts = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"heic", @"heif", @"webp", @"tiff", @"tif"]];
+            NSSet<NSString *> *avExts = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"m4a", @"mp3", @"wav", @"aac", @"caf"]];
+            if ([imgExts containsObject:ext]) {
+                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Inspect & Optimize Image")
+                                                       image:[UIImage systemImageNamed:@"camera.filters"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    if (latest && weakSelf) wq_present_media_tools(weakSelf, latest.path);
+                }]];
+            } else if ([avExts containsObject:ext]) {
+                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Media Inspector / Extract Audio")
+                                                       image:[UIImage systemImageNamed:@"waveform"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    if (latest && weakSelf) wq_present_media_tools(weakSelf, latest.path);
+                }]];
+            }
+            if ([strongSelf canEditHere] && ([ext isEqualToString:@"plist"] || [ext isEqualToString:@"json"])) {
+                BOOL toJSON = [ext isEqualToString:@"plist"];
+                [actions addObject:[UIAction actionWithTitle:toJSON ? WQLocalized(@"Convert to JSON") : WQLocalized(@"Convert to Plist")
+                                                       image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath.doc.on.clipboard"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    if (latest && weakSelf) [weakSelf convertPlistOrJSONAtPath:latest.path toJSON:toJSON];
+                }]];
+            }
+            [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Show QR Code")
+                                                   image:[UIImage systemImageNamed:@"qrcode"]
+                                              identifier:nil handler:^(UIAction *__unused a) {
+                WQItem *latest = currentItem();
+                if (latest && weakSelf) wq_present_qr_modal(weakSelf, latest.path, latest.name);
+            }]];
         }
         if (!current.isLink && (current.isRegular || current.isDir) && current.identity) {
             [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Copy to Folder…") image:[UIImage systemImageNamed:@"doc.on.doc"]
@@ -3888,7 +3943,7 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                 if (latest) [weakSelf startMove:@[latest.path] identities:@[latest.identity ?: wq_item_identity(latest.path) ?: (id)NSNull.null]];
             }]];
         }
-        if (!strongSelf.readOnly && !strongSelf->_backupStorage) {
+        if (!strongSelf.readOnly && !strongSelf->_backupStorage && !wq_safe_read_only_enabled()) {
             [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Rename") image:[UIImage systemImageNamed:@"pencil"]
                                               identifier:nil handler:^(UIAction *__unused a) { WQItem *latest = currentItem(); if (latest) [weakSelf promptRename:latest]; }]];
             UIAction *del = [UIAction actionWithTitle:WQLocalizedNullable(@"Delete") image:[UIImage systemImageNamed:@"trash"]
@@ -3901,6 +3956,92 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
 }
 
 #pragma mark Actions
+
+static id wq_json_safe_object(id obj)
+{
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *out = [NSMutableDictionary new];
+        for (id key in (NSDictionary *)obj) {
+            out[[key description]] = wq_json_safe_object(((NSDictionary *)obj)[key]);
+        }
+        return out;
+    }
+    if ([obj isKindOfClass:NSArray.class]) {
+        NSMutableArray *out = [NSMutableArray new];
+        for (id item in (NSArray *)obj) [out addObject:wq_json_safe_object(item)];
+        return out;
+    }
+    if ([obj isKindOfClass:NSDate.class]) {
+        NSISO8601DateFormatter *iso = [NSISO8601DateFormatter new];
+        return [iso stringFromDate:(NSDate *)obj] ?: [(NSDate *)obj description];
+    }
+    if ([obj isKindOfClass:NSData.class]) {
+        return [(NSData *)obj base64EncodedStringWithOptions:0];
+    }
+    if ([obj isKindOfClass:NSNumber.class] || [obj isKindOfClass:NSString.class]) return obj;
+    return [obj description] ?: @"";
+}
+
+static id wq_plist_safe_object(id obj)
+{
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        NSMutableDictionary *out = [NSMutableDictionary new];
+        for (id key in (NSDictionary *)obj) {
+            out[[key description]] = wq_plist_safe_object(((NSDictionary *)obj)[key]);
+        }
+        return out;
+    }
+    if ([obj isKindOfClass:NSArray.class]) {
+        NSMutableArray *out = [NSMutableArray new];
+        for (id item in (NSArray *)obj) [out addObject:wq_plist_safe_object(item)];
+        return out;
+    }
+    if (obj == NSNull.null || !obj) return @"";
+    if ([obj isKindOfClass:NSNumber.class] || [obj isKindOfClass:NSString.class] ||
+        [obj isKindOfClass:NSDate.class] || [obj isKindOfClass:NSData.class]) return obj;
+    return [obj description] ?: @"";
+}
+
+- (void)convertPlistOrJSONAtPath:(NSString *)path toJSON:(BOOL)toJSON
+{
+    if (![self canEditHere]) return;
+    NSString *dir = path.stringByDeletingLastPathComponent;
+    NSString *stem = path.lastPathComponent.stringByDeletingPathExtension;
+    NSString *newExt = toJSON ? @"json" : @"plist";
+    [self runIO:^BOOL(NSString **error) {
+        NSData *raw = wq_read(path, 16 * 1024 * 1024, error);
+        if (!raw) return NO;
+        NSData *outData = nil;
+        NSError *parseErr = nil;
+        if (toJSON) {
+            id plist = [NSPropertyListSerialization propertyListWithData:raw options:0 format:NULL error:&parseErr];
+            if (!plist) {
+                if (error) *error = parseErr.localizedDescription ?: WQLocalized(@"Not a valid property list.");
+                return NO;
+            }
+            id safe = wq_json_safe_object(plist);
+            outData = [NSJSONSerialization dataWithJSONObject:safe options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:&parseErr];
+        } else {
+            id json = [NSJSONSerialization JSONObjectWithData:raw options:0 error:&parseErr];
+            if (!json) {
+                if (error) *error = parseErr.localizedDescription ?: WQLocalized(@"Not valid JSON.");
+                return NO;
+            }
+            id safe = wq_plist_safe_object(json);
+            outData = [NSPropertyListSerialization dataWithPropertyList:safe format:NSPropertyListXMLFormat_v1_0 options:0 error:&parseErr];
+        }
+        if (!outData) {
+            if (error) *error = parseErr.localizedDescription ?: WQLocalized(@"Conversion failed.");
+            return NO;
+        }
+        NSString *dest = [dir stringByAppendingPathComponent:[stem stringByAppendingPathExtension:newExt]];
+        struct stat st;
+        for (NSUInteger n = 2; wq_stat(dest, &st) && n < 500; n++) {
+            dest = [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@ (%lu).%@", stem, (unsigned long)n, newExt]];
+        }
+        return wq_create_file(dest, outData, error);
+    } failure:toJSON ? WQLocalized(@"Convert to JSON Failed") : WQLocalized(@"Convert to Plist Failed")];
+}
 
 - (void)runIO:(BOOL (^)(NSString **error))work failure:(NSString *)failureTitle
 {
@@ -3948,13 +4089,130 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
 
 - (void)renameSelectedFile
 {
-    NSString *path = [self selectedFilePaths].firstObject;
-    if ([self selectedFilePaths].count != 1) return;
-    WQItem *item = nil;
-    for (WQItem *candidate in _all) if ([candidate.path isEqualToString:path]) { item = candidate; break; }
-    if (!item) return;
+    NSArray<NSString *> *paths = [self selectedFilePaths];
+    if (!paths.count) return;
+    if (paths.count == 1) {
+        NSString *path = paths.firstObject;
+        WQItem *item = nil;
+        for (WQItem *candidate in _all) if ([candidate.path isEqualToString:path]) { item = candidate; break; }
+        if (!item) return;
+        [self exitFileSelection];
+        [self promptRename:item];
+        return;
+    }
+    NSMutableArray<WQItem *> *picked = [NSMutableArray new];
+    for (NSString *p in paths) {
+        for (WQItem *candidate in _all) {
+            if ([candidate.path isEqualToString:p]) { [picked addObject:candidate]; break; }
+        }
+    }
     [self exitFileSelection];
-    [self promptRename:item];
+    if (picked.count) [self promptBatchRename:picked];
+}
+
+- (void)promptBatchRename:(NSArray<WQItem *> *)items
+{
+    UIAlertController *sheet = wq_alert_controller(WQLocalizedFormat(@"Batch Rename (%lu items)", (unsigned long)items.count),
+                                                   WQLocalized(@"Choose how to rename the selected items."),
+                                                   UIAlertControllerStyleActionSheet);
+    __weak typeof(self) weakSelf = self;
+    void (^askSingle)(NSString *, NSString *, NSString *(^)(WQItem *, NSUInteger, NSString *)) =
+        ^(NSString *title, NSString *placeholder, NSString *(^transform)(WQItem *, NSUInteger, NSString *)) {
+            UIAlertController *a = wq_alert_controller(title, nil, UIAlertControllerStyleAlert);
+            [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+                f.placeholder = placeholder;
+                f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+                f.autocorrectionType = UITextAutocorrectionTypeNo;
+            }];
+            [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+            [a addAction:wq_alert_action(@"Preview", UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+                NSString *input = a.textFields.firstObject.text ?: @"";
+                if (!input.length || [input containsString:@"/"]) return;
+                NSMutableArray<NSString *> *newNames = [NSMutableArray new];
+                for (NSUInteger i = 0; i < items.count; i++) {
+                    [newNames addObject:transform(items[i], i, input)];
+                }
+                [weakSelf confirmBatchRename:items newNames:newNames];
+            })];
+            [weakSelf presentViewController:a animated:YES completion:nil];
+        };
+
+    [sheet addAction:wq_alert_action(WQLocalized(@"Add Prefix…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        askSingle(WQLocalized(@"Add Prefix"), @"backup_", ^NSString *(WQItem *it, NSUInteger __unused idx, NSString *val) {
+            return [val stringByAppendingString:it.name];
+        });
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Add Suffix…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        askSingle(WQLocalized(@"Add Suffix"), @"_v2", ^NSString *(WQItem *it, NSUInteger __unused idx, NSString *val) {
+            NSString *ext = it.isDir ? @"" : it.name.pathExtension;
+            NSString *base = ext.length ? it.name.stringByDeletingPathExtension : it.name;
+            return ext.length ? [NSString stringWithFormat:@"%@%@.%@", base, val, ext] : [base stringByAppendingString:val];
+        });
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Find & Replace…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        UIAlertController *fr = wq_alert_controller(WQLocalized(@"Find & Replace"), nil, UIAlertControllerStyleAlert);
+        [fr addTextFieldWithConfigurationHandler:^(UITextField *f) {
+            f.placeholder = WQLocalized(@"Find text");
+            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            f.autocorrectionType = UITextAutocorrectionTypeNo;
+        }];
+        [fr addTextFieldWithConfigurationHandler:^(UITextField *f) {
+            f.placeholder = WQLocalized(@"Replace with");
+            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            f.autocorrectionType = UITextAutocorrectionTypeNo;
+        }];
+        [fr addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+        [fr addAction:wq_alert_action(@"Preview", UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+            NSString *find = fr.textFields[0].text ?: @"";
+            NSString *repl = fr.textFields[1].text ?: @"";
+            if (!find.length || [repl containsString:@"/"]) return;
+            NSMutableArray<NSString *> *newNames = [NSMutableArray new];
+            for (WQItem *it in items) {
+                [newNames addObject:[it.name stringByReplacingOccurrencesOfString:find withString:repl]];
+            }
+            [weakSelf confirmBatchRename:items newNames:newNames];
+        })];
+        [weakSelf presentViewController:fr animated:YES completion:nil];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Sequential Numbering…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        askSingle(WQLocalized(@"Base Name"), @"Item", ^NSString *(WQItem *it, NSUInteger idx, NSString *val) {
+            NSString *ext = it.isDir ? @"" : it.name.pathExtension;
+            NSString *numbered = [NSString stringWithFormat:@"%@_%03lu", val, (unsigned long)(idx + 1)];
+            return ext.length ? [numbered stringByAppendingPathExtension:ext] : numbered;
+        });
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    sheet.popoverPresentationController.sourceView = self.view;
+    sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMaxY(self.view.bounds) - 44, 1, 1);
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)confirmBatchRename:(NSArray<WQItem *> *)items newNames:(NSArray<NSString *> *)newNames
+{
+    NSMutableArray<NSString *> *preview = [NSMutableArray new];
+    NSUInteger shown = MIN(items.count, (NSUInteger)5);
+    for (NSUInteger i = 0; i < shown; i++) {
+        [preview addObject:[NSString stringWithFormat:@"%@ → %@", items[i].name, newNames[i]]];
+    }
+    if (items.count > shown) {
+        [preview addObject:[NSString stringWithFormat:@"… +%lu more", (unsigned long)(items.count - shown)]];
+    }
+    wq_present_glass_confirm(self,
+                             WQLocalizedFormat(@"Rename %lu Items?", (unsigned long)items.count),
+                             [preview componentsJoinedByString:@"\n"],
+                             WQLocalized(@"Rename All"),
+                             NO,
+                             ^{
+        [self runIO:^BOOL(NSString **error) {
+            for (NSUInteger i = 0; i < items.count; i++) {
+                WQItem *it = items[i];
+                NSString *target = newNames[i];
+                if (!target.length || [target isEqualToString:it.name]) continue;
+                if (!wq_rename_expecting(it.path, target, it.identity, error)) return NO;
+            }
+            return YES;
+        } failure:WQLocalized(@"Batch Rename Failed")];
+    });
 }
 
 - (void)promptRename:(WQItem *)item
@@ -5711,6 +5969,359 @@ static UIView *WQPrismSectionHeaderView(NSString *title, NSString *detail)
 static BOOL wq_startup_checked;
 static void wq_apply_design(void);
 
+static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
+
+#pragma mark - Quick Start Guide (3-Card Frosted Glass Onboarding)
+
+@interface WQOnboardingViewController : UIViewController <UIScrollViewDelegate>
+@end
+
+@implementation WQOnboardingViewController {
+    UIScrollView *_pager;
+    UIPageControl *_dots;
+    UIButton *_nextButton;
+    NSArray<NSDictionary<NSString *, NSString *> *> *_cards;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    wq_prism_install_background(self);
+    self.view.backgroundColor = wq_theme_canvas_top();
+
+    _cards = @[
+        @{
+            @"symbol": @"shield.checkered",
+            @"eyebrow": WQLocalized(@"01 · SAFETY FIRST"),
+            @"title": WQLocalized(@"Safe Mode & Automatic Backups"),
+            @"body": WQLocalized(@"Toggle Safe Mode (Read-Only Shield) anytime from Home to block all writes and deletes. Every overwritten or deleted file is automatically backed up first, and Starred Apps back up in one tap."),
+        },
+        @{
+            @"symbol": @"square.grid.2x2.fill",
+            @"eyebrow": WQLocalized(@"02 · ALL-IN-ONE SUPER-UTILITY"),
+            @"title": WQLocalized(@"Utility Hub, Spotlight & 5 Live Themes"),
+            @"body": WQLocalized(@"Open the Utility Hub or Spotlight Search to launch System Telemetry, PDF Studio, EXIF Privacy Scrubber, Audio Extractor, QR Studio, Password Generator, Duplicate Hunter, and Batch Rename — all 100% offline."),
+        },
+        @{
+            @"symbol": @"lock.shield.fill",
+            @"eyebrow": WQLocalized(@"03 · PRIVATE & ULTRA-LIGHT"),
+            @"title": WQLocalized(@"Encrypted Vault & Zero Idle Drain"),
+            @"body": WQLocalized(@"Lock sensitive files and notes inside the Face ID AES-256 Private Vault, share folders over local Wi-Fi, and enjoy zero background scans or idle battery drain."),
+        },
+    ];
+
+    UIButton *skipBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    skipBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [skipBtn setTitle:WQLocalized(@"Skip") forState:UIControlStateNormal];
+    skipBtn.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    [skipBtn setTitleColor:wq_theme_secondary_text() forState:UIControlStateNormal];
+    [skipBtn addTarget:self action:@selector(finishGuide) forControlEvents:UIControlEventTouchUpInside];
+
+    _pager = [UIScrollView new];
+    _pager.translatesAutoresizingMaskIntoConstraints = NO;
+    _pager.pagingEnabled = YES;
+    _pager.showsHorizontalScrollIndicator = NO;
+    _pager.delegate = self;
+
+    UIStackView *pagesStack = [UIStackView new];
+    pagesStack.translatesAutoresizingMaskIntoConstraints = NO;
+    pagesStack.axis = UILayoutConstraintAxisHorizontal;
+    pagesStack.alignment = UIStackViewAlignmentFill;
+    pagesStack.distribution = UIStackViewDistributionFillEqually;
+    [_pager addSubview:pagesStack];
+
+    for (NSDictionary<NSString *, NSString *> *info in _cards) {
+        UIView *page = [UIView new];
+        page.translatesAutoresizingMaskIntoConstraints = NO;
+
+        UIVisualEffectView *card = wq_theme_make_glass_card(28.0, NO);
+        [page addSubview:card];
+
+        WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:info[@"symbol"] tone:@"aurora" size:64];
+
+        UILabel *eyebrow = [UILabel new];
+        eyebrow.text = info[@"eyebrow"];
+        eyebrow.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightBold];
+        eyebrow.textColor = wq_theme_aurora_teal();
+        eyebrow.textAlignment = NSTextAlignmentCenter;
+
+        UILabel *title = [UILabel new];
+        title.text = info[@"title"];
+        title.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBold];
+        title.textColor = wq_theme_primary_text();
+        title.textAlignment = NSTextAlignmentCenter;
+        title.numberOfLines = 0;
+
+        UILabel *body = [UILabel new];
+        body.text = info[@"body"];
+        body.font = [UIFont systemFontOfSize:14.5 weight:UIFontWeightRegular];
+        body.textColor = wq_theme_secondary_text();
+        body.textAlignment = NSTextAlignmentCenter;
+        body.numberOfLines = 0;
+
+        UIStackView *col = [[UIStackView alloc] initWithArrangedSubviews:@[icon, eyebrow, title, body]];
+        col.translatesAutoresizingMaskIntoConstraints = NO;
+        col.axis = UILayoutConstraintAxisVertical;
+        col.alignment = UIStackViewAlignmentCenter;
+        col.spacing = 14;
+        [card.contentView addSubview:col];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [card.centerYAnchor constraintEqualToAnchor:page.centerYAnchor],
+            [card.leadingAnchor constraintEqualToAnchor:page.leadingAnchor constant:24],
+            [card.trailingAnchor constraintEqualToAnchor:page.trailingAnchor constant:-24],
+            [col.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:30],
+            [col.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-30],
+            [col.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:22],
+            [col.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-22],
+        ]];
+        [pagesStack addArrangedSubview:page];
+        [page.widthAnchor constraintEqualToAnchor:_pager.frameLayoutGuide.widthAnchor].active = YES;
+    }
+
+    _dots = [UIPageControl new];
+    _dots.translatesAutoresizingMaskIntoConstraints = NO;
+    _dots.numberOfPages = (NSInteger)_cards.count;
+    _dots.currentPage = 0;
+    _dots.currentPageIndicatorTintColor = wq_theme_accent();
+    _dots.pageIndicatorTintColor = wq_theme_hairline();
+    [_dots addTarget:self action:@selector(pageDotChanged) forControlEvents:UIControlEventValueChanged];
+
+    _nextButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _nextButton.translatesAutoresizingMaskIntoConstraints = NO;
+    wq_theme_style_primary_button(_nextButton, WQLocalized(@"Next"), @"arrow.right");
+    [_nextButton addTarget:self action:@selector(nextTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    [self.view addSubview:skipBtn];
+    [self.view addSubview:_pager];
+    [self.view addSubview:_dots];
+    [self.view addSubview:_nextButton];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [skipBtn.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12],
+        [skipBtn.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20],
+        [_pager.topAnchor constraintEqualToAnchor:skipBtn.bottomAnchor constant:8],
+        [_pager.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_pager.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_pager.bottomAnchor constraintEqualToAnchor:_dots.topAnchor constant:-10],
+        [pagesStack.topAnchor constraintEqualToAnchor:_pager.contentLayoutGuide.topAnchor],
+        [pagesStack.bottomAnchor constraintEqualToAnchor:_pager.contentLayoutGuide.bottomAnchor],
+        [pagesStack.leadingAnchor constraintEqualToAnchor:_pager.contentLayoutGuide.leadingAnchor],
+        [pagesStack.trailingAnchor constraintEqualToAnchor:_pager.contentLayoutGuide.trailingAnchor],
+        [pagesStack.heightAnchor constraintEqualToAnchor:_pager.frameLayoutGuide.heightAnchor],
+        [_dots.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [_dots.bottomAnchor constraintEqualToAnchor:_nextButton.topAnchor constant:-14],
+        [_nextButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:24],
+        [_nextButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-24],
+        [_nextButton.heightAnchor constraintEqualToConstant:50],
+        [_nextButton.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-20],
+    ]];
+}
+
+- (void)syncNextButton
+{
+    BOOL last = _dots.currentPage >= (NSInteger)_cards.count - 1;
+    wq_theme_style_primary_button(_nextButton,
+                                  last ? WQLocalized(@"Get Started") : WQLocalized(@"Next"),
+                                  last ? @"checkmark" : @"arrow.right");
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView
+{
+    CGFloat w = scrollView.bounds.size.width;
+    if (w <= 0) return;
+    NSInteger page = (NSInteger)llround(scrollView.contentOffset.x / w);
+    page = MAX(0, MIN((NSInteger)_cards.count - 1, page));
+    if (page != _dots.currentPage) {
+        _dots.currentPage = page;
+        [self syncNextButton];
+    }
+}
+
+- (void)pageDotChanged
+{
+    CGFloat w = _pager.bounds.size.width;
+    [_pager setContentOffset:CGPointMake((CGFloat)_dots.currentPage * w, 0) animated:YES];
+    [self syncNextButton];
+}
+
+- (void)nextTapped
+{
+    wq_haptic_selection();
+    if (_dots.currentPage + 1 < (NSInteger)_cards.count) {
+        _dots.currentPage++;
+        CGFloat w = _pager.bounds.size.width;
+        [_pager setContentOffset:CGPointMake((CGFloat)_dots.currentPage * w, 0) animated:YES];
+        [self syncNextButton];
+    } else {
+        [self finishGuide];
+    }
+}
+
+- (void)finishGuide
+{
+    [NSUserDefaults.standardUserDefaults setBool:YES forKey:kWQOnboardingSeenPref];
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+@end
+
+#pragma mark - Unified All-in-One Super-Utility Hub
+
+@interface WQUtilityHubViewController : UITableViewController
+@end
+
+@implementation WQUtilityHubViewController {
+    NSArray<NSDictionary<NSString *, NSString *> *> *_modules;
+}
+
+- (instancetype)init
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        self.title = WQLocalized(@"Utility Hub");
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    wq_prism_install_background(self);
+    self.tableView.backgroundColor = UIColor.clearColor;
+    wq_theme_apply_scroll_insets(self.tableView, 32.0);
+
+    _modules = @[
+        @{ @"id": @"sys", @"title": WQLocalized(@"Device & Network Monitor"), @"sub": WQLocalized(@"Live RAM, Battery, Thermal, IP Interfaces, TCP Ping & DNS"), @"sym": @"cpu.fill" },
+        @{ @"id": @"pdf", @"title": WQLocalized(@"PDF & Document Studio"), @"sub": WQLocalized(@"Images → PDF, Merge PDFs & Split/Extract Pages offline"), @"sym": @"doc.richtext.fill" },
+        @{ @"id": @"media", @"title": WQLocalized(@"Privacy Photo & Media Studio"), @"sub": WQLocalized(@"EXIF/GPS Scrubber, Image Resizer/Converter & Extract M4A Audio"), @"sym": @"camera.filters" },
+        @{ @"id": @"bench", @"title": WQLocalized(@"Everyday Utility Workbench"), @"sub": WQLocalized(@"QR Studio, Password/UUID Generator, Scratchpad & Dev Converters"), @"sym": @"wrench.and.screwdriver.fill" },
+        @{ @"id": @"dups", @"title": WQLocalized(@"Smart Duplicate File Hunter"), @"sub": WQLocalized(@"3-stage SHA-256 duplicate finder across App Data with auto-backup"), @"sym": @"doc.on.doc.fill" },
+        @{ @"id": @"vault", @"title": WQLocalized(@"Private Encrypted Vault"), @"sub": WQLocalized(@"Face ID / Touch ID AES-256-CBC + HMAC protected files & notes"), @"sym": @"lock.shield.fill" },
+    ];
+    [self installHubHeader];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
+}
+
+- (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
+
+- (void)themeDidChange
+{
+    [self installHubHeader];
+    [self.tableView reloadData];
+}
+
+- (void)installHubHeader
+{
+    CGFloat w = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 92)];
+    box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIVisualEffectView *card = wq_theme_make_glass_card(22.0, NO);
+    [box addSubview:card];
+
+    WQPrismIconTile *icon = [[WQPrismIconTile alloc] initWithSymbol:@"square.grid.2x2.fill" tone:@"aurora" size:42];
+    UILabel *title = [UILabel new];
+    title.text = WQLocalized(@"All-in-One iOS Super-Utility");
+    title.font = [UIFont systemFontOfSize:16 weight:UIFontWeightBold];
+    title.textColor = wq_theme_primary_text();
+
+    UILabel *sub = [UILabel new];
+    sub.text = WQLocalized(@"100% offline · Zero idle battery drain · Native Apple frameworks");
+    sub.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+    sub.textColor = wq_theme_secondary_text();
+    sub.numberOfLines = 0;
+
+    UIStackView *col = [[UIStackView alloc] initWithArrangedSubviews:@[title, sub]];
+    col.axis = UILayoutConstraintAxisVertical;
+    col.spacing = 2;
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[icon, col]];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 12;
+    [card.contentView addSubview:row];
+    [NSLayoutConstraint activateConstraints:@[
+        [card.topAnchor constraintEqualToAnchor:box.topAnchor constant:8],
+        [card.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-8],
+        [card.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
+        [row.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:12],
+        [row.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-12],
+        [row.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:14],
+        [row.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-14],
+    ]];
+    self.tableView.tableHeaderView = box;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 2; }
+
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
+{
+    return section == 0 ? (NSInteger)_modules.count : 1;
+}
+
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
+{
+    return section == 0 ? WQLocalized(@"Super-Utility Modules") : WQLocalized(@"Guide");
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"hub-row"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"hub-row"];
+    UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
+    if (indexPath.section == 0) {
+        NSDictionary<NSString *, NSString *> *m = _modules[(NSUInteger)indexPath.row];
+        c.text = m[@"title"];
+        c.secondaryText = m[@"sub"];
+        c.image = [UIImage systemImageNamed:m[@"sym"]];
+    } else {
+        c.text = WQLocalized(@"Quick Start Guide");
+        c.secondaryText = WQLocalized(@"3-card overview of WQ Glass features & safety tools");
+        c.image = [UIImage systemImageNamed:@"book.pages.fill"];
+    }
+    c.textProperties.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    c.textProperties.color = wq_theme_primary_text();
+    c.secondaryTextProperties.color = wq_theme_secondary_text();
+    c.secondaryTextProperties.numberOfLines = 2;
+    c.imageProperties.tintColor = wq_theme_accent();
+    cell.contentConfiguration = c;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    wq_haptic_selection();
+    if (indexPath.section == 1) {
+        WQOnboardingViewController *guide = [WQOnboardingViewController new];
+        guide.modalPresentationStyle = UIModalPresentationPageSheet;
+        [self presentViewController:guide animated:YES completion:nil];
+        return;
+    }
+    NSString *mid = _modules[(NSUInteger)indexPath.row][@"id"];
+    if ([mid isEqualToString:@"sys"]) {
+        [self.navigationController pushViewController:[WQSystemMonitorViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"pdf"]) {
+        [self.navigationController pushViewController:[WQDocStudioViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"media"]) {
+        [self.navigationController pushViewController:[[WQMediaToolsViewController alloc] initWithInitialFilePath:nil] animated:YES];
+    } else if ([mid isEqualToString:@"bench"]) {
+        [self.navigationController pushViewController:[WQWorkbenchViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"dups"]) {
+        WQDuplicatesViewController *dups = [[WQDuplicatesViewController alloc]
+            initWithRootPath:@"/private/var/mobile/Containers/Data/Application"
+                       title:WQLocalized(@"App Data")];
+        [self.navigationController pushViewController:dups animated:YES];
+    } else if ([mid isEqualToString:@"vault"]) {
+        [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES];
+    }
+}
+
+@end
+
 @interface WQPrismHomeViewController : UIViewController <UIScrollViewDelegate>
 @end
 
@@ -5741,6 +6352,7 @@ static void wq_apply_design(void);
     UILabel *_telemetryZonesLabel;
     UIButton *_quickButton;
     UIButton *_fullScanButton;
+    UIButton *_safeModeButton;
     WQProgressRingView *_healthRing;
     UIImageView *_healthGlyph;
     NSString *_healthSymbol;
@@ -5779,6 +6391,7 @@ static void wq_apply_design(void);
     [self rebuildSystem];
     [self updateHealthUI];
     [self refreshDeviceStorage];
+    [self syncSafeModeButton];
 
     __weak typeof(self) weakSelf = self;
     [NSNotificationCenter.defaultCenter addObserverForName:WQThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *__unused n) {
@@ -5786,9 +6399,15 @@ static void wq_apply_design(void);
         if (!me || !me.isViewLoaded) return;
         [me updateHealthUI];
         [me refreshDeviceStorage];
+        [me syncSafeModeButton];
         [me rebuildContainers];
         [me rebuildFavorites];
         [me rebuildSystem];
+    }];
+    [NSNotificationCenter.defaultCenter addObserverForName:WQSafeReadOnlyDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *__unused n) {
+        WQPrismHomeViewController *me = weakSelf;
+        if (!me || !me.isViewLoaded) return;
+        [me syncSafeModeButton];
     }];
     dispatch_async(wq_io(), ^{
         NSString *recovery = wq_recover_interrupted_restore();
@@ -5827,6 +6446,7 @@ static void wq_apply_design(void);
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     [self rebuildFavorites];
     [self refreshDeviceStorage];
+    [self syncSafeModeButton];
     if (!_homeCascaded && _topHeader) {
         // Header, hero and bento sections rise in one after another (30 ms apart).
         _homeCascaded = YES;
@@ -5864,6 +6484,12 @@ static void wq_apply_design(void);
     if (!_appGroupName.length) _appGroupName = wq_app_group();
     [self updateHealthUI];
     [self reopenLastFolder];
+    if (![NSUserDefaults.standardUserDefaults boolForKey:kWQOnboardingSeenPref] &&
+        !self.presentedViewController && !wq_app_lock_enabled()) {
+        WQOnboardingViewController *guide = [WQOnboardingViewController new];
+        guide.modalPresentationStyle = UIModalPresentationPageSheet;
+        [self presentViewController:guide animated:YES completion:nil];
+    }
 }
 
 - (UIButton *)headerIconButton:(NSString *)symbol label:(NSString *)label selector:(SEL)sel
@@ -6027,7 +6653,7 @@ static void wq_apply_design(void);
     [_contentStack addArrangedSubview:insetSection(storageCard)];
     [_contentStack setCustomSpacing:18 afterView:[_contentStack.arrangedSubviews lastObject]];
 
-    UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), @"2×2 Grid"));
+    UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), @"3×2 Grid"));
     [_contentStack addArrangedSubview:toolsHeader];
     [_contentStack setCustomSpacing:10 afterView:toolsHeader];
     _toolsGrid = [self buildToolsRail];
@@ -6411,10 +7037,17 @@ static void wq_apply_design(void);
     commandStrip.layer.borderColor = wq_theme_rim_teal().CGColor;
     commandStrip.clipsToBounds = YES;
 
-    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[duoPanes, commandStrip]];
+    _safeModeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _safeModeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [_safeModeButton addTarget:self action:@selector(toggleSafeMode) forControlEvents:UIControlEventTouchUpInside];
+    [_safeModeButton.heightAnchor constraintEqualToConstant:34].active = YES;
+    wq_theme_add_spring_tap(_safeModeButton);
+    [self syncSafeModeButton];
+
+    UIStackView *text = [[UIStackView alloc] initWithArrangedSubviews:@[duoPanes, _safeModeButton, commandStrip]];
     text.axis = UILayoutConstraintAxisVertical;
     text.alignment = UIStackViewAlignmentFill;
-    text.spacing = 11;
+    text.spacing = 10;
     text.translatesAutoresizingMaskIntoConstraints = NO;
 
     [glass.contentView addSubview:text];
@@ -6429,6 +7062,43 @@ static void wq_apply_design(void);
     [self updateHealthUI];
 }
 
+- (void)syncSafeModeButton
+{
+    if (!_safeModeButton) return;
+    BOOL safeOn = wq_safe_read_only_enabled();
+    UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
+    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightBold];
+    cfg.image = [[UIImage systemImageNamed:safeOn ? @"shield.lefthalf.filled" : @"shield" withConfiguration:sym]
+                 imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    cfg.imagePadding = 6;
+    cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.title = safeOn ? WQLocalized(@"Safe Mode: ON · Read-Only Shield Active")
+                       : WQLocalized(@"Safe Mode: Off · Tap for Read-Only Shield");
+    cfg.baseForegroundColor = safeOn ? UIColor.systemOrangeColor : wq_theme_secondary_text();
+    cfg.background.backgroundColor = safeOn
+        ? [UIColor.systemOrangeColor colorWithAlphaComponent:0.16]
+        : [wq_theme_glass_tint() colorWithAlphaComponent:0.42];
+    cfg.background.strokeColor = safeOn ? [UIColor.systemOrangeColor colorWithAlphaComponent:0.55] : wq_theme_rim();
+    cfg.background.strokeWidth = safeOn ? 0.9 : 0.5;
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
+    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *inAttr) {
+        NSMutableDictionary *out = [inAttr mutableCopy] ?: [NSMutableDictionary new];
+        out[NSFontAttributeName] = [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold];
+        out[NSForegroundColorAttributeName] = safeOn ? UIColor.systemOrangeColor : wq_theme_secondary_text();
+        return out;
+    };
+    _safeModeButton.configuration = cfg;
+    _safeModeButton.tintColor = safeOn ? UIColor.systemOrangeColor : wq_theme_accent();
+}
+
+- (void)toggleSafeMode
+{
+    BOOL next = !wq_safe_read_only_enabled();
+    wq_set_safe_read_only_enabled(next);
+    wq_haptic_notify(next ? UINotificationFeedbackTypeWarning : UINotificationFeedbackTypeSuccess);
+    [self syncSafeModeButton];
+}
+
 - (UIView *)buildToolsRail
 {
     UIStackView *grid = [[UIStackView alloc] initWithFrame:CGRectZero];
@@ -6436,6 +7106,8 @@ static void wq_apply_design(void);
     grid.spacing = 12;
 
     NSArray<NSArray<NSString *> *> *tools = @[
+        @[@"Utility Hub", @"Telemetry, PDF, EXIF, QR & Duplicates", @"square.grid.2x2.fill", @"aurora", @"SUPER"],
+        @[@"Private Vault", @"Face ID AES-256 encrypted files & notes", @"lock.shield.fill", @"glacier", @"AES"],
         @[@"Apps", @"App data backups, restores & info", @"square.grid.3x3.fill", @"sky", @""],
         @[@"Cache Cleaner", @"Clean Library/Caches, tmp & crash logs", @"sparkles", @"aurora", @""],
         @[@"Go to Path…", @"Jump directly to any file or container", @"arrow.right.circle.fill", @"glacier", @""],
@@ -6812,10 +7484,12 @@ static void wq_apply_design(void);
 {
     wq_haptic_selection();
     switch (sender.tag) {
-        case 0: [self openTab:1]; break;
-        case 1: [self openTab:2]; break;
-        case 2: [self goToPath]; break;
-        case 3: [self openTab:3]; break;
+        case 0: [self.navigationController pushViewController:[WQUtilityHubViewController new] animated:YES]; break;
+        case 1: [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES]; break;
+        case 2: [self openTab:1]; break;
+        case 3: [self openTab:2]; break;
+        case 4: [self goToPath]; break;
+        case 5: [self openTab:3]; break;
         default: break;
     }
 }
@@ -7570,7 +8244,7 @@ static NSString *const kWQTroubleshootingFooter =
     if (section == 0) return (NSInteger)wq_theme_all_themes().count;
     if (section == 1) return (NSInteger)wq_theme_all_ui_styles().count;
     if (section == 2) return 9;
-    if (section == 3) return 3;
+    if (section == 3) return 4;
     return 1;
 }
 
@@ -7718,13 +8392,14 @@ static NSString *const kWQTroubleshootingFooter =
         cell.accessoryType = UITableViewCellAccessoryNone;
         return cell;
     }
-    NSArray<NSString *> *titles = @[@"Language", @"Log", @"About"];
-    NSArray<NSString *> *symbols = @[@"globe", @"doc.plaintext", @"info.circle"];
+    NSArray<NSString *> *titles = @[@"Language", @"Quick Start Guide", @"Log", @"About"];
+    NSArray<NSString *> *symbols = @[@"globe", @"book.pages.fill", @"doc.plaintext", @"info.circle"];
     c.text = WQLocalizedNullable(titles[(NSUInteger)indexPath.row]);
     c.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
     if (indexPath.row == 0) c.secondaryText = wq_language_name(wq_chosen_language());
-    if (indexPath.row == 1) c.secondaryText = nil;
-    if (indexPath.row == 2) c.secondaryText = wq_app_version_line();
+    if (indexPath.row == 1) c.secondaryText = WQLocalized(@"3-card overview");
+    if (indexPath.row == 2) c.secondaryText = nil;
+    if (indexPath.row == 3) c.secondaryText = wq_app_version_line();
     cell.contentConfiguration = c;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
@@ -7768,6 +8443,10 @@ static NSString *const kWQTroubleshootingFooter =
     if (indexPath.row == 0) {
         [self.navigationController pushViewController:[WQLanguageViewController new] animated:YES];
     } else if (indexPath.row == 1) {
+        WQOnboardingViewController *guide = [WQOnboardingViewController new];
+        guide.modalPresentationStyle = UIModalPresentationPageSheet;
+        [self presentViewController:guide animated:YES completion:nil];
+    } else if (indexPath.row == 2) {
         [self.navigationController pushViewController:[WQLogViewController new] animated:YES];
     } else {
         NSString *version = [NSString stringWithFormat:@"%@\n\n%@", wq_app_version_line(), WQLocalizedNullable(@"Sandbox escape: worse_query by @forcequitOS")];
@@ -7833,6 +8512,13 @@ static NSString *const kWQTroubleshootingFooter =
                           handler:^(UIAction *__unused a) {
             wq_haptic_selection();
             [weakSelf openVaultRow:2];
+        }],
+        [UIAction actionWithTitle:WQLocalizedNullable(@"Private Vault (Face ID)")
+                            image:[UIImage systemImageNamed:@"lock.shield.fill"]
+                       identifier:nil
+                          handler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            [weakSelf openVaultRow:3];
         }],
     ]];
     UIButton *jumpPill = wq_motion_dock_pill(WQLocalized(@"Backups"), @"externaldrive.fill.badge.timemachine", NO);
@@ -7979,8 +8665,10 @@ static NSString *const kWQTroubleshootingFooter =
         [NSFileManager.defaultManager createDirectoryAtPath:wq_backup_root() withIntermediateDirectories:YES attributes:nil error:nil];
         UIViewController *next = [[WQDirViewController alloc] initWithPath:wq_backup_root() title:WQLocalizedNullable(@"File Backups")];
         [self.navigationController pushViewController:next animated:YES];
-    } else {
+    } else if (row == 2) {
         [self.navigationController pushViewController:[WQRecentlyDeletedViewController new] animated:YES];
+    } else {
+        [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES];
     }
 }
 
@@ -7988,12 +8676,12 @@ static NSString *const kWQTroubleshootingFooter =
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return 3;
+    return 4;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return section == 0 ? WQLocalized(@"Overwritten and deleted files are copied to Backups first (also visible in the Files app). Long-press a backup to restore it.") : nil;
+    return section == 0 ? WQLocalized(@"Overwritten and deleted files are copied to Backups first (also visible in the Files app). Long-press a backup to restore it. Private Vault files are encrypted with AES-256 + Face ID.") : nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -8001,9 +8689,13 @@ static NSString *const kWQTroubleshootingFooter =
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"prism-vault"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"prism-vault"];
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
-    NSArray<NSString *> *titles = @[@"App Backups", @"File Backups", @"Recently Deleted"];
-    NSArray<NSString *> *symbols = @[@"clock.arrow.circlepath", @"archivebox", @"trash.circle"];
+    NSArray<NSString *> *titles = @[@"App Backups", @"File Backups", @"Recently Deleted", @"Private Encrypted Vault"];
+    NSArray<NSString *> *symbols = @[@"clock.arrow.circlepath", @"archivebox", @"trash.circle", @"lock.shield.fill"];
     c.text = WQLocalizedNullable(titles[(NSUInteger)indexPath.row]);
+    if (indexPath.row == 3) {
+        c.secondaryText = WQLocalized(@"Face ID / Touch ID AES-256 protected files & notes");
+        c.imageProperties.tintColor = wq_theme_accent();
+    }
     c.image = [UIImage systemImageNamed:symbols[(NSUInteger)indexPath.row]];
     cell.contentConfiguration = c;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -8076,7 +8768,25 @@ static NSString *const kWQTroubleshootingFooter =
         typeof(self) tab = weakTab;
         WQPrismHomeViewController *h = weakHome;
         if (!tab) return;
-        if ([commandID isEqualToString:@"full_scan"]) {
+        UINavigationController *activeNav = [tab.selectedViewController isKindOfClass:UINavigationController.class]
+            ? (UINavigationController *)tab.selectedViewController : h.navigationController;
+        if ([commandID isEqualToString:@"utility_hub"]) {
+            [activeNav pushViewController:[WQUtilityHubViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"system_monitor"]) {
+            [activeNav pushViewController:[WQSystemMonitorViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"pdf_studio"]) {
+            [activeNav pushViewController:[WQDocStudioViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"media_tools"]) {
+            [activeNav pushViewController:[[WQMediaToolsViewController alloc] initWithInitialFilePath:nil] animated:YES];
+        } else if ([commandID isEqualToString:@"workbench"]) {
+            [activeNav pushViewController:[WQWorkbenchViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"find_duplicates"]) {
+            WQDuplicatesViewController *dups = [[WQDuplicatesViewController alloc]
+                initWithRootPath:@"/private/var/mobile/Containers/Data/Application" title:WQLocalized(@"App Data")];
+            [activeNav pushViewController:dups animated:YES];
+        } else if ([commandID isEqualToString:@"private_vault"]) {
+            [activeNav pushViewController:[WQPrivateVaultViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"full_scan"]) {
             tab.selectedIndex = 0;
             if (h) [h fullScanTapped];
         } else if ([commandID isEqualToString:@"quick_check"]) {
