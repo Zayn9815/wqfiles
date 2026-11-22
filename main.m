@@ -1682,6 +1682,7 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
         _query = [query copy];
         _readOnly = readOnly;
         self.title = query ?: WQLocalized(@"Largest Files");
+        self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
 }
@@ -1689,6 +1690,7 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    wq_theme_apply_scroll_insets(self.tableView, 40.0);
     _status = WQLocalized(@"Searching…");
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Stop")
         style:UIBarButtonItemStylePlain target:self action:@selector(stopSearch)];
@@ -1696,18 +1698,57 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
     _cancellation = cancellation;
     NSString *root = _root, *query = _query;
     __weak typeof(self) weakSelf = self;
-    // Its own queue: a long walk must not hold up file loads and saves on wq_io.
+    // Its own efficiency-core serial queue: a long walk must not hold up file loads and saves on wq_io.
     static dispatch_queue_t searchQueue;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ searchQueue = dispatch_queue_create("wqfiles.folder-search", DISPATCH_QUEUE_SERIAL); });
+    dispatch_once(&once, ^{
+        dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+        searchQueue = dispatch_queue_create("wqfiles.folder-search", attr);
+    });
     dispatch_async(searchQueue, ^{
         CFAbsoluteTime lastProgress = 0;
-        NSMutableArray<NSString *> *pending = [NSMutableArray arrayWithObject:root];
+        NSMutableArray<NSString *> *pending = [NSMutableArray new];
+        NSMutableDictionary<NSString *, NSString *> *containerNames = [NSMutableDictionary new];
+        NSString *parentKind = root.lastPathComponent;
+        BOOL isContainerParent = [@[@"Application", @"AppGroup", @"PluginKitPlugin", @"InternalDaemon", @"System"] containsObject:parentKind];
+        BOOL unreadable = NO, limited = NO;
+        BOOL largest = query == nil;
+
+        if (isContainerParent) {
+            if (!wq_display_names_loaded()) wq_load_display_names();
+            NSArray<NSString *> *containers = wq_enumerate(root, 0, cancellation, ^(int64_t done, int64_t total, NSUInteger __unused found) {
+                if (cancellation.isCancelled) return;
+                NSString *text = WQLocalizedFormat(@"Finding containers… %lld%%", total ? (long long)(done * 100 / total) : 0);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    WQFolderSearchViewController *screen = weakSelf;
+                    if (!screen || !screen->_cancellation) return;
+                    screen->_status = text;
+                    [screen.tableView reloadData];
+                });
+            });
+            if (!containers) {
+                unreadable = YES;
+            } else {
+                for (NSString *c in containers) {
+                    if (cancellation.isCancelled) break;
+                    if (wq_grant(c)) {
+                        [pending addObject:c];
+                        NSString *bid = wq_container_label(c);
+                        NSString *display = bid.length ? (wq_display_name(bid) ?: bid) : c.lastPathComponent;
+                        containerNames[c.lastPathComponent] = display;
+                    } else {
+                        unreadable = YES;
+                    }
+                }
+            }
+        } else {
+            (void)wq_grant(root);
+            [pending addObject:root];
+        }
+
         NSMutableArray<WQItem *> *matches = [NSMutableArray new];
         NSUInteger visited = 0;
-        BOOL unreadable = NO, limited = NO;
         // Largest files: every regular file is a candidate; the top 100 are kept.
-        BOOL largest = query == nil;
         const NSUInteger entryLimit = largest ? 300000 : 100000, matchLimit = largest ? NSUIntegerMax : 1000, largestShown = 100;
         while (pending.count && !cancellation.isCancelled && !limited) {
             @autoreleasepool {
@@ -1751,6 +1792,18 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                         item.isRegular = S_ISREG(st.st_mode);
                         item.size = (unsigned long long)st.st_size;
                         item.identity = wq_identity_for_stat(&st);
+                        if (isContainerParent) {
+                            NSUInteger prefLen = [root hasSuffix:@"/"] ? root.length : root.length + 1;
+                            if (path.length > prefLen) {
+                                NSString *rel = [path substringFromIndex:prefLen];
+                                NSString *uuid = rel.pathComponents.firstObject;
+                                NSString *appName = uuid.length ? containerNames[uuid] : nil;
+                                if (appName.length) {
+                                    NSString *tail = rel.length > uuid.length + 1 ? [rel substringFromIndex:uuid.length + 1].stringByDeletingLastPathComponent : @"";
+                                    item.label = tail.length ? [NSString stringWithFormat:@"%@ · %@", appName, tail] : appName;
+                                }
+                            }
+                        }
                         [matches addObject:item];
                         // Keep memory bounded: trim to the largest few now and then.
                         if (largest && matches.count >= largestShown * 20) {
@@ -1778,9 +1831,11 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
             if (cancellation.isCancelled) screen->_status = WQLocalized(@"Search stopped. Results may be incomplete.");
             else if (limited) screen->_status = largest ? WQLocalized(@"Item limit reached: only part of the folder was measured. Try a smaller folder.")
                                                         : WQLocalized(@"Search limit reached. Try a smaller folder or a more specific name.");
+            else if (largest && matches.count) screen->_status = WQLocalizedFormat(@"The %lu largest of %lu items checked.%@",
+                                                                    (unsigned long)matches.count, (unsigned long)visited,
+                                                                    unreadable ? WQLocalized(@" Some protected items were skipped.") : @"");
             else if (unreadable) screen->_status = WQLocalized(@"Some items could not be searched.");
-            else if (largest) screen->_status = matches.count ? WQLocalizedFormat(@"The %lu largest of %lu items checked.", (unsigned long)matches.count, (unsigned long)visited)
-                                                              : WQLocalized(@"No files.");
+            else if (largest) screen->_status = WQLocalized(@"No files.");
             else screen->_status = matches.count ? nil : WQLocalized(@"No matching names.");
             [screen.tableView reloadData];
         });
@@ -1819,8 +1874,9 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
     content.text = item.name;
     NSUInteger prefix = [_root hasSuffix:@"/"] ? _root.length : _root.length + 1;
     NSString *relative = item.path.length > prefix ? [item.path substringFromIndex:prefix] : item.path;
+    NSString *where = item.label.length ? item.label : (relative.stringByDeletingLastPathComponent.length ? relative.stringByDeletingLastPathComponent : @".");
     content.secondaryText = _query ? relative
-        : [NSString stringWithFormat:@"%@ · %@", wq_size_text(item.size), relative.stringByDeletingLastPathComponent.length ? relative.stringByDeletingLastPathComponent : @"."];
+        : [NSString stringWithFormat:@"%@ · %@", wq_size_text(item.size), where];
     content.secondaryTextProperties.numberOfLines = 2;
     content.image = [UIImage systemImageNamed:item.isDir ? @"folder" : @"doc"];
     cell.contentConfiguration = content;
@@ -6151,7 +6207,7 @@ static void wq_apply_design(void);
         WQPrismHomeViewController *me = weakSelf;
         if (!me) return;
         WQFolderSearchViewController *vc = [[WQFolderSearchViewController alloc]
-            initWithPath:@"/private/var/mobile/Media" query:nil readOnly:NO];
+            initWithPath:@"/private/var/mobile/Containers/Data/Application" query:nil readOnly:NO];
         [me.navigationController pushViewController:vc animated:YES];
     });
     UIButton *wifiBtn = shortcutPill(WQLocalized(@"Wi-Fi Share"), @"wifi", ^{
