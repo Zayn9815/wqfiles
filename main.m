@@ -64,6 +64,8 @@
 #import "WQNetStudio.h"
 #import "WQCryptoTools.h"
 #import "WQWorkflows.h"
+#import "WQDownloadManager.h"
+#import "WQDownloadBrowser.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
@@ -6339,6 +6341,8 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     wq_theme_apply_scroll_insets(self.tableView, 32.0);
 
     _modules = @[
+        @{ @"id": @"browser", @"title": WQLocalized(@"IDM Browser & Media Grabber"), @"sub": WQLocalized(@"1DM/IDM ad-blocking browser, HLS Quality Picker & page link grabber"), @"sym": @"safari.fill" },
+        @{ @"id": @"downloads", @"title": WQLocalized(@"Download Manager (Multi-Part)"), @"sub": WQLocalized(@"IDM 2–16 part parallel downloads, pause/resume, HLS & audio extract"), @"sym": @"tray.and.arrow.down.fill" },
         @{ @"id": @"hud", @"title": WQLocalized(@"Floating Telemetry Bubble"), @"sub": WQLocalized(@"Customizable live Net Speed + Battery Wattage (In-App & PiP)"), @"sym": @"pip.enter" },
         @{ @"id": @"sys", @"title": WQLocalized(@"Device & Network Monitor"), @"sub": WQLocalized(@"Live RAM, Battery Wattage, Thermal, IP Interfaces, TCP Ping & DNS"), @"sym": @"cpu.fill" },
         @{ @"id": @"smap", @"title": WQLocalized(@"Storage Analyzer"), @"sub": WQLocalized(@"DaisyDisk-style visual category breakdown & largest folders"), @"sym": @"chart.pie.fill" },
@@ -6456,7 +6460,11 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
         return;
     }
     NSString *mid = _modules[(NSUInteger)indexPath.row][@"id"];
-    if ([mid isEqualToString:@"hud"]) {
+    if ([mid isEqualToString:@"browser"]) {
+        [self.navigationController pushViewController:[[WQDownloadBrowserViewController alloc] initWithInitialURL:nil] animated:YES];
+    } else if ([mid isEqualToString:@"downloads"]) {
+        [self.navigationController pushViewController:[WQDownloadManagerViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"hud"]) {
         [self.navigationController pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
     } else if ([mid isEqualToString:@"sys"]) {
         [self.navigationController pushViewController:[WQSystemMonitorViewController new] animated:YES];
@@ -7283,6 +7291,8 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     grid.spacing = 12;
 
     NSArray<NSArray<NSString *> *> *tools = @[
+        @[@"IDM Browser", @"Ad-block browser, video sniffer & quality picker", @"safari.fill", @"aurora", @"1DM"],
+        @[@"Downloads", @"Multi-part IDM queue, HLS & audio extract", @"tray.and.arrow.down.fill", @"sky", @"IDM"],
         @[@"Utility Hub", @"Telemetry, PDF, EXIF, QR & Duplicates", @"square.grid.2x2.fill", @"aurora", @"SUPER"],
         @[@"Private Vault", @"Face ID AES-256 encrypted files & notes", @"lock.shield.fill", @"glacier", @"AES"],
         @[@"Apps", @"App data backups, restores & info", @"square.grid.3x3.fill", @"sky", @""],
@@ -7661,12 +7671,14 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
 {
     wq_haptic_selection();
     switch (sender.tag) {
-        case 0: [self.navigationController pushViewController:[WQUtilityHubViewController new] animated:YES]; break;
-        case 1: [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES]; break;
-        case 2: [self openTab:1]; break;
-        case 3: [self openTab:2]; break;
-        case 4: [self goToPath]; break;
-        case 5: [self openTab:3]; break;
+        case 0: [self.navigationController pushViewController:[[WQDownloadBrowserViewController alloc] initWithInitialURL:nil] animated:YES]; break;
+        case 1: [self.navigationController pushViewController:[WQDownloadManagerViewController new] animated:YES]; break;
+        case 2: [self.navigationController pushViewController:[WQUtilityHubViewController new] animated:YES]; break;
+        case 3: [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES]; break;
+        case 4: [self openTab:1]; break;
+        case 5: [self openTab:2]; break;
+        case 6: [self goToPath]; break;
+        case 7: [self openTab:3]; break;
         default: break;
     }
 }
@@ -8947,7 +8959,11 @@ static NSString *const kWQTroubleshootingFooter =
         if (!tab) return;
         UINavigationController *activeNav = [tab.selectedViewController isKindOfClass:UINavigationController.class]
             ? (UINavigationController *)tab.selectedViewController : h.navigationController;
-        if ([commandID isEqualToString:@"floating_hud"]) {
+        if ([commandID isEqualToString:@"idm_browser"]) {
+            [activeNav pushViewController:[[WQDownloadBrowserViewController alloc] initWithInitialURL:nil] animated:YES];
+        } else if ([commandID isEqualToString:@"download_manager"]) {
+            [activeNav pushViewController:[WQDownloadManagerViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"floating_hud"]) {
             [activeNav pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"utility_hub"]) {
             [activeNav pushViewController:[WQUtilityHubViewController new] animated:YES];
