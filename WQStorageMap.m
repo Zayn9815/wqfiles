@@ -290,9 +290,13 @@ static NSString *wq_cat_symbol(WQStorageCategory c)
         BOOL isContainerParent = [containerParents containsObject:root];
         if (isContainerParent && !wq_display_names_loaded()) wq_load_display_names();
 
+        typedef struct {
+            unsigned long long bytes[WQStorageCatCount];
+            NSUInteger counts[WQStorageCatCount];
+        } WQStorageCatTotals;
+        WQStorageCatTotals totals;
+        memset(&totals, 0, sizeof(totals));
         NSMutableArray<WQStorageEntry *> *topBuckets = [NSMutableArray new];
-        unsigned long long cBytes[WQStorageCatCount] = {0};
-        NSUInteger cCounts[WQStorageCatCount] = {0};
         unsigned long long grandBytes = 0;
         NSUInteger grandFiles = 0;
         NSUInteger visited = 0;
@@ -330,8 +334,8 @@ static NSString *wq_cat_symbol(WQStorageCategory c)
                 entry.bytes = sz;
                 entry.fileCount = 1;
                 WQStorageCategory cat = wq_classify_ext(childPath.pathExtension);
-                cBytes[cat] += sz;
-                cCounts[cat] += 1;
+                totals.bytes[cat] += sz;
+                totals.counts[cat] += 1;
                 grandBytes += sz;
                 grandFiles += 1;
                 visited++;
@@ -358,8 +362,8 @@ static NSString *wq_cat_symbol(WQStorageCategory c)
                                 entry.bytes += sz;
                                 entry.fileCount += 1;
                                 WQStorageCategory cat = wq_classify_ext(n.pathExtension);
-                                cBytes[cat] += sz;
-                                cCounts[cat] += 1;
+                                totals.bytes[cat] += sz;
+                                totals.counts[cat] += 1;
                                 grandBytes += sz;
                                 grandFiles += 1;
                             }
@@ -396,8 +400,8 @@ static NSString *wq_cat_symbol(WQStorageCategory c)
             me->_statusText = nil;
             me->_totalBytes = grandBytes;
             me->_totalFiles = grandFiles;
-            memcpy(me->_catBytes, cBytes, sizeof(cBytes));
-            memcpy(me->_catCounts, cCounts, sizeof(cCounts));
+            memcpy(me->_catBytes, totals.bytes, sizeof(me->_catBytes));
+            memcpy(me->_catCounts, totals.counts, sizeof(me->_catCounts));
             me->_topEntries = trimmed;
             me->_headerTotalLabel.text = wq_size_text(grandBytes);
             me->_headerSubLabel.text = WQLocalizedFormat(@"%@ · %lu files%@", me->_rootTitle, (unsigned long)grandFiles,
