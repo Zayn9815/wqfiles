@@ -260,12 +260,12 @@ static NSString *wq_shell_single_quote(NSString *s)
     ]];
 
     __weak UIViewController *weakVC = vc;
-    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
-                                                                                         primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Cancel") image:nil identifier:nil handler:^(UIAction *__unused a) {
         [weakVC dismissViewControllerAnimated:YES completion:nil];
     }]];
-    vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemSave
-                                                                                          primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Save") image:nil identifier:nil handler:^(UIAction *__unused a) {
         NSString *val = tv.text ?: @"";
         [weakVC dismissViewControllerAnimated:YES completion:^{ if (onSave) onSave(val); }];
     }]];

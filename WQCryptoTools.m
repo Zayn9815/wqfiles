@@ -37,12 +37,12 @@ static BOOL wq_derive_enc_keys(NSString *password, const uint8_t salt[16], uint8
 {
     NSData *pwData = [password dataUsingEncoding:NSUTF8StringEncoding];
     if (!pwData.length) return NO;
-    int rc = CCKeyDerivationPBKDF2(kCCPBKDF2,
-                                   pwData.bytes, pwData.length,
-                                   salt, 16,
-                                   kCCPRFHmacAlgSHA256,
-                                   kWQEncPBKDF2Rounds,
-                                   outKeys, 64);
+    int rc = CCKeyDerivationPBKDF(kCCPBKDF2,
+                                  (const char *)pwData.bytes, pwData.length,
+                                  salt, 16,
+                                  kCCPRFHmacAlgSHA256,
+                                  kWQEncPBKDF2Rounds,
+                                  outKeys, 64);
     return rc == kCCSuccess;
 }
 

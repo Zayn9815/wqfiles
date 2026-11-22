@@ -154,7 +154,7 @@ static NSString *wq_quick_sha256_path(NSString *path)
             if (!wq_stat(dir, &dst)) wq_create_dir(dir, NULL);
             NSString *dest = [dir stringByAppendingPathComponent:name];
             if (wq_stat(dest, &dst)) continue; // never clobber existing file
-            if (wq_move(src, dest, NULL)) moved++;
+            if (wq_move(src, dir, NULL)) moved++;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             WQWorkflowsViewController *me = weakSelf;

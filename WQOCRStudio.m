@@ -208,8 +208,8 @@ static NSString *wq_run_vision_ocr_on_cgimage(CGImageRef cgImg, NSError **outErr
     NSString *textCopy = [_extractedText copy];
     NSString *srcName = [_sourceName copy] ?: @"ocr";
     __weak UIViewController *weakVC = vc;
-    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                                                                                         primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    vc.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Close") image:nil identifier:nil handler:^(UIAction *__unused a) {
         [weakVC dismissViewControllerAnimated:YES completion:nil];
     }]];
     UIBarButtonItem *copyBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
