@@ -28,6 +28,7 @@
 
 static NSString *const kWQHUDShowDown = @"WQHUDShowDown";
 static NSString *const kWQHUDShowUp = @"WQHUDShowUp";
+static NSString *const kWQHUDShowDataTotals = @"WQHUDShowDataTotals";
 static NSString *const kWQHUDShowWatts = @"WQHUDShowWatts";
 static NSString *const kWQHUDShowCurrentVolt = @"WQHUDShowCurrentVolt";
 static NSString *const kWQHUDShowBatteryPct = @"WQHUDShowBatteryPct";
@@ -174,11 +175,29 @@ WQBatteryPowerSnapshot wq_read_battery_power(void)
     return s;
 }
 
-#pragma mark - Real-Time BSD Network Speed Sampler
+#pragma mark - Real-Time BSD Network Speed & Session Data Counter
 
 static uint64_t gWQPrevRx = 0;
 static uint64_t gWQPrevTx = 0;
 static CFAbsoluteTime gWQPrevNetTime = 0;
+static uint64_t gWQSessionRxBytes = 0;
+static uint64_t gWQSessionTxBytes = 0;
+
+static void wq_hud_reset_session_data(void)
+{
+    @synchronized (NSNull.null) {
+        gWQSessionRxBytes = 0;
+        gWQSessionTxBytes = 0;
+    }
+}
+
+static void wq_hud_get_session_data(uint64_t *rxOut, uint64_t *txOut)
+{
+    @synchronized (NSNull.null) {
+        if (rxOut) *rxOut = gWQSessionRxBytes;
+        if (txOut) *txOut = gWQSessionTxBytes;
+    }
+}
 
 WQNetSpeedSnapshot wq_sample_network_speed(void)
 {
@@ -200,8 +219,16 @@ WQNetSpeedSnapshot wq_sample_network_speed(void)
     @synchronized (NSNull.null) {
         if (gWQPrevNetTime > 0 && now > gWQPrevNetTime) {
             double dt = now - gWQPrevNetTime;
-            if (snap.totalRxBytes >= gWQPrevRx) snap.downBytesPerSec = (double)(snap.totalRxBytes - gWQPrevRx) / dt;
-            if (snap.totalTxBytes >= gWQPrevTx) snap.upBytesPerSec = (double)(snap.totalTxBytes - gWQPrevTx) / dt;
+            if (snap.totalRxBytes >= gWQPrevRx) {
+                uint64_t dRx = snap.totalRxBytes - gWQPrevRx;
+                snap.downBytesPerSec = (double)dRx / dt;
+                gWQSessionRxBytes += dRx;
+            }
+            if (snap.totalTxBytes >= gWQPrevTx) {
+                uint64_t dTx = snap.totalTxBytes - gWQPrevTx;
+                snap.upBytesPerSec = (double)dTx / dt;
+                gWQSessionTxBytes += dTx;
+            }
         }
         gWQPrevRx = snap.totalRxBytes;
         gWQPrevTx = snap.totalTxBytes;
@@ -220,6 +247,20 @@ NSString *wq_format_net_speed(double bytesPerSec)
         return [NSString stringWithFormat:@"%.0f KB/s", bytesPerSec / 1024.0];
     }
     return [NSString stringWithFormat:@"%.0f B/s", bytesPerSec];
+}
+
+static NSString *wq_format_data_bytes(uint64_t bytes)
+{
+    if (bytes >= 1024ULL * 1024ULL * 1024ULL) {
+        return [NSString stringWithFormat:@"%.2f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0)];
+    }
+    if (bytes >= 1024ULL * 1024ULL) {
+        return [NSString stringWithFormat:@"%.1f MB", (double)bytes / (1024.0 * 1024.0)];
+    }
+    if (bytes >= 1024ULL) {
+        return [NSString stringWithFormat:@"%.0f KB", (double)bytes / 1024.0];
+    }
+    return [NSString stringWithFormat:@"%llu B", (unsigned long long)bytes];
 }
 
 static NSString *wq_hud_ram_short(void)
@@ -252,6 +293,7 @@ static NSArray<NSString *> *wq_hud_build_lines(WQNetSpeedSnapshot net, WQBattery
     NSMutableArray<NSString *> *parts = [NSMutableArray new];
     BOOL showDown = wq_hud_pref_bool(kWQHUDShowDown, YES);
     BOOL showUp = wq_hud_pref_bool(kWQHUDShowUp, YES);
+    BOOL showTotals = wq_hud_pref_bool(kWQHUDShowDataTotals, YES);
     BOOL showWatts = wq_hud_pref_bool(kWQHUDShowWatts, YES);
     BOOL showCV = wq_hud_pref_bool(kWQHUDShowCurrentVolt, NO);
     BOOL showPct = wq_hud_pref_bool(kWQHUDShowBatteryPct, YES);
@@ -263,6 +305,15 @@ static NSArray<NSString *> *wq_hud_build_lines(WQNetSpeedSnapshot net, WQBattery
         if (showDown) [netSegs addObject:[NSString stringWithFormat:@"↓%@", wq_format_net_speed(net.downBytesPerSec)]];
         if (showUp) [netSegs addObject:[NSString stringWithFormat:@"↑%@", wq_format_net_speed(net.upBytesPerSec)]];
         [parts addObject:[netSegs componentsJoinedByString:@"  "]];
+    }
+    if (showTotals) {
+        uint64_t rxTotal = 0, txTotal = 0;
+        wq_hud_get_session_data(&rxTotal, &txTotal);
+        NSMutableArray<NSString *> *totSegs = [NSMutableArray new];
+        BOOL bothOff = (!showDown && !showUp);
+        if (showDown || bothOff) [totSegs addObject:[NSString stringWithFormat:@"DL %@", wq_format_data_bytes(rxTotal)]];
+        if (showUp || bothOff) [totSegs addObject:[NSString stringWithFormat:@"UL %@", wq_format_data_bytes(txTotal)]];
+        [parts addObject:[totSegs componentsJoinedByString:@"  "]];
     }
     if (showWatts || showPct) {
         NSMutableArray<NSString *> *battSegs = [NSMutableArray new];
@@ -290,17 +341,67 @@ static NSArray<NSString *> *wq_hud_build_lines(WQNetSpeedSnapshot net, WQBattery
     if (!parts.count) {
         [parts addObject:@"WQ HUD"];
     }
-    if (compact && parts.count > 2) {
-        return @[parts[0], [parts[1] stringByAppendingFormat:@" · %@", parts[2]]];
+    if (compact && parts.count > 3) {
+        return @[parts[0], parts[1], [parts[2] stringByAppendingFormat:@" · %@", parts[3]]];
     }
     return parts;
 }
 
+static UIColor *wq_hud_line_color(NSString *line, BOOL forPiPDark, BOOL charging)
+{
+    if ([line hasPrefix:@"DL "] || [line hasPrefix:@"UL "]) {
+        return forPiPDark
+            ? [UIColor colorWithRed:0.42 green:0.93 blue:1.0 alpha:1.0]
+            : wq_theme_aurora_teal();
+    }
+    if ([line hasPrefix:@"⚡"]) {
+        if (charging) {
+            return forPiPDark
+                ? [UIColor colorWithRed:0.36 green:0.98 blue:0.64 alpha:1.0]
+                : UIColor.systemGreenColor;
+        }
+        return forPiPDark
+            ? [UIColor colorWithRed:1.0 green:0.83 blue:0.38 alpha:1.0]
+            : UIColor.systemOrangeColor;
+    }
+    if ([line hasPrefix:@"↓"] || [line hasPrefix:@"↑"]) {
+        return forPiPDark ? UIColor.whiteColor : wq_theme_primary_text();
+    }
+    return forPiPDark
+        ? [UIColor colorWithRed:0.84 green:0.92 blue:1.0 alpha:0.95]
+        : wq_theme_secondary_text();
+}
+
+static NSAttributedString *wq_hud_attributed_lines(NSArray<NSString *> *lines, CGFloat baseFontSize, BOOL charging)
+{
+    NSMutableAttributedString *out = [NSMutableAttributedString new];
+    NSMutableParagraphStyle *para = [NSMutableParagraphStyle new];
+    para.alignment = NSTextAlignmentCenter;
+    para.lineSpacing = 3.0;
+    for (NSUInteger i = 0; i < lines.count; i++) {
+        NSString *text = (i + 1 < lines.count) ? [lines[i] stringByAppendingString:@"\n"] : lines[i];
+        CGFloat pt = (i == 0) ? baseFontSize : MAX(11.0, baseFontSize - 1.0);
+        UIFont *font = [UIFont monospacedDigitSystemFontOfSize:pt weight:(i == 0 ? UIFontWeightHeavy : UIFontWeightBold)];
+        UIColor *color = wq_hud_line_color(lines[i], NO, charging);
+        [out appendAttributedString:[[NSAttributedString alloc] initWithString:text attributes:@{
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: color,
+            NSParagraphStyleAttributeName: para,
+        }]];
+    }
+    return out;
+}
+
 #pragma mark - CVPixelBuffer / CMSampleBuffer Frame Renderer for System-Wide PiP
 
-static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines, BOOL expanded)
+static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines, BOOL charging)
 {
-    CGSize size = expanded ? CGSizeMake(480, 220) : CGSizeMake(440, 140);
+    NSUInteger count = MAX((NSUInteger)1, lines.count);
+    CGFloat frameH = (count == 1) ? 180.0
+                   : (count == 2) ? 236.0
+                   : (count == 3) ? 296.0
+                   : 360.0;
+    CGSize size = CGSizeMake(640.0, frameH);
     NSDictionary *attrs = @{
         (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
         (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES,
@@ -327,34 +428,70 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
         CGContextTranslateCTM(ctx, 0, size.height);
         CGContextScaleCTM(ctx, 1.0, -1.0);
 
-        // Dark frosted telemetry pill backdrop
-        [[UIColor colorWithRed:0.055 green:0.085 blue:0.135 alpha:1.0] setFill];
+        // Dark frosted telemetry HUD backdrop filling the entire PiP frame
+        [[UIColor colorWithRed:0.045 green:0.075 blue:0.125 alpha:1.0] setFill];
         UIRectFill(CGRectMake(0, 0, size.width, size.height));
 
-        UIBezierPath *border = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(CGRectMake(0, 0, size.width, size.height), 4, 4) cornerRadius:24];
-        [[UIColor colorWithRed:0.10 green:0.17 blue:0.26 alpha:0.92] setFill];
+        UIBezierPath *border = [UIBezierPath bezierPathWithRoundedRect:CGRectInset(CGRectMake(0, 0, size.width, size.height), 6, 6) cornerRadius:28];
+        [[UIColor colorWithRed:0.095 green:0.160 blue:0.255 alpha:0.96] setFill];
         [border fill];
-        [[wq_theme_accent() colorWithAlphaComponent:0.55] setStroke];
-        border.lineWidth = 2.0;
+        [[wq_theme_accent() colorWithAlphaComponent:0.65] setStroke];
+        border.lineWidth = 3.0;
         [border stroke];
 
-        // Title eyebrow
-        NSDictionary *eyeAttr = @{
-            NSFontAttributeName: [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightBold],
-            NSForegroundColorAttributeName: wq_theme_aurora_teal(),
-        };
-        [@"WQ GLASS LIVE" drawAtPoint:CGPointMake(20, 14) withAttributes:eyeAttr];
+        // Auto-fit font size so text fills ~92% width & ~82% height, centered cleanly.
+        CGFloat padX = 24.0;
+        CGFloat padY = 20.0;
+        CGFloat availW = size.width - padX * 2.0;
+        CGFloat availH = size.height - padY * 2.0;
+        CGFloat lineGap = (count <= 2) ? 14.0 : 10.0;
 
-        CGFloat y = 42.0;
-        CGFloat step = expanded ? 38.0 : 40.0;
-        for (NSUInteger i = 0; i < lines.count && y + 24.0 < size.height; i++) {
-            NSDictionary *lineAttr = @{
-                NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:(i == 0 ? 28.0 : 23.0) weight:UIFontWeightBold],
-                NSForegroundColorAttributeName: (i == 0) ? UIColor.whiteColor : [UIColor colorWithRed:0.78 green:0.92 blue:1.0 alpha:1.0],
-            };
-            [lines[i] drawInRect:CGRectMake(20, y, size.width - 40, 36) withAttributes:lineAttr];
-            y += step;
+        CGFloat probeBase = 72.0;
+        CGFloat maxW = 1.0;
+        CGFloat totalH = 0.0;
+        for (NSUInteger i = 0; i < lines.count; i++) {
+            CGFloat sz = (i == 0) ? probeBase : (probeBase * 0.88);
+            UIFont *f = [UIFont monospacedDigitSystemFontOfSize:sz weight:(i == 0 ? UIFontWeightHeavy : UIFontWeightBold)];
+            CGSize m = [lines[i] sizeWithAttributes:@{ NSFontAttributeName: f }];
+            if (m.width > maxW) maxW = m.width;
+            totalH += m.height;
         }
+        if (lines.count > 1) totalH += lineGap * (CGFloat)(lines.count - 1);
+
+        CGFloat scaleW = availW / MAX(maxW, 1.0);
+        CGFloat scaleH = availH / MAX(totalH, 1.0);
+        CGFloat finalBase = floor(MAX(26.0, MIN(96.0, probeBase * MIN(scaleW, scaleH) * 0.96)));
+
+        // Re-measure exact vertical stack height at finalBase for perfect centering.
+        NSMutableArray<UIFont *> *fonts = [NSMutableArray arrayWithCapacity:lines.count];
+        NSMutableArray<NSNumber *> *heights = [NSMutableArray arrayWithCapacity:lines.count];
+        CGFloat finalTotalH = 0.0;
+        for (NSUInteger i = 0; i < lines.count; i++) {
+            CGFloat sz = (i == 0) ? finalBase : MAX(22.0, floor(finalBase * 0.88));
+            UIFont *f = [UIFont monospacedDigitSystemFontOfSize:sz weight:(i == 0 ? UIFontWeightHeavy : UIFontWeightBold)];
+            CGSize m = [lines[i] sizeWithAttributes:@{ NSFontAttributeName: f }];
+            [fonts addObject:f];
+            [heights addObject:@(ceil(m.height))];
+            finalTotalH += ceil(m.height);
+        }
+        if (lines.count > 1) finalTotalH += lineGap * (CGFloat)(lines.count - 1);
+
+        NSMutableParagraphStyle *centerPara = [NSMutableParagraphStyle new];
+        centerPara.alignment = NSTextAlignmentCenter;
+        centerPara.lineBreakMode = NSLineBreakByTruncatingTail;
+
+        CGFloat y = floor((size.height - finalTotalH) * 0.5);
+        for (NSUInteger i = 0; i < lines.count; i++) {
+            CGFloat lh = (CGFloat)[heights[i] doubleValue];
+            NSDictionary *lineAttr = @{
+                NSFontAttributeName: fonts[i],
+                NSForegroundColorAttributeName: wq_hud_line_color(lines[i], YES, charging),
+                NSParagraphStyleAttributeName: centerPara,
+            };
+            [lines[i] drawInRect:CGRectMake(padX, y, availW, lh + 4.0) withAttributes:lineAttr];
+            y += lh + lineGap;
+        }
+
         UIGraphicsPopContext();
         CGContextRelease(ctx);
     }
@@ -454,12 +591,13 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
         _pillLabel = [UILabel new];
         _pillLabel.translatesAutoresizingMaskIntoConstraints = NO;
         _pillLabel.numberOfLines = 0;
-        _pillLabel.font = [UIFont monospacedDigitSystemFontOfSize:11.5 weight:UIFontWeightBold];
+        _pillLabel.textAlignment = NSTextAlignmentCenter;
+        _pillLabel.font = [UIFont monospacedDigitSystemFontOfSize:13.5 weight:UIFontWeightBold];
         _pillLabel.textColor = wq_theme_primary_text();
 
         _closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
         _closeBtn.translatesAutoresizingMaskIntoConstraints = NO;
-        UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightBold];
+        UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightBold];
         [_closeBtn setImage:[UIImage systemImageNamed:@"xmark.circle.fill" withConfiguration:sym] forState:UIControlStateNormal];
         _closeBtn.tintColor = wq_theme_secondary_text();
         [_closeBtn addTarget:self action:@selector(stopInAppHUD) forControlEvents:UIControlEventTouchUpInside];
@@ -486,7 +624,7 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
         [_pill removeFromSuperview];
         [win addSubview:_pill];
         CGFloat topY = MAX(64.0, win.safeAreaInsets.top + 12.0);
-        _pill.frame = CGRectMake(win.bounds.size.width - 210.0, topY, 198.0, 48.0);
+        _pill.frame = CGRectMake(win.bounds.size.width - 220.0, topY, 208.0, 56.0);
     }
     _pill.hidden = NO;
     _inAppRunning = YES;
@@ -621,15 +759,15 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
     WQNetSpeedSnapshot net = wq_sample_network_speed();
     WQBatteryPowerSnapshot pwr = wq_read_battery_power();
     BOOL expanded = wq_hud_pref_bool(kWQHUDExpanded, NO);
+    BOOL charging = (pwr.watts >= 0.0 || pwr.batteryState == UIDeviceBatteryStateCharging);
     NSArray<NSString *> *lines = wq_hud_build_lines(net, pwr, !expanded);
 
     if (_inAppRunning && _pill && _pillLabel) {
-        _pillLabel.text = [lines componentsJoinedByString:@"\n"];
-        _pillLabel.textColor = wq_theme_primary_text();
+        _pillLabel.attributedText = wq_hud_attributed_lines(lines, expanded ? 14.0 : 13.5, charging);
         _pill.layer.borderColor = [wq_theme_accent() colorWithAlphaComponent:0.55].CGColor;
-        CGSize fit = [_pillLabel sizeThatFits:CGSizeMake(240, 140)];
-        CGFloat targetW = MIN(260.0, MAX(148.0, ceil(fit.width) + 52.0));
-        CGFloat targetH = MAX(42.0, ceil(fit.height) + 18.0);
+        CGSize fit = [_pillLabel sizeThatFits:CGSizeMake(270.0, 220.0)];
+        CGFloat targetW = MIN(310.0, MAX(142.0, ceil(fit.width) + 48.0));
+        CGFloat targetH = MAX(44.0, ceil(fit.height) + 16.0);
         CGRect f = _pill.frame;
         CGFloat maxX = (_pill.superview.bounds.size.width ?: 390.0) - 12.0;
         if (f.origin.x + targetW > maxX) f.origin.x = MAX(12.0, maxX - targetW);
@@ -643,7 +781,7 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
         if (_pipDisplayLayer.status == AVQueuedSampleBufferRenderingStatusFailed) {
             [_pipDisplayLayer flush];
         }
-        CMSampleBufferRef sb = wq_hud_render_sample_buffer(lines, expanded);
+        CMSampleBufferRef sb = wq_hud_render_sample_buffer(lines, charging);
         if (sb) {
             [_pipDisplayLayer enqueueSampleBuffer:sb];
             CFRelease(sb);
@@ -718,6 +856,7 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
     _metricSpecs = @[
         @{ @"key": kWQHUDShowDown, @"default": @YES, @"title": WQLocalized(@"Live Download Speed (↓)"), @"sym": @"arrow.down.circle.fill" },
         @{ @"key": kWQHUDShowUp, @"default": @YES, @"title": WQLocalized(@"Live Upload Speed (↑)"), @"sym": @"arrow.up.circle.fill" },
+        @{ @"key": kWQHUDShowDataTotals, @"default": @YES, @"title": WQLocalized(@"Downloaded & Uploaded Data (DL / UL)"), @"sym": @"arrow.up.arrow.down.circle.fill" },
         @{ @"key": kWQHUDShowWatts, @"default": @YES, @"title": WQLocalized(@"Battery Live Wattage (W)"), @"sym": @"bolt.fill" },
         @{ @"key": kWQHUDShowCurrentVolt, @"default": @NO, @"title": WQLocalized(@"Battery Current & Voltage (mA · V)"), @"sym": @"waveform.path.ecg" },
         @{ @"key": kWQHUDShowBatteryPct, @"default": @YES, @"title": WQLocalized(@"Battery Percentage (%)"), @"sym": @"battery.75" },
@@ -758,7 +897,7 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
 - (void)installPreviewHeader
 {
     CGFloat w = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 134)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 158)];
     box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
 
     UILabel *caption = [UILabel new];
@@ -768,7 +907,7 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
     caption.textColor = wq_theme_secondary_text();
     caption.textAlignment = NSTextAlignmentCenter;
 
-    UIVisualEffectView *pill = wq_theme_make_glass_card(20.0, YES);
+    UIVisualEffectView *pill = wq_theme_make_glass_card(22.0, YES);
     pill.layer.borderColor = [wq_theme_accent() colorWithAlphaComponent:0.55].CGColor;
     pill.layer.borderWidth = 1.0;
 
@@ -776,7 +915,7 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
     _previewLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _previewLabel.numberOfLines = 0;
     _previewLabel.textAlignment = NSTextAlignmentCenter;
-    _previewLabel.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightBold];
+    _previewLabel.font = [UIFont monospacedDigitSystemFontOfSize:14.5 weight:UIFontWeightBold];
     _previewLabel.textColor = wq_theme_primary_text();
     [pill.contentView addSubview:_previewLabel];
 
@@ -787,8 +926,8 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
         [caption.centerXAnchor constraintEqualToAnchor:box.centerXAnchor],
         [pill.topAnchor constraintEqualToAnchor:caption.bottomAnchor constant:8],
         [pill.centerXAnchor constraintEqualToAnchor:box.centerXAnchor],
-        [pill.widthAnchor constraintGreaterThanOrEqualToConstant:210],
-        [pill.widthAnchor constraintLessThanOrEqualToConstant:320],
+        [pill.widthAnchor constraintGreaterThanOrEqualToConstant:230],
+        [pill.widthAnchor constraintLessThanOrEqualToConstant:340],
         [pill.bottomAnchor constraintLessThanOrEqualToAnchor:box.bottomAnchor constant:-8],
         [_previewLabel.topAnchor constraintEqualToAnchor:pill.contentView.topAnchor constant:12],
         [_previewLabel.bottomAnchor constraintEqualToAnchor:pill.contentView.bottomAnchor constant:-12],
@@ -803,8 +942,13 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
     WQNetSpeedSnapshot net = wq_sample_network_speed();
     WQBatteryPowerSnapshot pwr = wq_read_battery_power();
     BOOL expanded = wq_hud_pref_bool(kWQHUDExpanded, NO);
+    BOOL charging = (pwr.watts >= 0.0 || pwr.batteryState == UIDeviceBatteryStateCharging);
     NSArray<NSString *> *lines = wq_hud_build_lines(net, pwr, !expanded);
-    _previewLabel.text = [lines componentsJoinedByString:@"\n"];
+    _previewLabel.attributedText = wq_hud_attributed_lines(lines, 14.5, charging);
+    if (self.tableView.window && [self.tableView numberOfSections] > 1 && [self.tableView numberOfRowsInSection:1] > 2) {
+        [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:2 inSection:1]]
+                              withRowAnimation:UITableViewRowAnimationNone];
+    }
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 3; }
@@ -812,21 +956,21 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
 - (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
 {
     if (section == 0) return (NSInteger)_metricSpecs.count;
-    if (section == 1) return 2;
+    if (section == 1) return 3;
     return 2;
 }
 
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
     if (section == 0) return WQLocalized(@"Choose Metrics to Show in Bubble");
-    if (section == 1) return WQLocalized(@"Style & Update Rate");
+    if (section == 1) return WQLocalized(@"Style, Update Rate & Data Counter");
     return WQLocalized(@"Launch Floating Bubble");
 }
 
 - (NSString *)tableView:(UITableView *__unused)tableView titleForFooterInSection:(NSInteger)section
 {
     if (section == 2) {
-        return WQLocalized(@"In-App Bubble floats inside WQ Glass and snaps to screen edges. System-Wide PiP Bubble uses Picture-in-Picture so live internet speed & battery wattage stay visible even over other apps. Timers stop immediately when turned off.");
+        return WQLocalized(@"In-App Bubble floats inside WQ Glass and snaps to screen edges. System-Wide PiP Bubble uses Picture-in-Picture with auto-scaled full-HUD text so live internet speed, downloaded/uploaded data totals, and battery wattage stay crisp over other apps. Timers stop immediately when turned off.");
     }
     return nil;
 }
@@ -868,17 +1012,27 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
         if (indexPath.row == 0) {
             BOOL expanded = wq_hud_pref_bool(kWQHUDExpanded, NO);
             c.text = WQLocalized(@"Bubble Layout");
-            c.secondaryText = expanded ? WQLocalized(@"Expanded HUD (All selected lines)") : WQLocalized(@"Compact Pill (2 lines max)");
+            c.secondaryText = expanded ? WQLocalized(@"Expanded HUD (All selected lines)") : WQLocalized(@"Compact Pill (3 lines max)");
             c.image = [UIImage systemImageNamed:@"rectangle.compress.vertical"];
-        } else {
+            c.imageProperties.tintColor = wq_theme_accent();
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else if (indexPath.row == 1) {
             NSTimeInterval iv = wq_hud_interval();
             c.text = WQLocalized(@"Refresh Rate");
             c.secondaryText = (iv >= 1.5) ? WQLocalized(@"Every 2 seconds (Ultra-Low Battery)") : WQLocalized(@"Every 1 second (Live)");
             c.image = [UIImage systemImageNamed:@"timer"];
+            c.imageProperties.tintColor = wq_theme_accent();
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else {
+            uint64_t rxTotal = 0, txTotal = 0;
+            wq_hud_get_session_data(&rxTotal, &txTotal);
+            c.text = WQLocalized(@"Reset Data Counter");
+            c.secondaryText = [NSString stringWithFormat:@"DL %@ · UL %@", wq_format_data_bytes(rxTotal), wq_format_data_bytes(txTotal)];
+            c.image = [UIImage systemImageNamed:@"arrow.counterclockwise.circle.fill"];
+            c.imageProperties.tintColor = wq_theme_aurora_teal();
+            cell.accessoryType = UITableViewCellAccessoryNone;
         }
-        c.imageProperties.tintColor = wq_theme_accent();
         cell.contentConfiguration = c;
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         return cell;
     }
 
@@ -910,9 +1064,12 @@ static CMSampleBufferRef wq_hud_render_sample_buffer(NSArray<NSString *> *lines,
         if (indexPath.row == 0) {
             BOOL next = !wq_hud_pref_bool(kWQHUDExpanded, NO);
             [NSUserDefaults.standardUserDefaults setBool:next forKey:kWQHUDExpanded];
-        } else {
+        } else if (indexPath.row == 1) {
             double next = (wq_hud_interval() >= 1.5) ? 1.0 : 2.0;
             [NSUserDefaults.standardUserDefaults setDouble:next forKey:kWQHUDInterval];
+        } else {
+            wq_hud_reset_session_data();
+            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         }
         [self refreshPreview];
         [WQFloatingHUDManager.sharedManager refreshAppearanceAndLayout];
