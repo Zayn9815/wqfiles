@@ -6307,7 +6307,7 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     } else if ([mid isEqualToString:@"pdf"]) {
         [self.navigationController pushViewController:[WQDocStudioViewController new] animated:YES];
     } else if ([mid isEqualToString:@"media"]) {
-        [self.navigationController pushViewController:[[WQMediaToolsViewController alloc] initWithInitialFilePath:nil] animated:YES];
+        [self.navigationController pushViewController:[[WQMediaToolsViewController alloc] initWithInitialPath:nil] animated:YES];
     } else if ([mid isEqualToString:@"bench"]) {
         [self.navigationController pushViewController:[WQWorkbenchViewController new] animated:YES];
     } else if ([mid isEqualToString:@"dups"]) {
@@ -8777,7 +8777,7 @@ static NSString *const kWQTroubleshootingFooter =
         } else if ([commandID isEqualToString:@"pdf_studio"]) {
             [activeNav pushViewController:[WQDocStudioViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"media_tools"]) {
-            [activeNav pushViewController:[[WQMediaToolsViewController alloc] initWithInitialFilePath:nil] animated:YES];
+            [activeNav pushViewController:[[WQMediaToolsViewController alloc] initWithInitialPath:nil] animated:YES];
         } else if ([commandID isEqualToString:@"workbench"]) {
             [activeNav pushViewController:[WQWorkbenchViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"find_duplicates"]) {
