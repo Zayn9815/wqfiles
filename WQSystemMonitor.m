@@ -6,6 +6,7 @@
 
 #import "WQSystemMonitor.h"
 #import "WQCore.h"
+#import "WQFloatingHUD.h"
 #import "WQLocalization.h"
 #import "WQMotion.h"
 #import "WQTheme.h"
@@ -15,6 +16,7 @@
 #import <fcntl.h>
 #import <ifaddrs.h>
 #import <mach/mach.h>
+#import <math.h>
 #import <net/if.h>
 #import <netdb.h>
 #import <poll.h>
@@ -180,11 +182,12 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
 {
     [super viewDidAppear:animated];
     UIDevice.currentDevice.batteryMonitoringEnabled = YES;
+    wq_sample_network_speed();
     [self refreshTelemetry];
     [_timer invalidate];
-    // Refresh only while on-screen (2.5s interval, zero background drain).
+    // Refresh only while on-screen (2.0s interval, zero background drain).
     __weak typeof(self) weakSelf = self;
-    _timer = [NSTimer scheduledTimerWithTimeInterval:2.5 repeats:YES block:^(NSTimer *__unused t) {
+    _timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer *__unused t) {
         [weakSelf refreshTelemetry];
     }];
 }
@@ -194,7 +197,10 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
     [super viewWillDisappear:animated];
     [_timer invalidate];
     _timer = nil;
-    UIDevice.currentDevice.batteryMonitoringEnabled = NO;
+    WQFloatingHUDManager *mgr = WQFloatingHUDManager.sharedManager;
+    if (!mgr.inAppHUDRunning && !mgr.pipHUDRunning) {
+        UIDevice.currentDevice.batteryMonitoringEnabled = NO;
+    }
 }
 
 - (void)themeDidChange
@@ -202,9 +208,17 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
     [self.tableView reloadData];
 }
 
+- (void)openFloatingHUDConfig
+{
+    wq_haptic_selection();
+    [self.navigationController pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
+}
+
 - (void)refreshTelemetry
 {
     _ram = wq_read_ram_snapshot();
+    WQBatteryPowerSnapshot pwr = wq_read_battery_power();
+    WQNetSpeedSnapshot net = wq_sample_network_speed();
     UIDevice *dev = UIDevice.currentDevice;
     NSProcessInfo *pi = NSProcessInfo.processInfo;
 
@@ -214,6 +228,15 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
                         : dev.batteryState == UIDeviceBatteryStateUnplugged ? WQLocalized(@"Unplugged")
                         : WQLocalized(@"Unknown");
     NSString *battText = batt >= 0 ? [NSString stringWithFormat:@"%.0f%% · %@", batt * 100.0f, battState] : battState;
+
+    NSString *powerText = WQLocalized(@"Unavailable");
+    NSString *cvText = WQLocalized(@"Unavailable");
+    if (pwr.valid) {
+        NSString *sign = pwr.watts >= 0 ? @"+" : @"";
+        NSString *srcTag = pwr.fromHardware ? WQLocalized(@"Live Sensor") : WQLocalized(@"Est.");
+        powerText = [NSString stringWithFormat:@"%@%.2f W (%@)", sign, pwr.watts, srcTag];
+        cvText = [NSString stringWithFormat:@"%.0f mA · %.2f V", pwr.amperageMA, pwr.voltageMV / 1000.0];
+    }
 
     NSProcessInfoThermalState th = pi.thermalState;
     NSString *thermalText = th == NSProcessInfoThermalStateNominal ? WQLocalized(@"Nominal (Cool)")
@@ -234,14 +257,29 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
         ? WQLocalizedFormat(@"%@ free of %@", wq_size_text(diskAvail), wq_size_text(diskTotal))
         : WQLocalized(@"Unavailable");
 
-    _hardwareRows = @[
-        @[WQLocalized(@"Battery"), battText],
+    NSMutableArray<NSArray<NSString *> *> *hw = [NSMutableArray arrayWithArray:@[
+        @[WQLocalized(@"Battery Level"), battText],
+        @[WQLocalized(@"Live Power (Wattage)"), powerText],
+        @[WQLocalized(@"Current & Voltage"), cvText],
+    ]];
+    if (pwr.adapterWatts > 0) {
+        [hw addObject:@[WQLocalized(@"Charger Rating"), [NSString stringWithFormat:@"%.1f W (%.1f V)", pwr.adapterWatts, pwr.adapterVoltageMV / 1000.0]]];
+    }
+    if (isfinite(pwr.temperatureC)) {
+        [hw addObject:@[WQLocalized(@"Battery Temp"), [NSString stringWithFormat:@"%.1f °C", pwr.temperatureC]]];
+    }
+    if (pwr.cycleCount >= 0) {
+        [hw addObject:@[WQLocalized(@"Cycle Count"), [NSString stringWithFormat:@"%ld cycles", (long)pwr.cycleCount]]];
+    }
+    [hw addObjectsFromArray:@[
+        @[WQLocalized(@"Live Net Speed"), [NSString stringWithFormat:@"↓ %@ · ↑ %@", wq_format_net_speed(net.downBytesPerSec), wq_format_net_speed(net.upBytesPerSec)]],
         @[WQLocalized(@"Thermal State"), thermalText],
         @[WQLocalized(@"Low Power Mode"), pi.isLowPowerModeEnabled ? WQLocalized(@"On (Eco Active)") : WQLocalized(@"Off")],
         @[WQLocalized(@"CPU Cores"), [NSString stringWithFormat:@"%lu active (%lu total)", (unsigned long)pi.activeProcessorCount, (unsigned long)pi.processorCount]],
         @[WQLocalized(@"Device Uptime"), wq_format_uptime(pi.systemUptime)],
         @[WQLocalized(@"Storage"), diskText],
-    ];
+    ]];
+    _hardwareRows = hw;
     _networkRows = wq_network_interfaces();
     [self.tableView reloadData];
 }
@@ -253,7 +291,7 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
     _pingTarget = [host copy];
     _pingResult = WQLocalized(@"Testing latency…");
     _pingResolved = nil;
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:3] withRowAnimation:UITableViewRowAnimationNone];
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationNone];
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSString *resolved = nil;
@@ -265,7 +303,7 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
             me->_pingResult = res;
             me->_pingResolved = resolved;
             wq_haptic_notify(UINotificationFeedbackTypeSuccess);
-            [me.tableView reloadSections:[NSIndexSet indexSetWithIndex:3] withRowAnimation:UITableViewRowAnimationNone];
+            [me.tableView reloadSections:[NSIndexSet indexSetWithIndex:4] withRowAnimation:UITableViewRowAnimationNone];
         });
     });
 }
@@ -290,22 +328,24 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// 0: Memory (RAM), 1: Hardware & Power, 2: Network Interfaces, 3: Latency & DNS Tester
-- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 4; }
+// 0: Floating Telemetry Bubble, 1: Memory (RAM), 2: Hardware & Battery Power, 3: Network Interfaces, 4: Latency & DNS Tester
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 5; }
 
 - (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
 {
-    if (section == 0) return _ram.valid ? 5 : 1;
-    if (section == 1) return (NSInteger)_hardwareRows.count;
-    if (section == 2) return MAX(1, (NSInteger)_networkRows.count);
+    if (section == 0) return 1;
+    if (section == 1) return _ram.valid ? 5 : 1;
+    if (section == 2) return (NSInteger)_hardwareRows.count;
+    if (section == 3) return MAX(1, (NSInteger)_networkRows.count);
     return 5;
 }
 
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
-    if (section == 0) return WQLocalized(@"Memory (RAM)");
-    if (section == 1) return WQLocalized(@"Hardware & Battery");
-    if (section == 2) return WQLocalized(@"Network Interfaces");
+    if (section == 0) return WQLocalized(@"Live Floating HUD Bubble");
+    if (section == 1) return WQLocalized(@"Memory (RAM)");
+    if (section == 2) return WQLocalized(@"Battery Power, Wattage & Hardware");
+    if (section == 3) return WQLocalized(@"Network Interfaces");
     return WQLocalized(@"TCP Latency & DNS");
 }
 
@@ -320,6 +360,18 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
     cell.accessoryType = UITableViewCellAccessoryNone;
 
     if (indexPath.section == 0) {
+        c = [UIListContentConfiguration subtitleCellConfiguration];
+        WQFloatingHUDManager *mgr = WQFloatingHUDManager.sharedManager;
+        BOOL running = mgr.inAppHUDRunning || mgr.pipHUDRunning;
+        c.text = WQLocalized(@"Customize & Launch Floating Bubble…");
+        c.secondaryText = running
+            ? WQLocalized(@"Active · Tap to customize metrics or stop")
+            : WQLocalized(@"Show live Internet Speed + Battery Wattage in-app or over other apps (PiP)");
+        c.secondaryTextProperties.numberOfLines = 2;
+        c.image = [UIImage systemImageNamed:@"pip.enter"];
+        c.imageProperties.tintColor = running ? UIColor.systemGreenColor : wq_theme_accent();
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (indexPath.section == 1) {
         if (!_ram.valid) {
             c.text = WQLocalized(@"Total RAM");
             c.secondaryText = wq_size_text(_ram.totalBytes);
@@ -335,10 +387,11 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
             c.secondaryText = rows[(NSUInteger)indexPath.row][1];
             if (indexPath.row == 4) c.secondaryTextProperties.color = wq_theme_aurora_teal();
         }
-    } else if (indexPath.section == 1) {
+    } else if (indexPath.section == 2) {
         c.text = _hardwareRows[(NSUInteger)indexPath.row][0];
         c.secondaryText = _hardwareRows[(NSUInteger)indexPath.row][1];
-    } else if (indexPath.section == 2) {
+        if (indexPath.row == 1) c.secondaryTextProperties.color = wq_theme_aurora_teal();
+    } else if (indexPath.section == 3) {
         if (!_networkRows.count) {
             c.text = WQLocalized(@"No active network interfaces");
             c.textProperties.color = wq_theme_secondary_text();
@@ -375,13 +428,17 @@ static NSString *wq_tcp_ping_host(NSString *host, NSString **resolvedOut)
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     wq_haptic_selection();
-    if (indexPath.section == 2 && _networkRows.count) {
+    if (indexPath.section == 0) {
+        [self openFloatingHUDConfig];
+        return;
+    }
+    if (indexPath.section == 3 && _networkRows.count) {
         UIPasteboard.generalPasteboard.string = _networkRows[(NSUInteger)indexPath.row][1];
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         wq_alert(self, WQLocalized(@"Copied"), WQLocalized(@"IP address copied to clipboard."));
         return;
     }
-    if (indexPath.section == 3) {
+    if (indexPath.section == 4) {
         if (indexPath.row == 1) [self runPingForHost:@"1.1.1.1"];
         else if (indexPath.row == 2) [self runPingForHost:@"8.8.8.8"];
         else if (indexPath.row == 3) [self runPingForHost:@"github.com"];

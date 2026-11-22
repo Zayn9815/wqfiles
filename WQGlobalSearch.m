@@ -131,8 +131,15 @@ static void wq_spotlight_save_recent(NSString *query)
 static NSArray<WQSpotlightResult *> *wq_spotlight_quick_commands(void)
 {
     NSArray<NSArray<NSString *> *> *specs = @[
+        @[@"Floating Telemetry Bubble", @"Live Net Speed + Battery Wattage (In-App & PiP)", @"pip.enter", @"floating_hud"],
         @[@"Utility Hub", @"All-in-One iOS Super-Utility Toolkit", @"square.grid.2x2.fill", @"utility_hub"],
-        @[@"System & Network Monitor", @"Live RAM, Battery, Thermal, IP & Ping", @"cpu.fill", @"system_monitor"],
+        @[@"Storage Analyzer", @"Visual category breakdown & largest folders", @"chart.pie.fill", @"storage_map"],
+        @[@"Offline OCR & PDF Watermark", @"Extract text from images/PDFs & stamp PDFs", @"text.viewfinder", @"ocr_studio"],
+        @[@"Deep Content Grep (Regex)", @"Search text, JSON, plist & code inside files", @"doc.text.magnifyingglass", @"content_search"],
+        @[@"HTTP / REST API Studio", @"Test endpoints, inspect headers & copy cURL", @"network.badge.shield.half.filled", @"net_studio"],
+        @[@"Portable File Locker (.wqenc)", @"Password-encrypt/decrypt files with AES-256", @"lock.doc.fill", @"crypto_tools"],
+        @[@"Folder Workflows", @"Auto-organize, clean junk, contact sheet & manifest", @"wand.and.stars.inverse", @"workflows"],
+        @[@"System & Network Monitor", @"Live RAM, Battery Wattage, Thermal, IP & Ping", @"cpu.fill", @"system_monitor"],
         @[@"PDF & Document Studio", @"Images to PDF, Merge & Split Pages", @"doc.richtext.fill", @"pdf_studio"],
         @[@"Privacy Photo & Media Studio", @"EXIF Scrubber, Resizer & Extract Audio", @"camera.filters", @"media_tools"],
         @[@"Utility Workbench", @"QR Studio, Passwords, Scratchpad & Dev Tools", @"wrench.and.screwdriver.fill", @"workbench"],

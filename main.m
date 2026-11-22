@@ -56,6 +56,14 @@
 #import "WQWorkbench.h"
 #import "WQDuplicates.h"
 #import "WQVault.h"
+#import "WQFloatingHUD.h"
+#import "WQWorkspace.h"
+#import "WQStorageMap.h"
+#import "WQOCRStudio.h"
+#import "WQContentSearch.h"
+#import "WQNetStudio.h"
+#import "WQCryptoTools.h"
+#import "WQWorkflows.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
@@ -2048,7 +2056,39 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
             WQDuplicatesViewController *dups = [[WQDuplicatesViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
             [folder.navigationController pushViewController:dups animated:YES];
         }]];
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Storage Analyzer…") image:[UIImage systemImageNamed:@"chart.pie.fill"]
+                                          identifier:nil handler:^(UIAction *__unused action) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            WQStorageMapViewController *smap = [[WQStorageMapViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
+            [folder.navigationController pushViewController:smap animated:YES];
+        }]];
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Content Grep (Regex)…") image:[UIImage systemImageNamed:@"doc.text.magnifyingglass"]
+                                          identifier:nil handler:^(UIAction *__unused action) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            WQContentSearchViewController *grep = [[WQContentSearchViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle
+                readOnly:folder.readOnly || folder->_backupStorage];
+            [folder.navigationController pushViewController:grep animated:YES];
+        }]];
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Folder Workflows…") image:[UIImage systemImageNamed:@"wand.and.stars.inverse"]
+                                          identifier:nil handler:^(UIAction *__unused action) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            WQWorkflowsViewController *wf = [[WQWorkflowsViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
+            [folder.navigationController pushViewController:wf animated:YES];
+        }]];
     }
+    [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Folder Tabs…") image:[UIImage systemImageNamed:@"rectangle.stack.fill"]
+                                      identifier:nil handler:^(UIAction *__unused action) {
+        WQDirViewController *folder = weakSelf;
+        if (!folder) return;
+        wq_present_workspace_tabs(folder, folder->_path, folder->_baseTitle, folder.readOnly, ^(WQWorkspaceTab *tab) {
+            WQDirViewController *next = [[WQDirViewController alloc] initWithPath:tab.path title:tab.title];
+            next.readOnly = tab.readOnly;
+            [folder.navigationController pushViewController:next animated:YES];
+        });
+    }]];
     // Built when the menu opens, so the checkmarks show the current order.
     UIMenuElement *sortFilterElement = [UIDeferredMenuElement elementWithUncachedProvider:^(void (^completion)(NSArray<UIMenuElement *> *)) {
         WQSortKey current = wq_sort_key();
@@ -2625,7 +2665,43 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
             WQDuplicatesViewController *dups = [[WQDuplicatesViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
             [folder.navigationController pushViewController:dups animated:YES];
         }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalized(@"Storage Analyzer…") image:[UIImage systemImageNamed:@"chart.pie.fill"] identifier:nil
+                                                 handler:^(UIAction *__unused a) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            wq_haptic_selection();
+            WQStorageMapViewController *smap = [[WQStorageMapViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
+            [folder.navigationController pushViewController:smap animated:YES];
+        }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalized(@"Content Grep (Regex)…") image:[UIImage systemImageNamed:@"doc.text.magnifyingglass"] identifier:nil
+                                                 handler:^(UIAction *__unused a) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            wq_haptic_selection();
+            WQContentSearchViewController *grep = [[WQContentSearchViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle
+                readOnly:folder.readOnly || folder->_backupStorage];
+            [folder.navigationController pushViewController:grep animated:YES];
+        }]];
+        [coreActions addObject:[UIAction actionWithTitle:WQLocalized(@"Folder Workflows…") image:[UIImage systemImageNamed:@"wand.and.stars.inverse"] identifier:nil
+                                                 handler:^(UIAction *__unused a) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            wq_haptic_selection();
+            WQWorkflowsViewController *wf = [[WQWorkflowsViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
+            [folder.navigationController pushViewController:wf animated:YES];
+        }]];
     }
+    [coreActions addObject:[UIAction actionWithTitle:WQLocalized(@"Folder Tabs…") image:[UIImage systemImageNamed:@"rectangle.stack.fill"] identifier:nil
+                                             handler:^(UIAction *__unused a) {
+        WQDirViewController *folder = weakSelf;
+        if (!folder) return;
+        wq_haptic_selection();
+        wq_present_workspace_tabs(folder, folder->_path, folder->_baseTitle, folder.readOnly, ^(WQWorkspaceTab *tab) {
+            WQDirViewController *next = [[WQDirViewController alloc] initWithPath:tab.path title:tab.title];
+            next.readOnly = tab.readOnly;
+            [folder.navigationController pushViewController:next animated:YES];
+        });
+    }]];
     _dockCoreButton.menu = [UIMenu menuWithTitle:WQLocalized(@"Command HUD") children:coreActions];
     _dockCoreButton.showsMenuAsPrimaryAction = YES;
 
@@ -3902,6 +3978,20 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                     if (latest && weakSelf) [weakSelf convertPlistOrJSONAtPath:latest.path toJSON:toJSON];
                 }]];
             }
+            if ([imgExts containsObject:ext] || [ext isEqualToString:@"pdf"]) {
+                [actions addObject:[UIAction actionWithTitle:[ext isEqualToString:@"pdf"] ? WQLocalized(@"OCR / Watermark PDF…") : WQLocalized(@"Extract Text (OCR)…")
+                                                       image:[UIImage systemImageNamed:@"text.viewfinder"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    if (latest && weakSelf) wq_present_ocr_studio(weakSelf, latest.path);
+                }]];
+            }
+            [actions addObject:[UIAction actionWithTitle:[ext isEqualToString:@"wqenc"] ? WQLocalized(@"Decrypt (.wqenc)…") : WQLocalized(@"Encrypt (.wqenc)…")
+                                                   image:[UIImage systemImageNamed:[ext isEqualToString:@"wqenc"] ? @"lock.open.fill" : @"lock.doc.fill"]
+                                              identifier:nil handler:^(UIAction *__unused a) {
+                WQItem *latest = currentItem();
+                if (latest && weakSelf) wq_present_crypto_tools(weakSelf, latest.path);
+            }]];
             [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Show QR Code")
                                                    image:[UIImage systemImageNamed:@"qrcode"]
                                               identifier:nil handler:^(UIAction *__unused a) {
@@ -3915,6 +4005,44 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                 WQItem *latest = currentItem();
                 if (latest) [weakSelf startCopy:latest];
             }]];
+            NSArray<WQWorkspaceTab *> *otherTabs = wq_workspace_other_tabs(strongSelf->_path);
+            if (otherTabs.count && !wq_safe_read_only_enabled()) {
+                NSMutableArray<UIAction *> *tabActs = [NSMutableArray new];
+                for (WQWorkspaceTab *tab in otherTabs) {
+                    if (tab.readOnly) continue;
+                    NSString *destDir = [tab.path copy];
+                    NSString *destTitle = [tab.title copy];
+                    [tabActs addObject:[UIAction actionWithTitle:WQLocalizedFormat(@"Copy to “%@”", destTitle)
+                                                           image:[UIImage systemImageNamed:@"doc.on.doc"]
+                                                      identifier:nil handler:^(UIAction *__unused a) {
+                        WQItem *latest = currentItem();
+                        WQDirViewController *dirVC = weakSelf;
+                        if (!latest || !dirVC) return;
+                        NSString *dst = [destDir stringByAppendingPathComponent:latest.name];
+                        [dirVC runIO:^BOOL(NSString **error) {
+                            return wq_copy(latest.path, dst, error);
+                        } failure:WQLocalized(@"Copy to Tab Failed")];
+                    }]];
+                    if ([strongSelf canEditHere]) {
+                        [tabActs addObject:[UIAction actionWithTitle:WQLocalizedFormat(@"Move to “%@”", destTitle)
+                                                               image:[UIImage systemImageNamed:@"folder.fill"]
+                                                          identifier:nil handler:^(UIAction *__unused a) {
+                            WQItem *latest = currentItem();
+                            WQDirViewController *dirVC = weakSelf;
+                            if (!latest || !dirVC) return;
+                            NSString *dst = [destDir stringByAppendingPathComponent:latest.name];
+                            [dirVC runIO:^BOOL(NSString **error) {
+                                return wq_move_expecting(latest.path, dst, latest.identity, error);
+                            } failure:WQLocalized(@"Move to Tab Failed")];
+                        }]];
+                    }
+                }
+                if (tabActs.count) {
+                    [actions addObject:[UIMenu menuWithTitle:WQLocalized(@"Send to Open Tab")
+                                                       image:[UIImage systemImageNamed:@"rectangle.stack.fill"]
+                                                  identifier:nil options:0 children:tabActs]];
+                }
+            }
         }
         if ([strongSelf canEditHere]) {
             if (!current.isLink && (current.isDir || current.isRegular)) {
@@ -3949,7 +4077,23 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
             UIAction *del = [UIAction actionWithTitle:WQLocalizedNullable(@"Delete") image:[UIImage systemImageNamed:@"trash"]
                                            identifier:nil handler:^(UIAction *__unused a) { WQItem *latest = currentItem(); if (latest) [weakSelf confirmDelete:latest]; }];
             del.attributes = UIMenuElementAttributesDestructive;
-            if (wq_deleting_allowed()) [actions addObject:del];
+            if (wq_deleting_allowed()) {
+                [actions addObject:del];
+                if (!current.isDir && current.isRegular) {
+                    UIAction *shred = [UIAction actionWithTitle:WQLocalized(@"Secure Shred…") image:[UIImage systemImageNamed:@"flame.fill"]
+                                                     identifier:nil handler:^(UIAction *__unused a) {
+                        WQItem *latest = currentItem();
+                        WQDirViewController *dirVC = weakSelf;
+                        if (latest && dirVC) {
+                            wq_confirm_secure_shred(dirVC, latest.path, ^(BOOL ok) {
+                                if (ok) [dirVC reload];
+                            });
+                        }
+                    }];
+                    shred.attributes = UIMenuElementAttributesDestructive;
+                    [actions addObject:shred];
+                }
+            }
         }
         return [UIMenu menuWithChildren:actions];
     }];
@@ -6192,7 +6336,14 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     wq_theme_apply_scroll_insets(self.tableView, 32.0);
 
     _modules = @[
-        @{ @"id": @"sys", @"title": WQLocalized(@"Device & Network Monitor"), @"sub": WQLocalized(@"Live RAM, Battery, Thermal, IP Interfaces, TCP Ping & DNS"), @"sym": @"cpu.fill" },
+        @{ @"id": @"hud", @"title": WQLocalized(@"Floating Telemetry Bubble"), @"sub": WQLocalized(@"Customizable live Net Speed + Battery Wattage (In-App & PiP)"), @"sym": @"pip.enter" },
+        @{ @"id": @"sys", @"title": WQLocalized(@"Device & Network Monitor"), @"sub": WQLocalized(@"Live RAM, Battery Wattage, Thermal, IP Interfaces, TCP Ping & DNS"), @"sym": @"cpu.fill" },
+        @{ @"id": @"smap", @"title": WQLocalized(@"Storage Analyzer"), @"sub": WQLocalized(@"DaisyDisk-style visual category breakdown & largest folders"), @"sym": @"chart.pie.fill" },
+        @{ @"id": @"ocr", @"title": WQLocalized(@"Offline OCR & PDF Watermark"), @"sub": WQLocalized(@"Apple Vision text extraction from images/PDFs & diagonal stamps"), @"sym": @"text.viewfinder" },
+        @{ @"id": @"grep", @"title": WQLocalized(@"Deep Content Grep (Regex)"), @"sub": WQLocalized(@"Search text, JSON, binary/XML plists & code inside App Data"), @"sym": @"doc.text.magnifyingglass" },
+        @{ @"id": @"net", @"title": WQLocalized(@"HTTP / REST API Studio"), @"sub": WQLocalized(@"Test GET/POST endpoints, inspect headers & copy cURL commands"), @"sym": @"network.badge.shield.half.filled" },
+        @{ @"id": @"crypto", @"title": WQLocalized(@"Portable File Locker (.wqenc)"), @"sub": WQLocalized(@"Password-encrypt & decrypt shareable AES-256 + HMAC files"), @"sym": @"lock.doc.fill" },
+        @{ @"id": @"wf", @"title": WQLocalized(@"Folder Automation Workflows"), @"sub": WQLocalized(@"Auto-organize by type, clean junk, contact sheet PDF & audit CSV"), @"sym": @"wand.and.stars.inverse" },
         @{ @"id": @"pdf", @"title": WQLocalized(@"PDF & Document Studio"), @"sub": WQLocalized(@"Images → PDF, Merge PDFs & Split/Extract Pages offline"), @"sym": @"doc.richtext.fill" },
         @{ @"id": @"media", @"title": WQLocalized(@"Privacy Photo & Media Studio"), @"sub": WQLocalized(@"EXIF/GPS Scrubber, Image Resizer/Converter & Extract M4A Audio"), @"sym": @"camera.filters" },
         @{ @"id": @"bench", @"title": WQLocalized(@"Everyday Utility Workbench"), @"sub": WQLocalized(@"QR Studio, Password/UUID Generator, Scratchpad & Dev Converters"), @"sym": @"wrench.and.screwdriver.fill" },
@@ -6263,7 +6414,7 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
 
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return section == 0 ? WQLocalized(@"Super-Utility Modules") : WQLocalized(@"Guide");
+    return section == 0 ? WQLocalized(@"Flagship Pro Modules") : WQLocalized(@"Guide");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -6302,8 +6453,31 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
         return;
     }
     NSString *mid = _modules[(NSUInteger)indexPath.row][@"id"];
-    if ([mid isEqualToString:@"sys"]) {
+    if ([mid isEqualToString:@"hud"]) {
+        [self.navigationController pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"sys"]) {
         [self.navigationController pushViewController:[WQSystemMonitorViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"smap"]) {
+        WQStorageMapViewController *smap = [[WQStorageMapViewController alloc]
+            initWithRootPath:@"/private/var/mobile/Containers/Data/Application"
+                       title:WQLocalized(@"App Data")];
+        [self.navigationController pushViewController:smap animated:YES];
+    } else if ([mid isEqualToString:@"ocr"]) {
+        [self.navigationController pushViewController:[[WQOCRStudioViewController alloc] initWithInitialPath:nil] animated:YES];
+    } else if ([mid isEqualToString:@"grep"]) {
+        WQContentSearchViewController *grep = [[WQContentSearchViewController alloc]
+            initWithRootPath:@"/private/var/mobile/Containers/Data/Application"
+                       title:WQLocalized(@"App Data")
+                    readOnly:NO];
+        [self.navigationController pushViewController:grep animated:YES];
+    } else if ([mid isEqualToString:@"net"]) {
+        [self.navigationController pushViewController:[WQNetStudioViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"crypto"]) {
+        [self.navigationController pushViewController:[[WQCryptoToolsViewController alloc] initWithInitialPath:nil] animated:YES];
+    } else if ([mid isEqualToString:@"wf"]) {
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSHomeDirectory();
+        WQWorkflowsViewController *wf = [[WQWorkflowsViewController alloc] initWithRootPath:docs title:WQLocalized(@"WQ Glass Documents")];
+        [self.navigationController pushViewController:wf animated:YES];
     } else if ([mid isEqualToString:@"pdf"]) {
         [self.navigationController pushViewController:[WQDocStudioViewController new] animated:YES];
     } else if ([mid isEqualToString:@"media"]) {
@@ -8770,8 +8944,27 @@ static NSString *const kWQTroubleshootingFooter =
         if (!tab) return;
         UINavigationController *activeNav = [tab.selectedViewController isKindOfClass:UINavigationController.class]
             ? (UINavigationController *)tab.selectedViewController : h.navigationController;
-        if ([commandID isEqualToString:@"utility_hub"]) {
+        if ([commandID isEqualToString:@"floating_hud"]) {
+            [activeNav pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"utility_hub"]) {
             [activeNav pushViewController:[WQUtilityHubViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"storage_map"]) {
+            WQStorageMapViewController *smap = [[WQStorageMapViewController alloc]
+                initWithRootPath:@"/private/var/mobile/Containers/Data/Application" title:WQLocalized(@"App Data")];
+            [activeNav pushViewController:smap animated:YES];
+        } else if ([commandID isEqualToString:@"ocr_studio"]) {
+            [activeNav pushViewController:[[WQOCRStudioViewController alloc] initWithInitialPath:nil] animated:YES];
+        } else if ([commandID isEqualToString:@"content_search"]) {
+            WQContentSearchViewController *grep = [[WQContentSearchViewController alloc]
+                initWithRootPath:@"/private/var/mobile/Containers/Data/Application" title:WQLocalized(@"App Data") readOnly:NO];
+            [activeNav pushViewController:grep animated:YES];
+        } else if ([commandID isEqualToString:@"net_studio"]) {
+            [activeNav pushViewController:[WQNetStudioViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"crypto_tools"]) {
+            [activeNav pushViewController:[[WQCryptoToolsViewController alloc] initWithInitialPath:nil] animated:YES];
+        } else if ([commandID isEqualToString:@"workflows"]) {
+            NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSHomeDirectory();
+            [activeNav pushViewController:[[WQWorkflowsViewController alloc] initWithRootPath:docs title:WQLocalized(@"WQ Glass Documents")] animated:YES];
         } else if ([commandID isEqualToString:@"system_monitor"]) {
             [activeNav pushViewController:[WQSystemMonitorViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"pdf_studio"]) {

@@ -428,6 +428,8 @@ static BOOL wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     NSMutableArray<NSString *> *_exportDirs;
     BOOL _exporting;
     UIButton *_csvPill;
+    UIButton *_jsonPill;
+    double _lastQueryMs;
 }
 
 - (void)dealloc
@@ -498,7 +500,12 @@ static BOOL wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
             wq_haptic_selection();
             [weakSelf exportCSV:nil];
         }] forControlEvents:UIControlEventTouchUpInside];
-        UIVisualEffectView *dock = wq_motion_make_dock(@[_csvPill], 6);
+        _jsonPill = wq_motion_dock_pill(WQLocalized(@"JSON"), @"curlybraces", NO);
+        [_jsonPill addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            [weakSelf exportJSON];
+        }] forControlEvents:UIControlEventTouchUpInside];
+        UIVisualEffectView *dock = wq_motion_make_dock(@[_csvPill, _jsonPill], 6);
         wq_motion_add_hud_brackets(dock, 5, 8);
         wq_motion_install_corner_rail(dock, self, self.tableView, 12.0);
     }
@@ -520,6 +527,7 @@ static BOOL wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     // while it loads makes its offset stale, so it is dropped and re-read.
     NSUInteger epoch = _loadEpoch, generation = _generation;
     dispatch_async(snapshot.queue, ^{
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
         NSString *alias = aliasResolved ? knownAlias : (table ? wq_sqlite_rowid_alias(snapshot.db, table) : nil);
         // Tables page with LIMIT/OFFSET (with their rowid first, if they have
         // one); a query (which may be a PRAGMA or EXPLAIN, and can't be
@@ -556,12 +564,14 @@ static BOOL wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
             if (rows.count < page && rc != SQLITE_DONE) error = @(sqlite3_errmsg(snapshot.db));
         }
         sqlite3_finalize(stmt);
+        double elapsedMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0;
         dispatch_async(dispatch_get_main_queue(), ^{
             self->_loading = NO;
             if (epoch != self->_loadEpoch || generation != self->_generation || snapshot != self->_snapshot) {
                 [self loadMore];
                 return;
             }
+            self->_lastQueryMs = elapsedMs;
             self->_alias = alias;
             self->_aliasResolved = YES;
             if (error) { self->_error = error; self->_done = YES; [self.tableView reloadData]; return; }
@@ -590,7 +600,7 @@ static BOOL wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
     if (_error || !_columns) return nil;
     NSString *more = _done ? @"" : @"+";
     if (_limit && _rows.count >= _limit) more = WQLocalizedFormat(@" (first %lu)", (unsigned long)_limit);
-    return WQLocalizedFormat(@"%lu%@ rows · %lu columns", (unsigned long)_rows.count, more, (unsigned long)_columns.count);
+    return WQLocalizedFormat(@"%lu%@ rows · %lu columns · %.1f ms", (unsigned long)_rows.count, more, (unsigned long)_columns.count, _lastQueryMs);
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -724,6 +734,72 @@ static BOOL wq_sqlite_bind_typed(sqlite3_stmt *stmt, int index, NSString *text, 
             strongSelf->_exporting = NO;
             sender.enabled = YES;
             strongSelf->_csvPill.enabled = YES;
+            strongSelf->_jsonPill.enabled = YES;
+            if (!ok) { wq_alert(strongSelf, @"Cannot export", error ?: @"?"); return; }
+            wq_share(strongSelf, out, nil);
+        });
+    });
+}
+
+- (void)exportJSON
+{
+    if (_exporting) return;
+    WQSQLiteSnapshot *snapshot = _snapshot;
+    NSString *sql = _sql;
+    NSString *name = [[_exportName stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByAppendingPathExtension:@"json"];
+    NSString *dir = [[NSTemporaryDirectory() stringByAppendingPathComponent:@"wq-sqlite-export"]
+                     stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    if (![NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil]) {
+        wq_alert(self, @"Cannot export", WQLocalized(@"cannot create the JSON file"));
+        return;
+    }
+    if (!_exportDirs) _exportDirs = [NSMutableArray new];
+    [_exportDirs addObject:dir];
+    NSString *out = [dir stringByAppendingPathComponent:name];
+    _exporting = YES;
+    _csvPill.enabled = NO;
+    _jsonPill.enabled = NO;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(snapshot.queue, ^{
+        NSString *error = nil;
+        BOOL ok = NO;
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(snapshot.db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK) {
+            error = @(sqlite3_errmsg(snapshot.db));
+        } else if (!sqlite3_stmt_readonly(stmt)) {
+            error = WQLocalized(@"Only read-only statements can be exported.");
+        } else {
+            int cols = sqlite3_column_count(stmt);
+            NSMutableArray<NSString *> *colNames = [NSMutableArray arrayWithCapacity:(NSUInteger)cols];
+            for (int i = 0; i < cols; i++) [colNames addObject:@(sqlite3_column_name(stmt, i) ?: "?")];
+            NSMutableArray<NSDictionary<NSString *, id> *> *records = [NSMutableArray new];
+            while (records.count < 5000 && sqlite3_step(stmt) == SQLITE_ROW && weakSelf != nil) {
+                NSMutableDictionary<NSString *, id> *rec = [NSMutableDictionary dictionaryWithCapacity:(NSUInteger)cols];
+                for (int i = 0; i < cols; i++) {
+                    int t = sqlite3_column_type(stmt, i);
+                    if (t == SQLITE_NULL) rec[colNames[(NSUInteger)i]] = NSNull.null;
+                    else if (t == SQLITE_INTEGER) rec[colNames[(NSUInteger)i]] = @(sqlite3_column_int64(stmt, i));
+                    else if (t == SQLITE_FLOAT) rec[colNames[(NSUInteger)i]] = @(sqlite3_column_double(stmt, i));
+                    else {
+                        int kind = 0;
+                        rec[colNames[(NSUInteger)i]] = wq_sqlite_value(stmt, i, NO, &kind);
+                    }
+                }
+                [records addObject:rec];
+            }
+            NSError *jErr = nil;
+            NSData *json = [NSJSONSerialization dataWithJSONObject:records options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:&jErr];
+            if (json && [json writeToFile:out atomically:YES]) ok = YES;
+            else error = jErr.localizedDescription ?: WQLocalized(@"Failed to serialize JSON.");
+        }
+        sqlite3_finalize(stmt);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (!ok) [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
+            if (!strongSelf) return;
+            strongSelf->_exporting = NO;
+            strongSelf->_csvPill.enabled = YES;
+            strongSelf->_jsonPill.enabled = YES;
             if (!ok) { wq_alert(strongSelf, @"Cannot export", error ?: @"?"); return; }
             wq_share(strongSelf, out, nil);
         });
@@ -953,6 +1029,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     UIVisualEffectView *_sqliteDock;
     UIButton *_dockActionButton;
     UIButton *_dockSQLButton;
+    UIButton *_dockSchemaButton;
     BOOL _didCascade;
 }
 
@@ -1005,7 +1082,13 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
         [weakSelf openQuery];
     }] forControlEvents:UIControlEventTouchUpInside];
 
-    _sqliteDock = wq_motion_make_dock(@[_dockActionButton, _dockSQLButton], 6);
+    _dockSchemaButton = wq_motion_dock_pill(WQLocalized(@"Schema"), @"doc.text.magnifyingglass", NO);
+    [_dockSchemaButton addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        [weakSelf openSchemaDDL];
+    }] forControlEvents:UIControlEventTouchUpInside];
+
+    _sqliteDock = wq_motion_make_dock(@[_dockActionButton, _dockSQLButton, _dockSchemaButton], 6);
     wq_motion_add_hud_brackets(_sqliteDock, 5, 8);
     wq_motion_install_corner_rail(_sqliteDock, self, self.tableView, 12.0);
 }
@@ -1118,6 +1201,7 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
     self.navigationItem.rightBarButtonItems = nil;
     if (_sqliteDock) {
         _dockSQLButton.enabled = _snapshot != nil && !_saving;
+        _dockSchemaButton.enabled = _snapshot != nil && !_saving;
         if (_snapshot.editing) {
             _dockActionButton.hidden = NO;
             wq_theme_style_primary_button(_dockActionButton, WQLocalizedNullable(@"Save"), @"checkmark.circle.fill");
@@ -1249,6 +1333,64 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
 {
     if (!_snapshot) return;
     [self.navigationController pushViewController:[[WQSQLiteQueryViewController alloc] initWithSnapshot:_snapshot] animated:YES];
+}
+
+- (void)openSchemaDDL
+{
+    WQSQLiteSnapshot *snapshot = _snapshot;
+    if (!snapshot) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(snapshot.queue, ^{
+        NSMutableArray<NSString *> *parts = [NSMutableArray new];
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(snapshot.db, "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name",
+                               -1, &stmt, NULL) == SQLITE_OK) {
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const unsigned char *type = sqlite3_column_text(stmt, 0);
+                const unsigned char *name = sqlite3_column_text(stmt, 1);
+                const unsigned char *ddl = sqlite3_column_text(stmt, 3);
+                if (ddl) {
+                    [parts addObject:[NSString stringWithFormat:@"-- %s: %s\n%s;",
+                                      type ? (const char *)type : "object",
+                                      name ? (const char *)name : "?",
+                                      (const char *)ddl]];
+                }
+            }
+        }
+        sqlite3_finalize(stmt);
+        NSString *text = parts.count ? [parts componentsJoinedByString:@"\n\n"] : WQLocalized(@"No schema definitions found.");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQSQLiteViewController *me = weakSelf;
+            if (!me) return;
+            UIViewController *vc = [UIViewController new];
+            vc.title = WQLocalized(@"Schema & Index DDL");
+            vc.view.backgroundColor = wq_theme_canvas_top();
+            UITextView *tv = [UITextView new];
+            tv.translatesAutoresizingMaskIntoConstraints = NO;
+            tv.editable = NO;
+            tv.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightRegular];
+            tv.textColor = wq_theme_primary_text();
+            tv.backgroundColor = UIColor.clearColor;
+            tv.textContainerInset = UIEdgeInsetsMake(12, 12, 20, 12);
+            tv.text = text;
+            [vc.view addSubview:tv];
+            [NSLayoutConstraint activateConstraints:@[
+                [tv.topAnchor constraintEqualToAnchor:vc.view.safeAreaLayoutGuide.topAnchor],
+                [tv.bottomAnchor constraintEqualToAnchor:vc.view.bottomAnchor],
+                [tv.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor],
+                [tv.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor],
+            ]];
+            __weak UIViewController *weakVC = vc;
+            vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Copy")
+                                                                                    image:[UIImage systemImageNamed:@"doc.on.doc"]
+                                                                            primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+                UIPasteboard.generalPasteboard.string = text;
+                wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+                wq_alert(weakVC, WQLocalized(@"Copied"), WQLocalized(@"Database schema DDL copied to clipboard."));
+            }] menu:nil];
+            [me.navigationController pushViewController:vc animated:YES];
+        });
+    });
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
