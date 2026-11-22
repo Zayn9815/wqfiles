@@ -462,6 +462,43 @@ void wq_cache_custom_target_remove(NSString *bundleID, NSString *relative)
 @interface WQCacheCleanerViewController () <UISearchControllerDelegate>
 @end
 
+static NSString *const kWQCacheProtectedAppsPref = @"WQCacheProtectedApps";
+
+static NSString *wq_cache_protection_key(WQCacheItem *item)
+{
+    if (!item) return @"";
+    if (item.crashLogs) return @"__crash_logs__";
+    if (item.bundleID.length) return item.bundleID;
+    return item.containerPath ?: item.name ?: @"";
+}
+
+static NSSet<NSString *> *wq_cache_protected_keys(void)
+{
+    NSArray *saved = [NSUserDefaults.standardUserDefaults arrayForKey:kWQCacheProtectedAppsPref];
+    if (![saved isKindOfClass:NSArray.class]) return [NSSet set];
+    NSMutableSet<NSString *> *set = [NSMutableSet setWithCapacity:saved.count];
+    for (id v in saved) {
+        if ([v isKindOfClass:NSString.class] && [(NSString *)v length] > 0) [set addObject:v];
+    }
+    return set;
+}
+
+static BOOL wq_cache_is_protected(WQCacheItem *item)
+{
+    NSString *key = wq_cache_protection_key(item);
+    return key.length > 0 && [wq_cache_protected_keys() containsObject:key];
+}
+
+static void wq_cache_set_protected(WQCacheItem *item, BOOL protect)
+{
+    NSString *key = wq_cache_protection_key(item);
+    if (!key.length) return;
+    NSMutableSet<NSString *> *set = [wq_cache_protected_keys() mutableCopy];
+    if (protect) [set addObject:key];
+    else [set removeObject:key];
+    [NSUserDefaults.standardUserDefaults setObject:set.allObjects forKey:kWQCacheProtectedAppsPref];
+}
+
 @implementation WQCacheCleanerViewController {
     NSArray<WQCacheItem *> *_items;
     NSArray<WQCacheItem *> *_visibleItems;
@@ -614,6 +651,25 @@ void wq_cache_custom_target_remove(NSString *bundleID, NSString *relative)
         [self->_filterPills addObject:pill];
         [pillStack addArrangedSubview:pill];
     }];
+
+    // One-tap Quick-Clean preset pills ("Safe (>50 MB)" and "All Unprotected").
+    UIButton *safePreset = wq_theme_pill_button(WQLocalized(@"Safe (>50 MB)"), NO);
+    [safePreset addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf->_scanning || strongSelf->_cleaning) return;
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        [strongSelf applyPresetSafe50MB];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    [pillStack addArrangedSubview:safePreset];
+
+    UIButton *allUnprotectedPreset = wq_theme_pill_button(WQLocalized(@"All Unprotected"), NO);
+    [allUnprotectedPreset addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf || strongSelf->_scanning || strongSelf->_cleaning) return;
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        [strongSelf applyPresetAllUnprotected];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    [pillStack addArrangedSubview:allUnprotectedPreset];
 
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, stripHeight + 48)];
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -1132,7 +1188,7 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
                                         item.limited = YES;
                                         missingId = YES;
                                     }
-                                    item.selected = !item.limited;
+                                    item.selected = !item.limited && !wq_cache_is_protected(item);
                                     built = item;
                                 }
                                 @synchronized (aggLock) {
@@ -1191,7 +1247,7 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
             logs.crashLogs = YES;
             logs.limited = crashState == WQCacheMeasurementLimited;
             logs.targetRecords = @[WQCacheTargetRecordForPath(kCrashLogsPath, nil)];
-            logs.selected = !logs.limited;
+            logs.selected = !logs.limited && !wq_cache_is_protected(logs);
             [items addObject:logs];
         }
         [items sortUsingComparator:^NSComparisonResult(WQCacheItem *a, WQCacheItem *b) {
@@ -1378,27 +1434,49 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
     WQCleanerCell *cell = [tableView dequeueReusableCellWithIdentifier:@"item"]
         ?: [[WQCleanerCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"item"];
     WQCacheItem *item = self.visibleItems[(NSUInteger)indexPath.row];
+    BOOL isProtected = wq_cache_is_protected(item);
+    if (isProtected && item.selected) item.selected = NO;
     cell.nameLabel.text = item.name;
+    NSString *protSuffix = isProtected ? WQLocalized(@" · Protected") : @"";
     if (item.crashLogs) {
-        cell.detailLabel.text = item.cacheKnown ? WQLocalized(@"Crash Logs · osanalytics") : WQLocalized(@"Crash Logs · access limited");
+        cell.detailLabel.text = [NSString stringWithFormat:@"%@%@",
+            item.cacheKnown ? WQLocalized(@"Crash Logs · osanalytics") : WQLocalized(@"Crash Logs · access limited"),
+            protSuffix];
     } else {
         NSString *cache = item.cacheKnown ? wq_size_text(item.cacheBytes) : WQLocalized(@"unknown");
         NSString *temp = item.tempKnown ? wq_size_text(item.tempBytes) : WQLocalized(@"unknown");
-        cell.detailLabel.text = WQLocalizedFormat(@"cache %@ · temp %@%@", cache, temp,
-                                 item.limited ? WQLocalized(@" · access limited") : @"");
+        cell.detailLabel.text = WQLocalizedFormat(@"cache %@ · temp %@%@%@", cache, temp,
+                                 item.limited ? WQLocalized(@" · access limited") : @"", protSuffix);
     }
     cell.sizeLabel.text = wq_size_text(item.bytes);
     NSString *fallbackSymbol = item.crashLogs ? @"doc.text.magnifyingglass"
                              : (item.bundleID ? @"app.dashed" : @"exclamationmark.triangle");
     cell.iconView.image = wq_app_icon(item.bundleID) ?: wq_glacier_symbol_badge(fallbackSymbol, 36.0);
     cell.iconView.tintColor = wq_theme_secondary_text();
-    cell.checkView.image = [UIImage systemImageNamed:item.selected ? @"checkmark.circle.fill" : @"circle"];
-    cell.checkView.tintColor = item.selected ? wq_theme_accent() : [wq_theme_secondary_text() colorWithAlphaComponent:0.55];
-    cell.checkView.layer.shadowColor = item.selected ? wq_theme_accent().CGColor : nil;
-    cell.checkView.layer.shadowRadius = item.selected ? 6.0 : 0.0;
-    cell.checkView.layer.shadowOpacity = item.selected ? 0.65f : 0.0f;
-    cell.checkView.layer.shadowOffset = CGSizeZero;
+    if (isProtected) {
+        cell.checkView.image = [UIImage systemImageNamed:@"lock.shield.fill"];
+        cell.checkView.tintColor = wq_theme_aurora_teal();
+        cell.checkView.layer.shadowOpacity = 0.0f;
+    } else {
+        cell.checkView.image = [UIImage systemImageNamed:item.selected ? @"checkmark.circle.fill" : @"circle"];
+        cell.checkView.tintColor = item.selected ? wq_theme_accent() : [wq_theme_secondary_text() colorWithAlphaComponent:0.55];
+        cell.checkView.layer.shadowColor = item.selected ? wq_theme_accent().CGColor : nil;
+        cell.checkView.layer.shadowRadius = item.selected ? 6.0 : 0.0;
+        cell.checkView.layer.shadowOpacity = (item.selected && !NSProcessInfo.processInfo.isLowPowerModeEnabled) ? 0.65f : 0.0f;
+        cell.checkView.layer.shadowOffset = CGSizeZero;
+    }
     return cell;
+}
+
+- (void)toggleProtectionForItem:(WQCacheItem *)item
+{
+    BOOL nowProtected = !wq_cache_is_protected(item);
+    wq_cache_set_protected(item, nowProtected);
+    if (nowProtected) item.selected = NO;
+    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    [self rebuildVisibleItems];
+    [self.tableView reloadData];
+    [self updateButtons];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
@@ -1406,6 +1484,17 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.section == 0 || _scanning || _cleaning) return;
     WQCacheItem *item = self.visibleItems[(NSUInteger)indexPath.row];
+    if (wq_cache_is_protected(item)) {
+        UIAlertController *alert = wq_alert_controller(WQLocalized(@"Protected App"),
+            WQLocalizedFormat(@"%@ is on your protected whitelist and will not be cleaned. Remove protection to include it?", item.name),
+            UIAlertControllerStyleAlert);
+        [alert addAction:wq_alert_action(WQLocalized(@"Unprotect"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            [self toggleProtectionForItem:item];
+        })];
+        [alert addAction:wq_alert_action(WQLocalized(@"Keep Protected"), UIAlertActionStyleCancel, nil)];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
     if (item.limited) {
         wq_alert(self, @"Not cleanable",
                  @"This row has incomplete access or identity information. Scan again while the app is closed, or use its file browser entry to inspect it.");
@@ -1423,6 +1512,25 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
     [self updateButtons];
 }
 
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (indexPath.section == 0 || _scanning || _cleaning) return nil;
+    if ((NSUInteger)indexPath.row >= self.visibleItems.count) return nil;
+    WQCacheItem *item = self.visibleItems[(NSUInteger)indexPath.row];
+    BOOL isProtected = wq_cache_is_protected(item);
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *act = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
+        title:isProtected ? WQLocalized(@"Unprotect") : WQLocalized(@"Protect")
+      handler:^(UIContextualAction *__unused action, UIView *__unused view, void (^done)(BOOL)) {
+        [weakSelf toggleProtectionForItem:item];
+        done(YES);
+    }];
+    act.backgroundColor = isProtected ? wq_theme_secondary_text() : wq_theme_accent();
+    act.image = [UIImage systemImageNamed:isProtected ? @"lock.slash.fill" : @"lock.shield.fill"];
+    return [UISwipeActionsConfiguration configurationWithActions:@[act]];
+}
+
 - (void)openFolder:(NSString *)path title:(NSString *)title
 {
     [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:path title:title] animated:YES];
@@ -1434,10 +1542,17 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
     // Not during a scan or clean: the browser would show a tree that changes underneath it.
     if (indexPath.section == 0 || _scanning || _cleaning) return nil;
     WQCacheItem *item = self.visibleItems[(NSUInteger)indexPath.row];
+    BOOL isProtected = wq_cache_is_protected(item);
     __weak typeof(self) weakSelf = self;
     return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil
                                                     actionProvider:^UIMenu *(NSArray<UIMenuElement *> *__unused suggested) {
         NSMutableArray *actions = [NSMutableArray new];
+        [actions addObject:[UIAction actionWithTitle:isProtected ? WQLocalized(@"Unprotect from Cleaning") : WQLocalized(@"Protect from Cleaning")
+                                               image:[UIImage systemImageNamed:isProtected ? @"lock.slash" : @"lock.shield.fill"]
+                                          identifier:nil
+                                             handler:^(UIAction *__unused a) {
+            [weakSelf toggleProtectionForItem:item];
+        }]];
         if (item.crashLogs) {
             NSString *root = item.targets.firstObject;
             [actions addObject:[UIAction actionWithTitle:WQLocalizedNullable(@"Show Crash Logs in File Browser") image:[UIImage systemImageNamed:@"folder"]
@@ -1464,10 +1579,31 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
 
 #pragma mark Actions
 
-// Applies to the rows the current search shows.
+// Applies to the rows the current search shows; protected items are never selected.
 - (void)selectWhere:(BOOL (^)(WQCacheItem *item))rule
 {
-    for (WQCacheItem *it in self.visibleItems) it.selected = !it.limited && rule(it);
+    for (WQCacheItem *it in self.visibleItems) it.selected = !it.limited && !wq_cache_is_protected(it) && rule(it);
+    [self.tableView reloadData];
+    [self updateButtons];
+}
+
+- (void)applyPresetSafe50MB
+{
+    unsigned long long threshold = 50ULL * 1024 * 1024;
+    for (WQCacheItem *it in _items) {
+        it.selected = !it.limited && !wq_cache_is_protected(it) && !it.crashLogs && it.bytes >= threshold;
+    }
+    [self rebuildVisibleItems];
+    [self.tableView reloadData];
+    [self updateButtons];
+}
+
+- (void)applyPresetAllUnprotected
+{
+    for (WQCacheItem *it in _items) {
+        it.selected = !it.limited && !wq_cache_is_protected(it);
+    }
+    [self rebuildVisibleItems];
     [self.tableView reloadData];
     [self updateButtons];
 }
@@ -1484,7 +1620,7 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
     NSMutableArray<WQCacheItem *> *selected = [NSMutableArray new];
     unsigned long long sel = 0;
     for (WQCacheItem *item in _items) {
-        if (!item.selected) continue;
+        if (!item.selected || wq_cache_is_protected(item)) continue;
         [selected addObject:item];
         sel += item.bytes;
     }
@@ -1497,7 +1633,11 @@ static void wq_cache_start_shared_scan(BOOL forceFresh)
 - (void)clean
 {
     if (_scanning || _cleaning) return;
-    NSArray<WQCacheItem *> *selected = [_items filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"selected == YES"]];
+    NSMutableArray<WQCacheItem *> *selected = [NSMutableArray new];
+    for (WQCacheItem *item in _items) {
+        if (item.selected && !item.limited && !wq_cache_is_protected(item)) [selected addObject:item];
+    }
+    if (!selected.count) return;
     WQScanCancellation *cancellation = [WQScanCancellation new];
     _cleanCancellation = cancellation;
     _cleaning = YES;

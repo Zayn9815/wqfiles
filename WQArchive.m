@@ -641,3 +641,47 @@ BOOL wq_zip_extract(NSString *zipPath, NSString *outDir, WQArchiveIO *io, unsign
     if (!ok && errorText) *errorText = error ?: WQLocalized(@"Extraction failed");
     return ok;
 }
+
+@implementation WQZipEntryInfo
+@end
+
+NSArray<WQZipEntryInfo *> *wq_zip_list(NSString *zipPath, WQArchiveIO *io, NSString **errorText)
+{
+    NSString *error = nil;
+    int fd = io.openRead(zipPath);
+    if (fd < 0) {
+        if (errorText) *errorText = @(strerror(errno));
+        return nil;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        if (errorText) *errorText = WQLocalized(@"Not a regular file");
+        return nil;
+    }
+    WQZipItem *items = NULL;
+    NSUInteger count = 0;
+    if (!wq_zip_read_directory(fd, (uint64_t)st.st_size, &items, &count, &error)) {
+        close(fd);
+        if (errorText) *errorText = error ?: WQLocalized(@"Can't read the ZIP file");
+        return nil;
+    }
+    NSMutableArray<WQZipEntryInfo *> *out = [NSMutableArray arrayWithCapacity:count];
+    for (NSUInteger i = 0; i < count; i++) {
+        WQZipItem *it = &items[i];
+        NSString *name = it->name ?: @"";
+        if ([name isEqualToString:@"__MACOSX/"] || [name hasPrefix:@"__MACOSX/"]) continue;
+        BOOL unixMade = (it->madeBy >> 8) == 3;
+        mode_t mode = unixMade ? (mode_t)(it->external >> 16) : 0;
+        BOOL isDir = [name hasSuffix:@"/"] || [name hasSuffix:@"\\"] || (unixMade && S_ISDIR(mode)) || ((it->external & 0x10) != 0);
+        WQZipEntryInfo *info = [WQZipEntryInfo new];
+        info.name = name;
+        info.uncompressedSize = it->usize;
+        info.compressedSize = it->csize;
+        info.isDirectory = isDir;
+        [out addObject:info];
+    }
+    close(fd);
+    wq_zip_free_items(items, count);
+    return out;
+}

@@ -48,6 +48,7 @@
 #import "WQWebServer.h"
 #import "WQInspector.h"
 #import "WQScanTask.h"
+#import "WQSecurity.h"
 #import "WQMediaStream.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -979,6 +980,8 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSString *_path;
     NSMutableArray<NSArray<NSString *> *> *_rows;   // @[title, value]
     WQScanCancellation *_cancellation;
+    BOOL _sha256Busy, _sha256Ready;
+    BOOL _md5Busy, _md5Ready;
 }
 
 - (instancetype)initWithPath:(NSString *)path
@@ -1059,13 +1062,65 @@ static NSString *wq_info_date(struct timespec ts)
                                                    count.state == WQTreeCountLimited ? @"+" : @""]));
         }
         if (S_ISREG(st.st_mode)) {
-            show(@"SHA-256", WQLocalized(@"Calculating…"));
-            int fd = wq_open_for_reading(path);
-            if (fd < 0) { show(@"SHA-256", WQLocalized(@"The file could not be read.")); return; }
+            // On-demand checksums: zero disk reads until the user explicitly taps the row.
+            show(@"SHA-256", WQLocalized(@"Tap to calculate"));
+            show(@"MD5", WQLocalized(@"Tap to calculate"));
+        }
+    });
+}
+
+- (void)computeChecksumMD5:(BOOL)isMD5
+{
+    NSString *key = isMD5 ? @"MD5" : @"SHA-256";
+    if (isMD5) {
+        if (_md5Busy) return;
+        _md5Busy = YES;
+    } else {
+        if (_sha256Busy) return;
+        _sha256Busy = YES;
+    }
+    [self setValue:WQLocalized(@"Calculating…") forRow:key];
+    NSString *path = _path;
+    WQScanCancellation *cancellation = _cancellation;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        int fd = wq_open_for_reading(path);
+        if (fd < 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WQInfoViewController *me = weakSelf;
+                if (!me) return;
+                if (isMD5) me->_md5Busy = NO; else me->_sha256Busy = NO;
+                [me setValue:WQLocalized(@"The file could not be read.") forRow:key];
+            });
+            return;
+        }
+        uint8_t buffer[256 * 1024];
+        BOOL ok = YES;
+        NSString *hexOut = nil;
+        if (isMD5) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            CC_MD5_CTX ctx;
+            CC_MD5_Init(&ctx);
+            for (;;) {
+                if (cancellation.isCancelled) { ok = NO; break; }
+                ssize_t n = read(fd, buffer, sizeof(buffer));
+                if (n < 0 && errno == EINTR) continue;
+                if (n < 0) { ok = NO; break; }
+                if (n == 0) break;
+                CC_MD5_Update(&ctx, buffer, (CC_LONG)n);
+            }
+            unsigned char digest[CC_MD5_DIGEST_LENGTH];
+            CC_MD5_Final(digest, &ctx);
+#pragma clang diagnostic pop
+            if (ok) {
+                NSMutableString *hex = [NSMutableString stringWithCapacity:CC_MD5_DIGEST_LENGTH * 2];
+                for (int i = 0; i < CC_MD5_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+                hexOut = hex;
+            }
+        } else {
             CC_SHA256_CTX ctx;
             CC_SHA256_Init(&ctx);
-            uint8_t buffer[256 * 1024];
-            BOOL ok = YES;
             for (;;) {
                 if (cancellation.isCancelled) { ok = NO; break; }
                 ssize_t n = read(fd, buffer, sizeof(buffer));
@@ -1074,14 +1129,24 @@ static NSString *wq_info_date(struct timespec ts)
                 if (n == 0) break;
                 CC_SHA256_Update(&ctx, buffer, (CC_LONG)n);
             }
-            close(fd);
-            if (cancellation.isCancelled) return;
             unsigned char digest[CC_SHA256_DIGEST_LENGTH];
             CC_SHA256_Final(digest, &ctx);
-            NSMutableString *hex = [NSMutableString new];
-            for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
-            show(@"SHA-256", ok ? WQVerbatim(hex) : WQLocalized(@"The file could not be read."));
+            if (ok) {
+                NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+                for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+                hexOut = hex;
+            }
         }
+        close(fd);
+        if (cancellation.isCancelled) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQInfoViewController *me = weakSelf;
+            if (!me) return;
+            if (isMD5) { me->_md5Busy = NO; me->_md5Ready = ok && hexOut.length > 0; }
+            else { me->_sha256Busy = NO; me->_sha256Ready = ok && hexOut.length > 0; }
+            [me setValue:(ok && hexOut.length) ? WQVerbatim(hexOut) : WQLocalized(@"The file could not be read.") forRow:key];
+            if (ok && hexOut.length) wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        });
     });
 }
 
@@ -1095,7 +1160,7 @@ static NSString *wq_info_date(struct timespec ts)
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
 {
-    return WQLocalized(@"Tap a row to copy its value.");
+    return WQLocalized(@"Tap a row to copy its value. Tap SHA-256 or MD5 to calculate on demand, then tap again to copy.");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -1104,11 +1169,14 @@ static NSString *wq_info_date(struct timespec ts)
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"info"];
     UIListContentConfiguration *c = [UIListContentConfiguration valueCellConfiguration];
     c.prefersSideBySideTextAndSecondaryText = NO;
-    c.text = _rows[(NSUInteger)indexPath.row][0];
-    c.secondaryText = _rows[(NSUInteger)indexPath.row][1];
+    NSString *key = _rows[(NSUInteger)indexPath.row][0];
+    NSString *val = _rows[(NSUInteger)indexPath.row][1];
+    c.text = key;
+    c.secondaryText = val;
     c.secondaryTextProperties.numberOfLines = 0;
     c.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
-    c.secondaryTextProperties.color = wq_theme_secondary_text();
+    BOOL tapAction = ([key isEqualToString:@"SHA-256"] && !_sha256Ready) || ([key isEqualToString:@"MD5"] && !_md5Ready);
+    c.secondaryTextProperties.color = tapAction ? wq_theme_accent() : wq_theme_secondary_text();
     cell.contentConfiguration = c;
     return cell;
 }
@@ -1122,8 +1190,475 @@ static NSString *wq_info_date(struct timespec ts)
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSArray<NSString *> *row = _rows[(NSUInteger)indexPath.row];
+    NSString *key = row[0];
+    if ([key isEqualToString:@"SHA-256"] && !_sha256Ready) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [self computeChecksumMD5:NO];
+        return;
+    }
+    if ([key isEqualToString:@"MD5"] && !_md5Ready) {
+        wq_haptic_impact(UIImpactFeedbackStyleLight);
+        [self computeChecksumMD5:YES];
+        return;
+    }
+    UIPasteboard.generalPasteboard.string = row[1];
+    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    wq_alert(self, WQLocalized(@"Copied"), WQLocalizedFormat(@"%@ copied to clipboard.", key));
+}
+
+@end
+
+// MARK: ZIP / IPA Peek Contents (zero-extraction archive browser)
+
+@interface WQZipPeekViewController : UITableViewController <UISearchResultsUpdating>
+- (instancetype)initWithZipPath:(NSString *)zipPath;
+@end
+
+@implementation WQZipPeekViewController {
+    NSString *_zipPath;
+    NSArray<WQZipEntryInfo *> *_allEntries;
+    NSArray<WQZipEntryInfo *> *_filtered;
+    NSString *_query;
+    NSString *_status;
+    unsigned long long _totalUncompressed;
+    unsigned long long _totalCompressed;
+}
+
+- (instancetype)initWithZipPath:(NSString *)zipPath
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _zipPath = [zipPath copy];
+        self.title = [zipPath.lastPathComponent stringByAppendingString:WQLocalized(@" · Peek")];
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    if (wq_prism_enabled()) {
+        wq_prism_install_background(self);
+        self.tableView.backgroundColor = UIColor.clearColor;
+    }
+    wq_theme_apply_scroll_insets(self.tableView, 32.0);
+    UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:nil];
+    search.searchResultsUpdater = self;
+    search.obscuresBackgroundDuringPresentation = NO;
+    search.searchBar.placeholder = WQLocalized(@"Filter archive entries");
+    self.navigationItem.searchController = search;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
+    _status = WQLocalized(@"Reading archive directory…");
+    [self.tableView reloadData];
+
+    NSString *path = _zipPath;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSString *err = nil;
+        NSArray<WQZipEntryInfo *> *entries = wq_zip_list(path, wq_app_archive_io(), &err);
+        unsigned long long totalU = 0, totalC = 0;
+        for (WQZipEntryInfo *e in entries) {
+            if (!e.isDirectory) {
+                totalU += e.uncompressedSize;
+                totalC += e.compressedSize;
+            }
+        }
+        NSArray<WQZipEntryInfo *> *sorted = [entries sortedArrayUsingComparator:^NSComparisonResult(WQZipEntryInfo *a, WQZipEntryInfo *b) {
+            return [a.name localizedStandardCompare:b.name];
+        }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQZipPeekViewController *me = weakSelf;
+            if (!me) return;
+            if (!sorted) {
+                me->_status = err ?: WQLocalized(@"Can't read the ZIP file");
+                me->_allEntries = @[];
+            } else {
+                me->_allEntries = sorted;
+                me->_totalUncompressed = totalU;
+                me->_totalCompressed = totalC;
+                me->_status = sorted.count ? nil : WQLocalized(@"Archive is empty.");
+            }
+            [me applyFilter];
+            [me.tableView reloadData];
+        });
+    });
+}
+
+- (void)applyFilter
+{
+    if (!_query.length) {
+        _filtered = _allEntries ?: @[];
+        return;
+    }
+    NSMutableArray<WQZipEntryInfo *> *out = [NSMutableArray new];
+    for (WQZipEntryInfo *e in _allEntries) {
+        if ([e.name localizedCaseInsensitiveContainsString:_query]) [out addObject:e];
+    }
+    _filtered = out;
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController
+{
+    _query = searchController.searchBar.text ?: @"";
+    [self applyFilter];
+    [self.tableView reloadData];
+}
+
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger __unused)section
+{
+    return _status ? 1 : (NSInteger)_filtered.count;
+}
+
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger __unused)section
+{
+    if (_status || !_allEntries.count) return nil;
+    return WQLocalizedFormat(@"%lu entries · %@ uncompressed (%@ compressed)",
+        (unsigned long)_allEntries.count, wq_size_text(_totalUncompressed), wq_size_text(_totalCompressed));
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"zip-peek"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"zip-peek"];
+    UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
+    if (_status) {
+        c.text = _status;
+        c.textProperties.color = wq_theme_secondary_text();
+        cell.contentConfiguration = c;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+    WQZipEntryInfo *e = _filtered[(NSUInteger)indexPath.row];
+    c.text = e.name;
+    c.textProperties.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightMedium];
+    c.textProperties.numberOfLines = 2;
+    c.textProperties.color = wq_theme_primary_text();
+    if (e.isDirectory) {
+        c.secondaryText = WQLocalized(@"Folder");
+        c.image = [UIImage systemImageNamed:@"folder.fill"];
+        c.imageProperties.tintColor = wq_theme_accent();
+    } else {
+        c.secondaryText = WQLocalizedFormat(@"%@  (compressed %@)", wq_size_text(e.uncompressedSize), wq_size_text(e.compressedSize));
+        c.secondaryTextProperties.font = [UIFont monospacedDigitSystemFontOfSize:11.5 weight:UIFontWeightRegular];
+        c.image = [UIImage systemImageNamed:@"doc.fill"];
+        c.imageProperties.tintColor = wq_theme_secondary_text();
+    }
+    c.secondaryTextProperties.color = wq_theme_secondary_text();
+    cell.contentConfiguration = c;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (_status || (NSUInteger)indexPath.row >= _filtered.count) return;
+    WQZipEntryInfo *e = _filtered[(NSUInteger)indexPath.row];
+    UIPasteboard.generalPasteboard.string = e.name;
+    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+}
+
+@end
+
+// MARK: Text / JSON / Plist Diff Viewer
+
+static NSString *gWQDiffCompareSourcePath;
+
+static NSString *_Nullable wq_latest_backup_for_file(NSString *path)
+{
+    NSString *canonical = WQCanonicalVarPath(path);
+    NSString *backupRoot = wq_backup_root();
+    if (!backupRoot.length || !canonical.length) return nil;
+    NSString *rel = [canonical hasPrefix:@"/"] ? [canonical substringFromIndex:1] : canonical;
+    NSString *bucket = [backupRoot stringByAppendingPathComponent:rel];
+    NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:bucket error:nil];
+    if (!names.count) return nil;
+    NSArray<NSString *> *sorted = [names sortedArrayUsingSelector:@selector(compare:)];
+    return [bucket stringByAppendingPathComponent:sorted.lastObject];
+}
+
+static NSString *_Nullable wq_diff_readable_text(NSString *path, NSString **errorOut)
+{
+    NSString *readErr = nil;
+    NSData *data = wq_read(path, 2 * 1024 * 1024, &readErr);
+    if (!data) {
+        if (errorOut) *errorOut = readErr ?: WQLocalized(@"The file could not be read.");
+        return nil;
+    }
+    if (data.length > 2 * 1024 * 1024) {
+        if (errorOut) *errorOut = WQLocalized(@"File is larger than 2 MB (too large for text diff).");
+        return nil;
+    }
+    // Convert binary plist to pretty XML text so plist diffs are readable.
+    if (data.length >= 6 && memcmp(data.bytes, "bplist", 6) == 0) {
+        id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:nil];
+        if (plist) {
+            NSData *xml = [NSPropertyListSerialization dataWithPropertyList:plist format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+            if (xml) {
+                NSString *s = [[NSString alloc] initWithData:xml encoding:NSUTF8StringEncoding];
+                if (s) return s;
+            }
+        }
+    }
+    // Pretty-print JSON if valid so minified JSON compares cleanly line-by-line.
+    NSString *ext = path.pathExtension.lowercaseString;
+    if ([ext isEqualToString:@"json"]) {
+        id jsonObj = [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingFragmentsAllowed error:nil];
+        if (jsonObj && [NSJSONSerialization isValidJSONObject:jsonObj]) {
+            NSData *pretty = [NSJSONSerialization dataWithJSONObject:jsonObj options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys error:nil];
+            if (pretty) {
+                NSString *s = [[NSString alloc] initWithData:pretty encoding:NSUTF8StringEncoding];
+                if (s) return s;
+            }
+        }
+    }
+    NSString *utf8 = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (utf8) return utf8;
+    NSString *latin = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    if (latin) return latin;
+    if (errorOut) *errorOut = WQLocalized(@"Binary file cannot be diffed as text.");
+    return nil;
+}
+
+@interface WQDiffLine : NSObject
+@property (nonatomic) char kind;       // ' ', '-', '+'
+@property (nonatomic) NSInteger leftNo;
+@property (nonatomic) NSInteger rightNo;
+@property (nonatomic, copy) NSString *text;
+@end
+@implementation WQDiffLine
+@end
+
+static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArray<NSString *> *b)
+{
+    NSUInteger n = a.count, m = b.count;
+    NSMutableArray<WQDiffLine *> *out = [NSMutableArray new];
+    // Use exact LCS DP for moderate files (<= 550 lines per side), bounded linear fallback for huge files.
+    if (n <= 550 && m <= 550) {
+        NSUInteger cols = m + 1;
+        uint16_t *dp = calloc((n + 1) * cols, sizeof(uint16_t));
+        if (dp) {
+            for (NSInteger i = (NSInteger)n - 1; i >= 0; i--) {
+                for (NSInteger j = (NSInteger)m - 1; j >= 0; j--) {
+                    if ([a[(NSUInteger)i] isEqualToString:b[(NSUInteger)j]]) {
+                        dp[(NSUInteger)i * cols + (NSUInteger)j] = (uint16_t)(dp[((NSUInteger)i + 1) * cols + ((NSUInteger)j + 1)] + 1);
+                    } else {
+                        uint16_t down = dp[((NSUInteger)i + 1) * cols + (NSUInteger)j];
+                        uint16_t right = dp[(NSUInteger)i * cols + ((NSUInteger)j + 1)];
+                        dp[(NSUInteger)i * cols + (NSUInteger)j] = down >= right ? down : right;
+                    }
+                }
+            }
+            NSUInteger i = 0, j = 0;
+            while (i < n || j < m) {
+                WQDiffLine *dl = [WQDiffLine new];
+                if (i < n && j < m && [a[i] isEqualToString:b[j]]) {
+                    dl.kind = ' '; dl.leftNo = (NSInteger)i + 1; dl.rightNo = (NSInteger)j + 1; dl.text = a[i];
+                    i++; j++;
+                } else if (j < m && (i == n || dp[i * cols + (j + 1)] >= dp[(i + 1) * cols + j])) {
+                    dl.kind = '+'; dl.leftNo = 0; dl.rightNo = (NSInteger)j + 1; dl.text = b[j];
+                    j++;
+                } else {
+                    dl.kind = '-'; dl.leftNo = (NSInteger)i + 1; dl.rightNo = 0; dl.text = a[i];
+                    i++;
+                }
+                [out addObject:dl];
+            }
+            free(dp);
+            return out;
+        }
+    }
+    NSUInteger i = 0, j = 0;
+    while (i < n || j < m) {
+        if (i < n && j < m && [a[i] isEqualToString:b[j]]) {
+            WQDiffLine *dl = [WQDiffLine new];
+            dl.kind = ' '; dl.leftNo = (NSInteger)i + 1; dl.rightNo = (NSInteger)j + 1; dl.text = a[i];
+            [out addObject:dl];
+            i++; j++;
+        } else {
+            if (i < n) {
+                WQDiffLine *dl = [WQDiffLine new];
+                dl.kind = '-'; dl.leftNo = (NSInteger)i + 1; dl.rightNo = 0; dl.text = a[i];
+                [out addObject:dl];
+                i++;
+            }
+            if (j < m) {
+                WQDiffLine *dl = [WQDiffLine new];
+                dl.kind = '+'; dl.leftNo = 0; dl.rightNo = (NSInteger)j + 1; dl.text = b[j];
+                [out addObject:dl];
+                j++;
+            }
+        }
+    }
+    return out;
+}
+
+@interface WQDiffViewController : UITableViewController
+- (instancetype)initWithLeftPath:(NSString *)leftPath rightPath:(NSString *)rightPath;
+@end
+
+@implementation WQDiffViewController {
+    NSString *_leftPath;
+    NSString *_rightPath;
+    NSArray<WQDiffLine *> *_allLines;
+    NSArray<WQDiffLine *> *_shownLines;
+    BOOL _changesOnly;
+    NSUInteger _addedCount;
+    NSUInteger _removedCount;
+    NSString *_status;
+}
+
+- (instancetype)initWithLeftPath:(NSString *)leftPath rightPath:(NSString *)rightPath
+{
+    if ((self = [super initWithStyle:UITableViewStylePlain])) {
+        _leftPath = [leftPath copy];
+        _rightPath = [rightPath copy];
+        _changesOnly = YES;
+        self.title = WQLocalized(@"Diff Compare");
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    if (wq_prism_enabled()) {
+        wq_prism_install_background(self);
+        self.tableView.backgroundColor = UIColor.clearColor;
+    }
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+    wq_theme_apply_scroll_insets(self.tableView, 36.0);
+
+    UIBarButtonItem *modeBtn = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Full")
+                                                                style:UIBarButtonItemStylePlain
+                                                               target:self
+                                                               action:@selector(toggleChangesOnly:)];
+    UIBarButtonItem *shareBtn = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
+                                                                              target:self
+                                                                              action:@selector(shareDiff:)];
+    self.navigationItem.rightBarButtonItems = @[shareBtn, modeBtn];
+
+    _status = WQLocalized(@"Comparing files…");
+    NSString *left = _leftPath, *right = _rightPath;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSString *err = nil;
+        NSString *leftText = wq_diff_readable_text(left, &err);
+        NSString *rightText = leftText ? wq_diff_readable_text(right, &err) : nil;
+        if (!leftText || !rightText) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WQDiffViewController *me = weakSelf;
+                if (!me) return;
+                me->_status = err ?: WQLocalized(@"Unable to compare files.");
+                [me.tableView reloadData];
+            });
+            return;
+        }
+        NSArray<NSString *> *aLines = [leftText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+        NSArray<NSString *> *bLines = [rightText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+        NSArray<WQDiffLine *> *diff = wq_compute_line_diff(aLines, bLines);
+        NSUInteger added = 0, removed = 0;
+        for (WQDiffLine *dl in diff) {
+            if (dl.kind == '+') added++;
+            else if (dl.kind == '-') removed++;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQDiffViewController *me = weakSelf;
+            if (!me) return;
+            me->_allLines = diff;
+            me->_addedCount = added;
+            me->_removedCount = removed;
+            me->_status = (added == 0 && removed == 0) ? WQLocalized(@"Files are identical.") : nil;
+            [me rebuildShownLines];
+            [me.tableView reloadData];
+        });
+    });
+}
+
+- (void)rebuildShownLines
+{
+    if (!_changesOnly) {
+        _shownLines = _allLines ?: @[];
+        return;
+    }
+    NSMutableArray<WQDiffLine *> *out = [NSMutableArray new];
+    NSUInteger count = _allLines.count;
+    for (NSUInteger i = 0; i < count; i++) {
+        BOOL nearChange = NO;
+        NSUInteger lo = i >= 2 ? i - 2 : 0;
+        NSUInteger hi = MIN(count - 1, i + 2);
+        for (NSUInteger k = lo; k <= hi; k++) {
+            if (_allLines[k].kind != ' ') { nearChange = YES; break; }
+        }
+        if (nearChange) [out addObject:_allLines[i]];
+    }
+    _shownLines = out;
+}
+
+- (void)toggleChangesOnly:(UIBarButtonItem *)sender
+{
+    _changesOnly = !_changesOnly;
+    sender.title = _changesOnly ? WQLocalized(@"Full") : WQLocalized(@"Changes");
     wq_haptic_selection();
-    UIPasteboard.generalPasteboard.string = _rows[(NSUInteger)indexPath.row][1];
+    [self rebuildShownLines];
+    [self.tableView reloadData];
+}
+
+- (void)shareDiff:(UIBarButtonItem *)sender
+{
+    if (!_allLines.count) return;
+    NSMutableString *text = [NSMutableString stringWithFormat:@"--- %@\n+++ %@\n", _leftPath.lastPathComponent, _rightPath.lastPathComponent];
+    for (WQDiffLine *dl in _allLines) {
+        [text appendFormat:@"%c%@\n", dl.kind, dl.text];
+    }
+    UIActivityViewController *av = [[UIActivityViewController alloc] initWithActivityItems:@[text] applicationActivities:nil];
+    av.popoverPresentationController.barButtonItem = sender;
+    [self presentViewController:av animated:YES completion:nil];
+}
+
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger __unused)section
+{
+    return _status ? 1 : (NSInteger)_shownLines.count;
+}
+
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger __unused)section
+{
+    return WQLocalizedFormat(@"%@ vs %@  (+%lu / -%lu)",
+        _leftPath.lastPathComponent, _rightPath.lastPathComponent,
+        (unsigned long)_addedCount, (unsigned long)_removedCount);
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"diff-line"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"diff-line"];
+    UIListContentConfiguration *c = [UIListContentConfiguration cellConfiguration];
+    c.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(3, 12, 3, 12);
+    if (_status) {
+        c.text = _status;
+        c.textProperties.color = wq_theme_secondary_text();
+        cell.contentConfiguration = c;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+    WQDiffLine *dl = _shownLines[(NSUInteger)indexPath.row];
+    NSString *prefix = dl.kind == '+' ? [NSString stringWithFormat:@"+%4ld ", (long)dl.rightNo]
+                     : dl.kind == '-' ? [NSString stringWithFormat:@"-%4ld ", (long)dl.leftNo]
+                     : [NSString stringWithFormat:@" %4ld ", (long)dl.rightNo];
+    c.text = [prefix stringByAppendingString:dl.text ?: @""];
+    c.textProperties.font = [UIFont monospacedSystemFontOfSize:11.5 weight:(dl.kind == ' ' ? UIFontWeightRegular : UIFontWeightSemibold)];
+    c.textProperties.numberOfLines = 0;
+    if (dl.kind == '+') {
+        c.textProperties.color = [UIColor colorWithRed:0.35 green:0.95 blue:0.55 alpha:1.0];
+    } else if (dl.kind == '-') {
+        c.textProperties.color = [UIColor colorWithRed:1.0 green:0.42 blue:0.48 alpha:1.0];
+    } else {
+        c.textProperties.color = wq_theme_secondary_text();
+    }
+    cell.contentConfiguration = c;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    return cell;
 }
 
 @end
@@ -2568,6 +3103,9 @@ static NSString *wq_info_date(struct timespec ts)
 - (void)offerZipOpen:(WQItem *)item
 {
     UIAlertController *sheet = wq_alert_controller(WQVerbatim(item.name), nil, UIAlertControllerStyleActionSheet);
+    [sheet addAction:wq_alert_action(@"Peek Contents", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self.navigationController pushViewController:[[WQZipPeekViewController alloc] initWithZipPath:item.path] animated:YES];
+    })];
     [sheet addAction:wq_alert_action(@"Extract and Open", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         [self extractZip:item.path open:YES];
     })];
@@ -3219,6 +3757,47 @@ static NSString *wq_info_date(struct timespec ts)
             WQItem *latest = currentItem();
             if (latest) [weakSelf.navigationController pushViewController:[[WQInfoViewController alloc] initWithPath:latest.path] animated:YES];
         }]];
+        if (!current.isDir && current.isRegular) {
+            NSString *ext = current.name.pathExtension.lowercaseString;
+            if ([ext isEqualToString:@"zip"] || [ext isEqualToString:@"ipa"]) {
+                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Peek Contents") image:[UIImage systemImageNamed:@"doc.zipper"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    if (latest && weakSelf) [weakSelf.navigationController pushViewController:[[WQZipPeekViewController alloc] initWithZipPath:latest.path] animated:YES];
+                }]];
+            } else {
+                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Compare with…") image:[UIImage systemImageNamed:@"arrow.left.arrow.right"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    WQDirViewController *dirVC = weakSelf;
+                    if (!latest || !dirVC) return;
+                    UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Compare with…"), WQVerbatim(latest.name), UIAlertControllerStyleActionSheet);
+                    NSString *backup = wq_latest_backup_for_file(latest.path);
+                    if (backup.length) {
+                        [sheet addAction:wq_alert_action(WQLocalized(@"Compare with Latest Backup"), UIAlertActionStyleDefault, ^(UIAction *__unused act) {
+                            [dirVC.navigationController pushViewController:[[WQDiffViewController alloc] initWithLeftPath:backup rightPath:latest.path] animated:YES];
+                        })];
+                    }
+                    if (gWQDiffCompareSourcePath.length && ![gWQDiffCompareSourcePath isEqualToString:latest.path]) {
+                        NSString *src = [gWQDiffCompareSourcePath copy];
+                        [sheet addAction:wq_alert_action(WQLocalizedFormat(@"Compare with %@", src.lastPathComponent), UIAlertActionStyleDefault, ^(UIAction *__unused act) {
+                            [dirVC.navigationController pushViewController:[[WQDiffViewController alloc] initWithLeftPath:src rightPath:latest.path] animated:YES];
+                        })];
+                    }
+                    [sheet addAction:wq_alert_action(WQLocalized(@"Select as First File to Compare"), UIAlertActionStyleDefault, ^(UIAction *__unused act) {
+                        gWQDiffCompareSourcePath = [latest.path copy];
+                        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+                        wq_alert(dirVC, WQLocalized(@"Compare Target Set"),
+                                 WQLocalizedFormat(@"Now long-press any second text, JSON, or plist file and choose Compare with %@.", latest.name));
+                    })];
+                    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+                    UITableViewCell *cell = [dirVC.tableView cellForRowAtIndexPath:indexPath];
+                    sheet.popoverPresentationController.sourceView = cell ?: dirVC.view;
+                    sheet.popoverPresentationController.sourceRect = (cell ?: dirVC.view).bounds;
+                    [dirVC presentViewController:sheet animated:YES completion:nil];
+                }]];
+            }
+        }
         if (!current.isLink && (current.isRegular || current.isDir) && current.identity) {
             [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Copy to Folder…") image:[UIImage systemImageNamed:@"doc.on.doc"]
                                               identifier:nil handler:^(UIAction *__unused a) {
@@ -5118,6 +5697,9 @@ static void wq_apply_design(void);
     BOOL _healthRetryScheduled;
     NSDictionary *_reopenFolder;
     NSString *_availableVersion;
+    UILabel *_storageUsageLabel;
+    UILabel *_storageFreeLabel;
+    UIProgressView *_storageProgressBar;
 }
 
 - (instancetype)init
@@ -5140,12 +5722,14 @@ static void wq_apply_design(void);
     [self rebuildFavorites];
     [self rebuildSystem];
     [self updateHealthUI];
+    [self refreshDeviceStorage];
 
     __weak typeof(self) weakSelf = self;
     [NSNotificationCenter.defaultCenter addObserverForName:WQThemeDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *__unused n) {
         WQPrismHomeViewController *me = weakSelf;
         if (!me || !me.isViewLoaded) return;
         [me updateHealthUI];
+        [me refreshDeviceStorage];
         [me rebuildContainers];
         [me rebuildFavorites];
         [me rebuildSystem];
@@ -5186,6 +5770,7 @@ static void wq_apply_design(void);
     [super viewWillAppear:animated];
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     [self rebuildFavorites];
+    [self refreshDeviceStorage];
     if (!_homeCascaded && _topHeader) {
         // Header, hero and bento sections rise in one after another (30 ms apart).
         _homeCascaded = YES;
@@ -5380,7 +5965,11 @@ static void wq_apply_design(void);
     };
 
     [self buildHeroWithWrapper:insetSection];
-    [_contentStack setCustomSpacing:18 afterView:_heroView.superview ?: _heroView];
+    [_contentStack setCustomSpacing:14 afterView:_heroView.superview ?: _heroView];
+
+    UIView *storageCard = [self buildStorageSnapshotCard];
+    [_contentStack addArrangedSubview:insetSection(storageCard)];
+    [_contentStack setCustomSpacing:18 afterView:[_contentStack.arrangedSubviews lastObject]];
 
     UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), @"2×2 Grid"));
     [_contentStack addArrangedSubview:toolsHeader];
@@ -5480,6 +6069,148 @@ static void wq_apply_design(void);
     }] forControlEvents:UIControlEventTouchUpInside];
     wq_motion_add_press(btn);
     return btn;
+}
+
+- (UIView *)buildStorageSnapshotCard
+{
+    UIVisualEffectView *card = wq_theme_make_glass_card(22.0, NO);
+
+    UIImageSymbolConfiguration *sym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"internaldrive.fill" withConfiguration:sym]];
+    icon.tintColor = wq_theme_accent();
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    UILabel *heading = [UILabel new];
+    heading.text = WQLocalized(@"Device Storage");
+    heading.font = [UIFont systemFontOfSize:14.5 weight:UIFontWeightBold];
+    heading.textColor = wq_theme_primary_text();
+
+    _storageFreeLabel = [UILabel new];
+    _storageFreeLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightSemibold];
+    _storageFreeLabel.textColor = wq_theme_aurora_teal();
+    _storageFreeLabel.textAlignment = NSTextAlignmentRight;
+    [_storageFreeLabel setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[icon, heading, _storageFreeLabel]];
+    topRow.axis = UILayoutConstraintAxisHorizontal;
+    topRow.alignment = UIStackViewAlignmentCenter;
+    topRow.spacing = 8;
+
+    _storageProgressBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    _storageProgressBar.trackTintColor = wq_theme_hairline();
+    _storageProgressBar.progressTintColor = wq_theme_accent();
+    _storageProgressBar.layer.cornerRadius = 3.0;
+    _storageProgressBar.clipsToBounds = YES;
+    [_storageProgressBar.heightAnchor constraintEqualToConstant:6.0].active = YES;
+
+    _storageUsageLabel = [UILabel new];
+    _storageUsageLabel.font = [UIFont monospacedDigitSystemFontOfSize:11.5 weight:UIFontWeightMedium];
+    _storageUsageLabel.textColor = wq_theme_secondary_text();
+
+    __weak typeof(self) weakSelf = self;
+    UIButton *(^shortcutPill)(NSString *, NSString *, void (^)(void)) = ^UIButton *(NSString *title, NSString *symbol, void (^tap)(void)) {
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
+        UIImageSymbolConfiguration *s = [UIImageSymbolConfiguration configurationWithPointSize:11.5 weight:UIImageSymbolWeightSemibold];
+        cfg.image = [[UIImage systemImageNamed:symbol withConfiguration:s] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        cfg.title = title;
+        cfg.imagePadding = 5;
+        cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        cfg.baseForegroundColor = wq_theme_primary_text();
+        cfg.background.backgroundColor = [wq_theme_glass_tint() colorWithAlphaComponent:0.55];
+        cfg.background.strokeColor = wq_theme_rim();
+        cfg.background.strokeWidth = 0.5;
+        cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 8, 7, 8);
+        cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *inAttr) {
+            NSMutableDictionary *out = [inAttr mutableCopy] ?: [NSMutableDictionary new];
+            out[NSFontAttributeName] = [UIFont systemFontOfSize:11.5 weight:UIFontWeightSemibold];
+            out[NSForegroundColorAttributeName] = wq_theme_primary_text();
+            return out;
+        };
+        btn.configuration = cfg;
+        btn.tintColor = wq_theme_accent();
+        btn.titleLabel.numberOfLines = 1;
+        btn.titleLabel.adjustsFontSizeToFitWidth = YES;
+        btn.titleLabel.minimumScaleFactor = 0.75;
+        [btn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            if (tap) tap();
+        }] forControlEvents:UIControlEventTouchUpInside];
+        wq_theme_add_spring_tap(btn);
+        return btn;
+    };
+
+    UIButton *cleanBtn = shortcutPill(WQLocalized(@"Cache Cleaner"), @"sparkles", ^{
+        WQPrismHomeViewController *me = weakSelf;
+        if (me.tabBarController && me.tabBarController.viewControllers.count > 2) {
+            me.tabBarController.selectedIndex = 2;
+        }
+    });
+    UIButton *largestBtn = shortcutPill(WQLocalized(@"Largest Files"), @"chart.bar.doc.horizontal", ^{
+        WQPrismHomeViewController *me = weakSelf;
+        if (!me) return;
+        WQFolderSearchViewController *vc = [[WQFolderSearchViewController alloc]
+            initWithPath:@"/private/var/mobile/Media" query:nil readOnly:NO];
+        [me.navigationController pushViewController:vc animated:YES];
+    });
+    UIButton *wifiBtn = shortcutPill(WQLocalized(@"Wi-Fi Share"), @"wifi", ^{
+        WQPrismHomeViewController *me = weakSelf;
+        if (!me) return;
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSHomeDirectory();
+        wq_present_wifi_sharing(me, docs, WQLocalized(@"WQ Glass Documents"), nil, YES);
+    });
+
+    UIStackView *shortcuts = [[UIStackView alloc] initWithArrangedSubviews:@[cleanBtn, largestBtn, wifiBtn]];
+    shortcuts.axis = UILayoutConstraintAxisHorizontal;
+    shortcuts.distribution = UIStackViewDistributionFillEqually;
+    shortcuts.spacing = 6;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[topRow, _storageProgressBar, _storageUsageLabel, shortcuts]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 8;
+    [stack setCustomSpacing:10 afterView:_storageUsageLabel];
+    [card.contentView addSubview:stack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:14],
+        [stack.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-14],
+        [stack.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:14],
+        [stack.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-14],
+    ]];
+    return card;
+}
+
+- (void)refreshDeviceStorage
+{
+    if (!_storageUsageLabel) return;
+    // Instant O(1) volume capacity syscall — zero directory crawling.
+    NSURL *url = [NSURL fileURLWithPath:NSHomeDirectory()];
+    NSDictionary<NSURLResourceKey, id> *vals = [url resourceValuesForKeys:@[
+        NSURLVolumeTotalCapacityKey,
+        NSURLVolumeAvailableCapacityForImportantUsageKey,
+        NSURLVolumeAvailableCapacityKey,
+    ] error:nil];
+    unsigned long long total = [vals[NSURLVolumeTotalCapacityKey] unsignedLongLongValue];
+    NSNumber *availImp = vals[NSURLVolumeAvailableCapacityForImportantUsageKey];
+    unsigned long long avail = availImp ? availImp.unsignedLongLongValue
+                                        : [vals[NSURLVolumeAvailableCapacityKey] unsignedLongLongValue];
+    unsigned long long used = total > avail ? (total - avail) : 0;
+    float frac = total > 0 ? (float)((double)used / (double)total) : 0.0f;
+    _storageProgressBar.progress = MAX(0.0f, MIN(1.0f, frac));
+    _storageProgressBar.progressTintColor = frac > 0.90f ? UIColor.systemRedColor : wq_theme_accent();
+    _storageProgressBar.trackTintColor = wq_theme_hairline();
+    _storageFreeLabel.textColor = wq_theme_aurora_teal();
+    _storageUsageLabel.textColor = wq_theme_secondary_text();
+    if (total > 0) {
+        _storageFreeLabel.text = WQLocalizedFormat(@"%@ free", wq_size_text(avail));
+        _storageUsageLabel.text = WQLocalizedFormat(@"%@ of %@ used (%.0f%%)",
+            wq_size_text(used), wq_size_text(total), frac * 100.0f);
+    } else {
+        _storageFreeLabel.text = @"--";
+        _storageUsageLabel.text = WQLocalized(@"Storage information unavailable");
+    }
 }
 
 - (void)buildHeroWithWrapper:(UIView *(^)(UIView *))wrap
@@ -6782,7 +7513,7 @@ static NSString *const kWQTroubleshootingFooter =
 {
     if (section == 0) return (NSInteger)wq_theme_all_themes().count;
     if (section == 1) return (NSInteger)wq_theme_all_ui_styles().count;
-    if (section == 2) return 8;
+    if (section == 2) return 9;
     if (section == 3) return 3;
     return 1;
 }
@@ -6841,6 +7572,40 @@ static NSString *const kWQTroubleshootingFooter =
     }
     if (indexPath.section == 2) {
         if (indexPath.row == 6) {
+            NSString *bio = wq_app_lock_biometry_name();
+            c.text = WQLocalizedFormat(@"App Lock (%@)", bio);
+            c.secondaryText = WQLocalized(@"Require authentication and blur in App Switcher");
+            c.secondaryTextProperties.numberOfLines = 2;
+            c.image = [UIImage systemImageNamed:[bio isEqualToString:@"Touch ID"] ? @"touchid" : ([bio isEqualToString:@"Face ID"] ? @"faceid" : @"lock.shield")];
+            c.imageProperties.tintColor = wq_theme_accent();
+            UISwitch *lockToggle = [UISwitch new];
+            lockToggle.onTintColor = wq_theme_accent();
+            lockToggle.on = wq_app_lock_enabled();
+            __weak typeof(self) weakSelf = self;
+            [lockToggle addAction:[UIAction actionWithHandler:^(UIAction *action) {
+                UISwitch *sw = (UISwitch *)action.sender;
+                BOOL wantOn = sw.isOn;
+                NSString *reason = wantOn
+                    ? WQLocalized(@"Authenticate to enable App Lock.")
+                    : WQLocalized(@"Authenticate to disable App Lock.");
+                wq_app_lock_authenticate(reason, ^(BOOL ok, NSString *_Nullable errorText) {
+                    if (ok) {
+                        wq_app_lock_set_enabled(wantOn);
+                        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+                    } else {
+                        [sw setOn:!wantOn animated:YES];
+                        if (errorText.length && weakSelf) {
+                            wq_alert(weakSelf, WQLocalized(@"Authentication Failed"), errorText);
+                        }
+                    }
+                });
+            }] forControlEvents:UIControlEventValueChanged];
+            cell.contentConfiguration = c;
+            cell.accessoryView = lockToggle;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            return cell;
+        }
+        if (indexPath.row == 7) {
             c.text = WQLocalizedNullable(@"Sharing Password");
             c.secondaryText = wq_sharing_password().length ? WQLocalized(@"Fixed password set") : WQLocalized(@"Random each session");
             c.image = [UIImage systemImageNamed:@"wifi"];
@@ -6849,7 +7614,7 @@ static NSString *const kWQTroubleshootingFooter =
             cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return cell;
         }
-        if (indexPath.row == 7) {
+        if (indexPath.row == 8) {
             NSArray *installed = wq_inspectors_in(wq_inspectors_folder(), NULL);
             c.text = WQLocalizedNullable(@"Inspectors");
             c.secondaryText = WQLocalizedFormat(@"%lu installed", (unsigned long)installed.count);
@@ -6929,11 +7694,11 @@ static NSString *const kWQTroubleshootingFooter =
         return;
     }
     if (indexPath.section == 2) {
-        if (indexPath.row == 6) {
+        if (indexPath.row == 7) {
             wq_haptic_selection();
             __weak typeof(self) weakSelf = self;
             wq_edit_sharing_password(self, ^{ [weakSelf.tableView reloadData]; });
-        } else if (indexPath.row == 7) {
+        } else if (indexPath.row == 8) {
             wq_haptic_selection();
             NSString *folder = wq_inspectors_folder();
             [NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:nil error:nil];
@@ -8035,6 +8800,7 @@ static UIViewController *wq_make_root_view_controller(void)
     window.rootViewController = wq_make_root_view_controller();
     [window makeKeyAndVisible];
     self.window = window;
+    wq_app_lock_attach_window(window);
 }
 
 @end

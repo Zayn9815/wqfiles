@@ -42,6 +42,10 @@
 @implementation WQAppItem
 @end
 
+@interface WQAppDetailViewController : UITableViewController
+- (instancetype)initWithApp:(WQAppItem *)app owner:(WQAppsViewController *)owner;
+@end
+
 @interface WQAppsViewController () <UIDocumentPickerDelegate, UISearchControllerDelegate>
 @end
 
@@ -1539,65 +1543,8 @@ static void wq_apps_start_shared_scan(BOOL forceFresh)
     if (_busy || !self.visibleApps.count) return;
     wq_haptic_selection();
     WQAppItem *app = self.visibleApps[(NSUInteger)indexPath.row];
-    if (!app.hasAccess || !app.bundleID.length || !app.hasIdentity) {
-        NSString *why = app.hasAccess && app.bundleID.length && !app.hasIdentity
-            ? WQLocalized(@"The container identity is unavailable or changed. Backup, restore and clear are disabled for this entry.")
-            : app.hasAccess
-            ? WQLocalized(@"The container identifier is unavailable. Backup, restore and clear are disabled for this entry.")
-            : WQLocalized(@"Sandbox access is unavailable. Check the App Group and see Log; only the container path can be copied.");
-        UIAlertController *sheet = wq_alert_controller(WQVerbatim(app.name), WQVerbatim([NSString stringWithFormat:@"%@\n\n%@", app.container, why]), UIAlertControllerStyleActionSheet);
-        if (app.hasAccess) {
-            [sheet addAction:wq_alert_action(WQLocalized(@"Open Data Folder"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-                [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:app.container title:app.name] animated:YES];
-            })];
-        }
-        [sheet addAction:wq_alert_action(WQLocalized(@"Copy Container Path"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-            UIPasteboard.generalPasteboard.string = app.container;
-        })];
-        [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
-        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
-        sheet.popoverPresentationController.sourceView = cell ?: self.view;
-        sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-        [self presentViewController:sheet animated:YES completion:nil];
-        return;
-    }
-    UIAlertController *sheet = wq_alert_controller(WQVerbatim(app.name), [NSString stringWithFormat:@"%@\n%@", app.bundleID,
-                 app.sizeKnown ? WQLocalizedFormat(@"%@ of data", wq_size_text(app.bytes)) : WQLocalized(@"size unavailable")], UIAlertControllerStyleActionSheet);
-    [sheet addAction:wq_alert_action(WQLocalized(@"Back Up Data"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-        [self backUp:app then:nil];
-    })];
-    [sheet addAction:wq_alert_action(WQLocalized(@"Import as Backup…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-        [self pickImportFor:app];
-    })];
-    NSArray *backups = app.backups;
-    NSString *latest = backups.firstObject[@"path"];
-    if (latest) {
-        NSString *title = backups.count == 1 ? WQLocalizedFormat(@"Restore Backup (%@)", wq_backup_label(backups.firstObject))
-                                             : WQLocalizedFormat(@"Restore a Backup… (%lu)", (unsigned long)backups.count);
-        [sheet addAction:wq_alert_action(title, UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-            [self pickBackupToRestore:app from:[tableView cellForRowAtIndexPath:indexPath]];
-        })];
-        [sheet addAction:wq_alert_action(WQLocalized(@"Share Latest Backup (AirDrop…)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-            UITableViewCell *c = [tableView cellForRowAtIndexPath:indexPath];
-            wq_share_folder(self, latest, [NSString stringWithFormat:@"%@ %@", app.name, latest.lastPathComponent], c);
-        })];
-    }
-    if (wq_deleting_allowed()) {
-        [sheet addAction:wq_alert_action(WQLocalized(@"Clear Data…"), UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
-            [self confirmClear:app];
-        })];
-    }
-    [sheet addAction:wq_alert_action(WQLocalized(@"Open Data Folder"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-        [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:app.container title:app.name] animated:YES];
-    })];
-    [sheet addAction:wq_alert_action(WQLocalized(@"Copy Bundle ID"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-        UIPasteboard.generalPasteboard.string = app.bundleID;
-    })];
-    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
-    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
-    sheet.popoverPresentationController.sourceView = cell ?: self.view;
-    sheet.popoverPresentationController.sourceRect = (cell ?: self.view).bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+    WQAppDetailViewController *detail = [[WQAppDetailViewController alloc] initWithApp:app owner:self];
+    [self.navigationController pushViewController:detail animated:YES];
 }
 
 - (void)finish:(NSString *)title message:(NSString *)message
@@ -2312,6 +2259,401 @@ NSString *wq_recover_interrupted_restore(void)
         : [NSString stringWithFormat:@"%@, and putting the previous data back also failed (%@). It is in backup %@; see the Log.%@",
            error ?: WQLocalized(@"Some files couldn't be written"), rollbackError ?: WQLocalized(@"see Log"), safety.lastPathComponent,
            cleared ? @"" : WQLocalized(@" Recovery will run again at the next launch.")];
+}
+
+@end
+
+#pragma mark - App Detail & Collapsible Metadata Inspector Card
+
+@interface WQAppsViewController (WQAppDetailBridge)
+- (void)backUp:(WQAppItem *)app then:(void (^_Nullable)(BOOL ok))after;
+- (void)pickImportFor:(WQAppItem *)app;
+- (void)pickBackupToRestore:(WQAppItem *)app from:(UIView *_Nullable)source;
+- (void)confirmClear:(WQAppItem *)app;
+@end
+
+@implementation WQAppDetailViewController {
+    WQAppItem *_app;
+    __weak WQAppsViewController *_owner;
+    BOOL _metadataExpanded;
+    NSString *_versionText;
+    NSString *_cacheSizeText;
+    WQScanCancellation *_metaCancellation;
+    UIButton *_collapseBtn;
+    UIStackView *_metaBodyStack;
+    UILabel *_versionValueLabel;
+    UILabel *_cacheValueLabel;
+    NSArray<NSDictionary<NSString *, id> *> *_actions;
+}
+
+- (instancetype)initWithApp:(WQAppItem *)app owner:(WQAppsViewController *)owner
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _app = app;
+        _owner = owner;
+        _metadataExpanded = YES;
+        _versionText = WQLocalized(@"Checking…");
+        _cacheSizeText = WQLocalized(@"Calculating…");
+        self.title = app.name;
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    if (wq_prism_enabled()) {
+        wq_prism_install_background(self);
+        self.tableView.backgroundColor = UIColor.clearColor;
+    }
+    wq_theme_apply_scroll_insets(self.tableView, 40.0);
+    [self rebuildActions];
+    [self installMetadataHeader];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
+    [self loadLazyMetadata];
+}
+
+- (void)dealloc
+{
+    [_metaCancellation cancel];
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    [_metaCancellation cancel];
+}
+
+- (void)themeDidChange
+{
+    [self installMetadataHeader];
+    [self.tableView reloadData];
+}
+
+- (void)rebuildActions
+{
+    NSMutableArray<NSDictionary<NSString *, id> *> *list = [NSMutableArray new];
+    BOOL fullControl = _app.hasAccess && _app.bundleID.length > 0 && _app.hasIdentity;
+    if (fullControl) {
+        [list addObject:@{ @"id": @"backup", @"title": WQLocalized(@"Back Up Data"), @"symbol": @"arrow.down.doc.fill" }];
+        [list addObject:@{ @"id": @"import", @"title": WQLocalized(@"Import as Backup…"), @"symbol": @"square.and.arrow.down" }];
+        NSArray *backups = _app.backups;
+        if (backups.count) {
+            NSString *restoreTitle = backups.count == 1
+                ? WQLocalizedFormat(@"Restore Backup (%@)", wq_backup_label(backups.firstObject))
+                : WQLocalizedFormat(@"Restore a Backup… (%lu)", (unsigned long)backups.count);
+            [list addObject:@{ @"id": @"restore", @"title": restoreTitle, @"symbol": @"clock.arrow.circlepath" }];
+            [list addObject:@{ @"id": @"share_backup", @"title": WQLocalized(@"Share Latest Backup (AirDrop…)"), @"symbol": @"square.and.arrow.up" }];
+        }
+    }
+    if (_app.hasAccess) {
+        [list addObject:@{ @"id": @"open_data", @"title": WQLocalized(@"Open Data Folder"), @"symbol": @"folder.fill" }];
+        [list addObject:@{ @"id": @"open_prefs", @"title": WQLocalized(@"Open Library/Preferences"), @"symbol": @"slider.horizontal.3" }];
+    }
+    if (_app.bundleID.length) {
+        [list addObject:@{ @"id": @"copy_bid", @"title": WQLocalized(@"Copy Bundle ID"), @"symbol": @"doc.on.doc" }];
+    }
+    [list addObject:@{ @"id": @"copy_path", @"title": WQLocalized(@"Copy Container Path"), @"symbol": @"link" }];
+    if (fullControl && wq_deleting_allowed()) {
+        [list addObject:@{ @"id": @"clear", @"title": WQLocalized(@"Clear Data…"), @"symbol": @"trash.fill", @"destructive": @YES }];
+    }
+    _actions = list;
+}
+
+- (UIView *)metaRowWithLabel:(NSString *)label value:(NSString *)value monospaced:(BOOL)mono tapCopy:(BOOL)copyable outValueLabel:(UILabel *__strong _Nullable *)outLabel
+{
+    UILabel *k = [UILabel new];
+    k.text = label;
+    k.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    k.textColor = wq_theme_secondary_text();
+    [k setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [k setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    UILabel *v = [UILabel new];
+    v.text = value;
+    v.font = mono ? [UIFont monospacedSystemFontOfSize:11.5 weight:UIFontWeightMedium]
+                  : [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    v.textColor = wq_theme_primary_text();
+    v.textAlignment = NSTextAlignmentRight;
+    v.numberOfLines = mono ? 2 : 1;
+    v.lineBreakMode = mono ? NSLineBreakByTruncatingMiddle : NSLineBreakByTruncatingTail;
+    if (outLabel) *outLabel = v;
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[k, v]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentTop;
+    row.spacing = 10;
+
+    if (copyable && value.length) {
+        row.userInteractionEnabled = YES;
+        __weak typeof(self) weakSelf = self;
+        NSString *copied = [value copy];
+        NSString *lbl = [label copy];
+        UIButton *tapBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+        tapBtn.translatesAutoresizingMaskIntoConstraints = NO;
+        [tapBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            UIPasteboard.generalPasteboard.string = copied;
+            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+            if (weakSelf) {
+                wq_alert(weakSelf, WQLocalized(@"Copied"), WQLocalizedFormat(@"%@ copied to clipboard.", lbl));
+            }
+        }] forControlEvents:UIControlEventTouchUpInside];
+        UIView *wrap = [UIView new];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        [wrap addSubview:row];
+        [wrap addSubview:tapBtn];
+        [NSLayoutConstraint activateConstraints:@[
+            [row.topAnchor constraintEqualToAnchor:wrap.topAnchor],
+            [row.bottomAnchor constraintEqualToAnchor:wrap.bottomAnchor],
+            [row.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor],
+            [row.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor],
+            [tapBtn.topAnchor constraintEqualToAnchor:wrap.topAnchor],
+            [tapBtn.bottomAnchor constraintEqualToAnchor:wrap.bottomAnchor],
+            [tapBtn.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor],
+            [tapBtn.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor],
+        ]];
+        return wrap;
+    }
+    return row;
+}
+
+- (void)installMetadataHeader
+{
+    CGFloat w = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
+    UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 10)];
+    container.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UIVisualEffectView *card = wq_theme_make_glass_card(22.0, NO);
+    [container addSubview:card];
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:wq_app_icon(_app.bundleID) ?: wq_glacier_symbol_badge(@"app.dashed", 44.0)];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.layer.cornerRadius = 10.0;
+    icon.layer.cornerCurve = kCACornerCurveContinuous;
+    icon.clipsToBounds = YES;
+
+    UILabel *title = [UILabel new];
+    title.text = WQLocalized(@"App Metadata");
+    title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+    title.textColor = wq_theme_primary_text();
+
+    UILabel *sub = [UILabel new];
+    sub.text = _app.bundleID.length ? _app.bundleID : _app.container.lastPathComponent;
+    sub.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
+    sub.textColor = wq_theme_secondary_text();
+    sub.lineBreakMode = NSLineBreakByTruncatingMiddle;
+
+    UIStackView *titleStack = [[UIStackView alloc] initWithArrangedSubviews:@[title, sub]];
+    titleStack.axis = UILayoutConstraintAxisVertical;
+    titleStack.spacing = 2;
+
+    _collapseBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIImageSymbolConfiguration *chevSym = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightSemibold];
+    [_collapseBtn setImage:[UIImage systemImageNamed:_metadataExpanded ? @"chevron.up" : @"chevron.down" withConfiguration:chevSym]
+                  forState:UIControlStateNormal];
+    _collapseBtn.tintColor = wq_theme_accent();
+    [_collapseBtn addTarget:self action:@selector(toggleMetadataExpanded) forControlEvents:UIControlEventTouchUpInside];
+    [_collapseBtn setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    UIStackView *hdrRow = [[UIStackView alloc] initWithArrangedSubviews:@[icon, titleStack, _collapseBtn]];
+    hdrRow.axis = UILayoutConstraintAxisHorizontal;
+    hdrRow.alignment = UIStackViewAlignmentCenter;
+    hdrRow.spacing = 12;
+
+    UILabel *verLbl = nil;
+    UILabel *cacheLbl = nil;
+    NSString *dataText = _app.sizeKnown ? wq_size_text(_app.bytes) : WQLocalized(@"Unavailable");
+    NSString *backupsText = _app.backups.count
+        ? WQLocalizedFormat(@"%lu (%@)", (unsigned long)_app.backups.count, wq_backup_label(_app.backups.firstObject))
+        : WQLocalized(@"None");
+
+    NSMutableArray<UIView *> *bodyRows = [NSMutableArray arrayWithArray:@[
+        [self metaRowWithLabel:WQLocalized(@"Bundle ID") value:_app.bundleID ?: WQLocalized(@"Unknown") monospaced:YES tapCopy:_app.bundleID.length > 0 outValueLabel:nil],
+        [self metaRowWithLabel:WQLocalized(@"Version") value:_versionText monospaced:NO tapCopy:NO outValueLabel:&verLbl],
+        [self metaRowWithLabel:WQLocalized(@"Container Path") value:_app.container ?: @"" monospaced:YES tapCopy:_app.container.length > 0 outValueLabel:nil],
+        [self metaRowWithLabel:WQLocalized(@"Data Size") value:dataText monospaced:NO tapCopy:NO outValueLabel:nil],
+        [self metaRowWithLabel:WQLocalized(@"Cache Size") value:_cacheSizeText monospaced:NO tapCopy:NO outValueLabel:&cacheLbl],
+        [self metaRowWithLabel:WQLocalized(@"Backups") value:backupsText monospaced:NO tapCopy:NO outValueLabel:nil],
+    ]];
+    _versionValueLabel = verLbl;
+    _cacheValueLabel = cacheLbl;
+
+    if (_app.hasAccess) {
+        UIButton *prefsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        wq_theme_style_secondary_button(prefsBtn, WQLocalized(@"Open Library/Preferences"), @"slider.horizontal.3");
+        [prefsBtn addTarget:self action:@selector(openPreferencesShortcut) forControlEvents:UIControlEventTouchUpInside];
+        [bodyRows addObject:prefsBtn];
+    }
+
+    _metaBodyStack = [[UIStackView alloc] initWithArrangedSubviews:bodyRows];
+    _metaBodyStack.axis = UILayoutConstraintAxisVertical;
+    _metaBodyStack.spacing = 8;
+    _metaBodyStack.hidden = !_metadataExpanded;
+
+    UIStackView *outer = [[UIStackView alloc] initWithArrangedSubviews:@[hdrRow, _metaBodyStack]];
+    outer.translatesAutoresizingMaskIntoConstraints = NO;
+    outer.axis = UILayoutConstraintAxisVertical;
+    outer.spacing = 12;
+    [card.contentView addSubview:outer];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [icon.widthAnchor constraintEqualToConstant:44],
+        [icon.heightAnchor constraintEqualToConstant:44],
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:8],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8],
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-16],
+        [outer.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:14],
+        [outer.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-14],
+        [outer.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:14],
+        [outer.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-14],
+    ]];
+
+    NSLayoutConstraint *widthLock = [container.widthAnchor constraintEqualToConstant:w];
+    widthLock.active = YES;
+    CGSize fit = [container systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height)
+                          withHorizontalFittingPriority:UILayoutPriorityRequired
+                                verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    widthLock.active = NO;
+    container.frame = CGRectMake(0, 0, w, MAX(76.0, ceil(fit.height)));
+    self.tableView.tableHeaderView = container;
+}
+
+- (void)toggleMetadataExpanded
+{
+    _metadataExpanded = !_metadataExpanded;
+    wq_haptic_selection();
+    [self installMetadataHeader];
+}
+
+- (void)openPreferencesShortcut
+{
+    wq_haptic_selection();
+    NSString *prefsPath = [_app.container stringByAppendingPathComponent:@"Library/Preferences"];
+    WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:prefsPath
+                                                                   title:[_app.name stringByAppendingString:@" · Preferences"]];
+    [self.navigationController pushViewController:dir animated:YES];
+}
+
+- (void)loadLazyMetadata
+{
+    [_metaCancellation cancel];
+    WQScanCancellation *cancel = [WQScanCancellation new];
+    _metaCancellation = cancel;
+    WQAppItem *app = _app;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        if (cancel.isCancelled) return;
+        // 1. Read app version from container metadata or Preferences plist if available.
+        NSString *ver = nil;
+        if (app.bundleID.length) {
+            NSString *prefsPlist = [[app.container stringByAppendingPathComponent:@"Library/Preferences"]
+                stringByAppendingPathComponent:[app.bundleID stringByAppendingString:@".plist"]];
+            NSData *data = wq_read(prefsPlist, 256 * 1024, NULL);
+            if (data.length) {
+                id obj = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:nil];
+                if ([obj isKindOfClass:NSDictionary.class]) {
+                    NSString *v = obj[@"CFBundleShortVersionString"] ?: obj[@"appVersion"] ?: obj[@"lastVersion"];
+                    if ([v isKindOfClass:NSString.class] && v.length) ver = v;
+                }
+            }
+        }
+        if (!ver.length) {
+            ver = app.installState == WQInstallInstalled ? WQLocalized(@"Installed")
+                : app.installState == WQInstallOffloaded ? WQLocalized(@"Offloaded")
+                : WQLocalized(@"Unknown");
+        }
+        // 2. Measure Library/Caches + tmp on efficiency core (cancellable).
+        NSString *cacheStr = WQLocalized(@"Unavailable");
+        if (app.hasAccess && !cancel.isCancelled) {
+            unsigned long long cBytes = 0, tBytes = 0;
+            BOOL cOk = NO, tOk = NO;
+            wq_dir_size_cancellable([app.container stringByAppendingPathComponent:@"Library/Caches"], cancel, &cBytes, &cOk);
+            if (!cancel.isCancelled) {
+                wq_dir_size_cancellable([app.container stringByAppendingPathComponent:@"tmp"], cancel, &tBytes, &tOk);
+            }
+            if (!cancel.isCancelled) {
+                cacheStr = wq_size_text(cBytes + tBytes);
+            }
+        }
+        if (cancel.isCancelled) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQAppDetailViewController *me = weakSelf;
+            if (!me || cancel.isCancelled) return;
+            me->_versionText = ver;
+            me->_cacheSizeText = cacheStr;
+            me->_versionValueLabel.text = ver;
+            me->_cacheValueLabel.text = cacheStr;
+        });
+    });
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 1; }
+
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger __unused)section
+{
+    return (NSInteger)_actions.count;
+}
+
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger __unused)section
+{
+    return WQLocalized(@"Actions");
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"app-act"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"app-act"];
+    NSDictionary *act = _actions[(NSUInteger)indexPath.row];
+    UIListContentConfiguration *c = [UIListContentConfiguration cellConfiguration];
+    c.text = act[@"title"];
+    c.image = [UIImage systemImageNamed:act[@"symbol"]];
+    BOOL destructive = [act[@"destructive"] boolValue];
+    c.textProperties.color = destructive ? UIColor.systemRedColor : wq_theme_primary_text();
+    c.imageProperties.tintColor = destructive ? UIColor.systemRedColor : wq_theme_accent();
+    cell.contentConfiguration = c;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    wq_haptic_selection();
+    NSDictionary *act = _actions[(NSUInteger)indexPath.row];
+    NSString *aid = act[@"id"];
+    WQAppsViewController *owner = _owner;
+    if ([aid isEqualToString:@"backup"]) {
+        [self.navigationController popViewControllerAnimated:YES];
+        [owner backUp:_app then:nil];
+    } else if ([aid isEqualToString:@"import"]) {
+        [self.navigationController popViewControllerAnimated:YES];
+        [owner pickImportFor:_app];
+    } else if ([aid isEqualToString:@"restore"]) {
+        [self.navigationController popViewControllerAnimated:YES];
+        [owner pickBackupToRestore:_app from:owner.view];
+    } else if ([aid isEqualToString:@"share_backup"]) {
+        NSString *latest = _app.backups.firstObject[@"path"];
+        if (latest) {
+            UITableViewCell *c = [tableView cellForRowAtIndexPath:indexPath];
+            wq_share_folder(self, latest, [NSString stringWithFormat:@"%@ %@", _app.name, latest.lastPathComponent], c);
+        }
+    } else if ([aid isEqualToString:@"open_data"]) {
+        [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:_app.container title:_app.name] animated:YES];
+    } else if ([aid isEqualToString:@"open_prefs"]) {
+        [self openPreferencesShortcut];
+    } else if ([aid isEqualToString:@"copy_bid"]) {
+        UIPasteboard.generalPasteboard.string = _app.bundleID;
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    } else if ([aid isEqualToString:@"copy_path"]) {
+        UIPasteboard.generalPasteboard.string = _app.container;
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    } else if ([aid isEqualToString:@"clear"]) {
+        [self.navigationController popViewControllerAnimated:YES];
+        [owner confirmClear:_app];
+    }
 }
 
 @end

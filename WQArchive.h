@@ -71,6 +71,18 @@ BOOL wq_zip_extract(NSString *zipPath, NSString *outDir, WQArchiveIO *io, unsign
                     NSUInteger *_Nullable files, NSUInteger *_Nullable skipped,
                     NSString *_Nullable *_Nullable errorText);
 
+// Metadata for one entry inside a ZIP archive (used for Peek Contents without extracting).
+@interface WQZipEntryInfo : NSObject
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic) unsigned long long uncompressedSize;
+@property (nonatomic) unsigned long long compressedSize;
+@property (nonatomic) BOOL isDirectory;
+@end
+
+// Lists entries from the ZIP central directory without extracting any data.
+NSArray<WQZipEntryInfo *> *_Nullable wq_zip_list(NSString *zipPath, WQArchiveIO *io,
+                                                 NSString *_Nullable *_Nullable errorText);
+
 // A safe relative path for an entry name ("a/b/c"; backslashes count as
 // separators), or nil for absolute names, "." / ".." components or empty names.
 NSString *_Nullable wq_zip_safe_entry_path(NSString *name);
