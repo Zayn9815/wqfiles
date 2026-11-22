@@ -1381,13 +1381,12 @@ static int wq_sqlite_edit_authorizer(void *__unused context, int action, const c
                 [tv.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor],
             ]];
             __weak UIViewController *weakVC = vc;
-            vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Copy")
-                                                                                    image:[UIImage systemImageNamed:@"doc.on.doc"]
-                                                                            primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+                [UIAction actionWithTitle:WQLocalized(@"Copy") image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil handler:^(UIAction *__unused a) {
                 UIPasteboard.generalPasteboard.string = text;
                 wq_haptic_notify(UINotificationFeedbackTypeSuccess);
                 wq_alert(weakVC, WQLocalized(@"Copied"), WQLocalized(@"Database schema DDL copied to clipboard."));
-            }] menu:nil];
+            }]];
             [me.navigationController pushViewController:vc animated:YES];
         });
     });

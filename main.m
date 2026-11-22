@@ -4018,9 +4018,12 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                         WQItem *latest = currentItem();
                         WQDirViewController *dirVC = weakSelf;
                         if (!latest || !dirVC) return;
-                        NSString *dst = [destDir stringByAppendingPathComponent:latest.name];
                         [dirVC runIO:^BOOL(NSString **error) {
-                            return wq_copy(latest.path, dst, error);
+                            NSString *freeName = wq_free_name_in(destDir, latest.name, [NSMutableSet new]);
+                            if (!freeName) { if (error) *error = WQLocalized(@"No free name in destination folder"); return NO; }
+                            NSString *dst = [destDir stringByAppendingPathComponent:freeName];
+                            return latest.isDir ? wq_copy_tree_new(latest.path, dst, nil, error)
+                                                : wq_create_file_from(dst, latest.path, error);
                         } failure:WQLocalized(@"Copy to Tab Failed")];
                     }]];
                     if ([strongSelf canEditHere]) {

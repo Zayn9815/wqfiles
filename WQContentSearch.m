@@ -395,13 +395,12 @@ static BOOL wq_data_looks_binary(NSData *data)
     NSString *parentDir = match.path.stringByDeletingLastPathComponent;
     BOOL ro = _readOnly;
     __weak typeof(self) weakSelf = self;
-    vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Open Folder")
-                                                                            image:[UIImage systemImageNamed:@"folder"]
-                                                                    primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Open Folder") image:[UIImage systemImageNamed:@"folder"] identifier:nil handler:^(UIAction *__unused a) {
         WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:parentDir title:nil];
         dir.readOnly = ro;
         [weakSelf.navigationController pushViewController:dir animated:YES];
-    }] menu:nil];
+    }]];
     [self.navigationController pushViewController:vc animated:YES];
 }
 

@@ -227,13 +227,12 @@ static NSString *wq_shell_single_quote(NSString *s)
 
     NSString *copyText = [body copy] ?: @"";
     __weak UIViewController *weakVC = vc;
-    vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Copy")
-                                                                            image:[UIImage systemImageNamed:@"doc.on.doc"]
-                                                                    primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    vc.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Copy") image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil handler:^(UIAction *__unused a) {
         UIPasteboard.generalPasteboard.string = copyText;
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         wq_alert(weakVC, WQLocalized(@"Copied"), WQLocalized(@"Content copied to clipboard."));
-    }] menu:nil];
+    }]];
     [self.navigationController pushViewController:vc animated:YES];
 }
 

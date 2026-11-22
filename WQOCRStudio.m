@@ -212,16 +212,14 @@ static NSString *wq_run_vision_ocr_on_cgimage(CGImageRef cgImg, NSError **outErr
                                                                                          primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
         [weakVC dismissViewControllerAnimated:YES completion:nil];
     }]];
-    UIBarButtonItem *copyBtn = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Copy")
-                                                                image:[UIImage systemImageNamed:@"doc.on.doc"]
-                                                        primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    UIBarButtonItem *copyBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Copy") image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil handler:^(UIAction *__unused a) {
         UIPasteboard.generalPasteboard.string = textCopy;
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         wq_alert(weakVC, WQLocalized(@"Copied"), WQLocalized(@"Extracted OCR text copied to clipboard."));
-    }] menu:nil];
-    UIBarButtonItem *saveBtn = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Save .txt")
-                                                                image:[UIImage systemImageNamed:@"square.and.arrow.down"]
-                                                        primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+    }]];
+    UIBarButtonItem *saveBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Save .txt") image:[UIImage systemImageNamed:@"square.and.arrow.down"] identifier:nil handler:^(UIAction *__unused a) {
         NSString *base = srcName.stringByDeletingPathExtension ?: @"ocr";
         NSString *outPath = [wq_ocr_output_dir() stringByAppendingPathComponent:[base stringByAppendingString:@"_OCR.txt"]];
         BOOL ok = [textCopy writeToFile:outPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -231,7 +229,7 @@ static NSString *wq_run_vision_ocr_on_cgimage(CGImageRef cgImg, NSError **outErr
             share.popoverPresentationController.sourceView = weakVC.view;
             [weakVC presentViewController:share animated:YES completion:nil];
         }
-    }] menu:nil];
+    }]];
     vc.navigationItem.rightBarButtonItems = @[copyBtn, saveBtn];
 
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
