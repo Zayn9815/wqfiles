@@ -199,10 +199,11 @@ static NSDictionary<NSString *, NSString *> *wq_headers_for_sniffed(WQSniffedMed
     if (_media.count) {
         self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
             [UIAction actionWithTitle:WQLocalized(@"Clear") image:nil identifier:nil handler:^(UIAction *__unused a) {
-            if (weakSelf) {
-                if (weakSelf->_onClear) weakSelf->_onClear();
-                weakSelf->_media = @[];
-                [weakSelf.tableView reloadData];
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf) {
+                if (strongSelf->_onClear) strongSelf->_onClear();
+                strongSelf->_media = @[];
+                [strongSelf.tableView reloadData];
             }
         }]];
     }
