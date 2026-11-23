@@ -418,13 +418,14 @@ private fun ClientScreen(
             try {
                 val c = TransferClient(cleanEp, cleanPin)
                 val info = c.getInfo()
-                prefs.edit().putString("last_endpoint", cleanEp).putString("last_pin", cleanPin).apply()
+                endpoint = c.resolvedEndpoint
+                prefs.edit().putString("last_endpoint", c.resolvedEndpoint).putString("last_pin", cleanPin).apply()
                 client = c
                 remoteInfo = info
                 currentPath = ""
                 activeCategory = "All"
                 searchQuery = ""
-                AppLogger.info("Client", "Connected to ${info.device} (${info.osSummary}) at $cleanEp · /${info.root}")
+                AppLogger.info("Client", "Connected to ${info.device} (${info.osSummary}) at ${c.resolvedEndpoint} · /${info.root}")
                 refreshList(c, "")
             } catch (e: Exception) {
                 AppLogger.error("Client", "Connect failed to $cleanEp", e)
@@ -592,6 +593,8 @@ private fun ClientScreen(
         }
     }
 
+    val hostState by TransferForegroundService.server.state.collectAsState()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -623,10 +626,12 @@ private fun ClientScreen(
                         Text(
                             text = if (remoteInfo != null) {
                                 "Free: ${ProtocolUtils.formatBytes(remoteInfo!!.freeBytes)} / ${ProtocolUtils.formatBytes(remoteInfo!!.totalBytes)}"
+                            } else if (hostState.isRunning) {
+                                "This Android Live: ${hostState.ipAddress}:${hostState.port} · PIN ${hostState.pin}"
                             } else {
-                                "v2.0 · High-Speed iPhone · Android · PC"
+                                "v3.0 · High-Speed iPhone · Android · PC"
                             },
-                            color = if (remoteInfo != null) SuccessGreen else AccentCyan,
+                            color = if (remoteInfo != null || hostState.isRunning) SuccessGreen else AccentCyan,
                             fontSize = 11.5.sp
                         )
                     }
@@ -645,6 +650,20 @@ private fun ClientScreen(
                             border = BorderStroke(1.dp, DangerRed)
                         ) {
                             Text("Disconnect", color = Color(0xFFFCA5A5), fontSize = 12.sp)
+                        }
+                    } else if (!hostState.isRunning) {
+                        OutlinedButton(
+                            onClick = {
+                                val sharedPath = prefs.getString("host_shared_path", null)
+                                    ?: Environment.getExternalStorageDirectory().absolutePath
+                                val sharedLabel = prefs.getString("host_shared_label", "Internal Storage") ?: "Internal Storage"
+                                val fixedPin = prefs.getString("host_fixed_pin", "") ?: ""
+                                val pinToUse = fixedPin.trim().takeIf { it.length in 4..8 } ?: TransferServer.generateRandomPin()
+                                TransferForegroundService.startHost(context, File(sharedPath), sharedLabel, pinToUse)
+                            },
+                            border = BorderStroke(1.dp, AccentEmerald)
+                        ) {
+                            Text("Share This Phone", color = SuccessGreen, fontSize = 11.sp)
                         }
                     }
                 }

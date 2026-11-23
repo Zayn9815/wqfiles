@@ -131,7 +131,7 @@ class TransferServer {
 
         startAcceptLoop(bound)
         startUdpDiscovery()
-        log("Android Host ready at http://$ip:$chosenPort · PIN $pin · Sharing \"$rootLabel\"")
+        log("Android Host ready at http://$ip:$chosenPort · PIN $pin · Sharing \"$rootLabel\" (ifaces: ${getActiveInterfacesSummary()})")
         return true
     }
 
@@ -624,7 +624,39 @@ class TransferServer {
 
         fun generateRandomPin(): String = (1000 + rng.nextInt(9000)).toString()
 
+        private fun isPrivateIpv4(ip: String): Boolean {
+            if (ip.startsWith("192.168.") || ip.startsWith("10.")) return true
+            if (ip.startsWith("172.")) {
+                val second = ip.split('.').getOrNull(1)?.toIntOrNull() ?: return false
+                return second in 16..31
+            }
+            return false
+        }
+
+        fun getActiveInterfacesSummary(): String {
+            val items = ArrayList<String>()
+            try {
+                val ifaces = NetworkInterface.getNetworkInterfaces()
+                while (ifaces != null && ifaces.hasMoreElements()) {
+                    val ni = ifaces.nextElement()
+                    if (!ni.isUp || ni.isLoopback) continue
+                    val addrs = ni.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val a = addrs.nextElement()
+                        if (a is Inet4Address && !a.isLoopbackAddress) {
+                            val ip = a.hostAddress ?: continue
+                            items.add("${ni.name}=$ip")
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+            return if (items.isEmpty()) "none" else items.joinToString(", ")
+        }
+
         fun detectLanIpv4(): String {
+            var wifiIp = ""
+            var hotspotIp = ""
+            var ethOrUsbIp = ""
             var fallback = ""
             try {
                 val ifaces = NetworkInterface.getNetworkInterfaces()
@@ -638,15 +670,25 @@ class TransferServer {
                         if (a is Inet4Address && !a.isLoopbackAddress) {
                             val ip = a.hostAddress ?: continue
                             if (ip.startsWith("169.254.")) continue
-                            if (name.startsWith("wlan") || name.startsWith("wifi") || name.startsWith("eth")) {
-                                return ip
+                            when {
+                                (name == "wlan0" || name.startsWith("wifi")) && isPrivateIpv4(ip) -> {
+                                    if (wifiIp.isEmpty()) wifiIp = ip
+                                }
+                                (name.startsWith("ap") || name.startsWith("swlan") || name.startsWith("wlan") || name.startsWith("bridge") || name.startsWith("p2p")) && isPrivateIpv4(ip) -> {
+                                    if (hotspotIp.isEmpty()) hotspotIp = ip
+                                }
+                                (name.startsWith("rndis") || name.startsWith("eth") || name.startsWith("usb")) && isPrivateIpv4(ip) -> {
+                                    if (ethOrUsbIp.isEmpty()) ethOrUsbIp = ip
+                                }
+                                !name.startsWith("rmnet") && !name.startsWith("ccmni") && !name.startsWith("tun") && isPrivateIpv4(ip) -> {
+                                    if (fallback.isEmpty()) fallback = ip
+                                }
                             }
-                            if (fallback.isEmpty()) fallback = ip
                         }
                     }
                 }
             } catch (_: Exception) {}
-            return fallback
+            return wifiIp.ifEmpty { hotspotIp.ifEmpty { ethOrUsbIp.ifEmpty { fallback } } }
         }
     }
 }

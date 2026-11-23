@@ -120,16 +120,32 @@ class DiscoveryService(
     }
 
     fun sendProbeNow() {
-        scope.launch { sendProbeInternal() }
+        scope.launch { sendProbeInternal(unicastSweep = true) }
     }
 
-    private fun sendProbeInternal() {
+    private fun sendProbeInternal(unicastSweep: Boolean = false) {
         val s = socket ?: return
         val probe = "WQGLASS_DISCOVER".toByteArray(Charsets.UTF_8)
         for (target in getBroadcastAddresses()) {
             try {
                 s.send(DatagramPacket(probe, probe.size, target, ProtocolUtils.DISCOVERY_PORT))
             } catch (_: Exception) {
+            }
+        }
+        if (unicastSweep) {
+            val localIp = TransferServer.detectLanIpv4()
+            val parts = localIp.split('.')
+            if (parts.size == 4) {
+                val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
+                val selfHost = parts[3].toIntOrNull() ?: -1
+                for (host in 1..254) {
+                    if (host == selfHost) continue
+                    try {
+                        val addr = InetAddress.getByName("$prefix.$host")
+                        s.send(DatagramPacket(probe, probe.size, addr, ProtocolUtils.DISCOVERY_PORT))
+                    } catch (_: Exception) {
+                    }
+                }
             }
         }
     }
@@ -186,6 +202,13 @@ class DiscoveryService(
                     for (ia in ni.interfaceAddresses) {
                         val b = ia.broadcast
                         if (b is Inet4Address) out.add(b)
+                        val a = ia.address
+                        if (a is Inet4Address && !a.isLoopbackAddress) {
+                            val parts = (a.hostAddress ?: "").split('.')
+                            if (parts.size == 4 && (parts[0] == "192" || parts[0] == "10" || parts[0] == "172")) {
+                                runCatching { out.add(InetAddress.getByName("${parts[0]}.${parts[1]}.${parts[2]}.255")) }
+                            }
+                        }
                     }
                 }
             } catch (_: Exception) {

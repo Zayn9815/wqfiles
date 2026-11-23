@@ -60,12 +60,25 @@ static NSString *wq_win_selected_outbox_dir(void)
     return outbox;
 }
 
-static NSString *wq_win_wifi_ipv4(void)
+static BOOL wq_win_is_private_ipv4(NSString *ip)
+{
+    if (!ip.length) return NO;
+    if ([ip hasPrefix:@"192.168."] || [ip hasPrefix:@"10."]) return YES;
+    if ([ip hasPrefix:@"172."]) {
+        NSArray<NSString *> *parts = [ip componentsSeparatedByString:@"."];
+        if (parts.count >= 2) {
+            NSInteger second = parts[1].integerValue;
+            if (second >= 16 && second <= 31) return YES;
+        }
+    }
+    return NO;
+}
+
+static NSString *wq_win_all_network_interfaces_summary(void)
 {
     struct ifaddrs *addrs = NULL;
-    if (getifaddrs(&addrs) != 0) return nil;
-    NSString *fallback = nil;
-    NSString *wifi = nil;
+    if (getifaddrs(&addrs) != 0) return @"none";
+    NSMutableArray<NSString *> *items = [NSMutableArray new];
     for (struct ifaddrs *cur = addrs; cur; cur = cur->ifa_next) {
         if (!cur->ifa_addr || cur->ifa_addr->sa_family != AF_INET) continue;
         if (!(cur->ifa_flags & IFF_UP) || (cur->ifa_flags & IFF_LOOPBACK)) continue;
@@ -73,17 +86,42 @@ static NSString *wq_win_wifi_ipv4(void)
         struct sockaddr_in *sin = (struct sockaddr_in *)cur->ifa_addr;
         if (!inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) continue;
         NSString *ip = [NSString stringWithUTF8String:buf];
+        NSString *name = cur->ifa_name ? [NSString stringWithUTF8String:cur->ifa_name] : @"?";
+        [items addObject:[NSString stringWithFormat:@"%@=%@", name, ip]];
+    }
+    freeifaddrs(addrs);
+    return items.count ? [items componentsJoinedByString:@", "] : @"none";
+}
+
+static NSString *wq_win_wifi_ipv4(void)
+{
+    struct ifaddrs *addrs = NULL;
+    if (getifaddrs(&addrs) != 0) return nil;
+    NSString *wifi = nil;
+    NSString *hotspot = nil;
+    NSString *enFallback = nil;
+    NSString *anyPrivate = nil;
+    for (struct ifaddrs *cur = addrs; cur; cur = cur->ifa_next) {
+        if (!cur->ifa_addr || cur->ifa_addr->sa_family != AF_INET) continue;
+        if (!(cur->ifa_flags & IFF_UP) || (cur->ifa_flags & IFF_LOOPBACK)) continue;
+        char buf[INET_ADDRSTRLEN];
+        struct sockaddr_in *sin = (struct sockaddr_in *)cur->ifa_addr;
+        if (!inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) continue;
+        NSString *ip = [NSString stringWithUTF8String:buf];
+        if ([ip hasPrefix:@"169.254."]) continue;
         NSString *name = cur->ifa_name ? [NSString stringWithUTF8String:cur->ifa_name] : @"";
-        if ([name isEqualToString:@"en0"]) {
+        if ([name isEqualToString:@"en0"] && wq_win_is_private_ipv4(ip)) {
             wifi = ip;
-            break;
-        }
-        if ([name hasPrefix:@"en"] || [name hasPrefix:@"bridge"]) {
-            fallback = ip;
+        } else if (([name hasPrefix:@"bridge"] || [name hasPrefix:@"ap"]) && wq_win_is_private_ipv4(ip)) {
+            if (!hotspot) hotspot = ip;
+        } else if ([name hasPrefix:@"en"] && wq_win_is_private_ipv4(ip)) {
+            if (!enFallback) enFallback = ip;
+        } else if (![name hasPrefix:@"pdp_ip"] && ![name hasPrefix:@"utun"] && wq_win_is_private_ipv4(ip)) {
+            if (!anyPrivate) anyPrivate = ip;
         }
     }
     freeifaddrs(addrs);
-    return wifi ?: fallback;
+    return wifi ?: hotspot ?: enFallback ?: anyPrivate;
 }
 
 static NSString *wq_win_random_pin(void)
@@ -372,6 +410,20 @@ static NSString *wq_win_web_ui_html(void)
         bcast.sin_port = htons(kWQWinDiscoveryPort);
         bcast.sin_addr.s_addr = htonl(INADDR_BROADCAST);
         sendto(ufd, pkt.bytes, pkt.length, 0, (struct sockaddr *)&bcast, sizeof(bcast));
+
+        // Also send to the directed /24 subnet broadcast (e.g. 192.168.128.255) for hotspots/routers
+        NSString *myIP = me->_ipAddress;
+        NSArray<NSString *> *parts = [myIP componentsSeparatedByString:@"."];
+        if (parts.count == 4) {
+            NSString *subBcast = [NSString stringWithFormat:@"%@.%@.%@.255", parts[0], parts[1], parts[2]];
+            struct sockaddr_in sb;
+            memset(&sb, 0, sizeof(sb));
+            sb.sin_family = AF_INET;
+            sb.sin_port = htons(kWQWinDiscoveryPort);
+            if (inet_pton(AF_INET, subBcast.UTF8String, &sb.sin_addr) == 1) {
+                sendto(ufd, pkt.bytes, pkt.length, 0, (struct sockaddr *)&sb, sizeof(sb));
+            }
+        }
     });
     _beaconTimer = bt;
     dispatch_resume(bt);
@@ -408,7 +460,9 @@ static NSString *wq_win_web_ui_html(void)
         close(s);
     }
     if (fd < 0) {
-        if (errorOut) *errorOut = WQLocalized(@"Could not bind a local Wi-Fi / USB transfer port.");
+        NSString *msg = WQLocalized(@"Could not bind a local Wi-Fi / USB transfer port.");
+        wq_log_error(@"HostServer", @"%@ (errno=%d · ifaces: %@)", msg, errno, wq_win_all_network_interfaces_summary());
+        if (errorOut) *errorOut = msg;
         return NO;
     }
 
@@ -454,6 +508,8 @@ static NSString *wq_win_web_ui_html(void)
     if (wifiAvailable) {
         [self startUDPDiscovery];
     }
+    [self emitActivity:[NSString stringWithFormat:@"iOS Host ready at http://%@:%u · PIN %@ · Sharing /%@ (ifaces: %@)",
+                        _ipAddress, (unsigned)_port, _pin, _rootLabel ?: @"Downloads", wq_win_all_network_interfaces_summary()]];
     return YES;
 }
 
@@ -1084,67 +1140,103 @@ static NSString *wq_win_speed_text(double bytesPerSec)
     dispatch_async(_queue, ^{
         __strong typeof(weakSelf) me = weakSelf;
         if (!me || !atomic_load(&me->_running)) return;
-        [me sendProbeLocked];
+        [me sendProbeLockedWithUnicastSweep:YES];
     });
 }
 
 - (void)sendProbeLocked
 {
+    [self sendProbeLockedWithUnicastSweep:NO];
+}
+
+- (void)sendProbeLockedWithUnicastSweep:(BOOL)unicastSweep
+{
     if (_udpFD < 0) return;
     const char *probe = "WQGLASS_DISCOVER";
+    size_t probeLen = strlen(probe);
     struct sockaddr_in bcast;
     memset(&bcast, 0, sizeof(bcast));
     bcast.sin_family = AF_INET;
     bcast.sin_port = htons(kWQWinDiscoveryPort);
     bcast.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-    sendto(_udpFD, probe, strlen(probe), 0, (struct sockaddr *)&bcast, sizeof(bcast));
+    sendto(_udpFD, probe, probeLen, 0, (struct sockaddr *)&bcast, sizeof(bcast));
+
+    NSString *myIP = wq_win_wifi_ipv4();
+    NSArray<NSString *> *parts = [myIP componentsSeparatedByString:@"."];
+    if (parts.count == 4) {
+        NSString *prefix = [NSString stringWithFormat:@"%@.%@.%@", parts[0], parts[1], parts[2]];
+        NSString *subBcast = [NSString stringWithFormat:@"%@.255", prefix];
+        struct sockaddr_in sb;
+        memset(&sb, 0, sizeof(sb));
+        sb.sin_family = AF_INET;
+        sb.sin_port = htons(kWQWinDiscoveryPort);
+        if (inet_pton(AF_INET, subBcast.UTF8String, &sb.sin_addr) == 1) {
+            sendto(_udpFD, probe, probeLen, 0, (struct sockaddr *)&sb, sizeof(sb));
+        }
+        if (unicastSweep) {
+            NSInteger selfHost = parts[3].integerValue;
+            for (int host = 1; host <= 254; host++) {
+                if (host == selfHost) continue;
+                NSString *targetIP = [NSString stringWithFormat:@"%@.%d", prefix, host];
+                struct sockaddr_in uaddr;
+                memset(&uaddr, 0, sizeof(uaddr));
+                uaddr.sin_family = AF_INET;
+                uaddr.sin_port = htons(kWQWinDiscoveryPort);
+                if (inet_pton(AF_INET, targetIP.UTF8String, &uaddr.sin_addr) == 1) {
+                    sendto(_udpFD, probe, probeLen, 0, (struct sockaddr *)&uaddr, sizeof(uaddr));
+                }
+            }
+        }
+    }
 }
 
 - (void)drainIncomingPackets
 {
     char buf[2048];
     struct sockaddr_in peerAddr;
-    socklen_t peerLen = sizeof(peerAddr);
-    ssize_t n = recvfrom(_udpFD, buf, sizeof(buf) - 1, MSG_DONTWAIT, (struct sockaddr *)&peerAddr, &peerLen);
-    if (n <= 0) return;
-    buf[n] = '\0';
+    for (int iter = 0; iter < 64; iter++) {
+        socklen_t peerLen = sizeof(peerAddr);
+        ssize_t n = recvfrom(_udpFD, buf, sizeof(buf) - 1, MSG_DONTWAIT, (struct sockaddr *)&peerAddr, &peerLen);
+        if (n <= 0) break;
+        buf[n] = '\0';
 
-    NSData *data = [NSData dataWithBytes:buf length:(NSUInteger)n];
-    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    if (![obj isKindOfClass:NSDictionary.class]) return;
-    NSDictionary *dict = (NSDictionary *)obj;
-    if (![dict[@"app"] isKindOfClass:NSString.class] || ![dict[@"app"] isEqualToString:@"WQGlass"]) return;
+        NSData *data = [NSData dataWithBytes:buf length:(NSUInteger)n];
+        id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        if (![obj isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *dict = (NSDictionary *)obj;
+        if (![dict[@"app"] isKindOfClass:NSString.class] || ![dict[@"app"] isEqualToString:@"WQGlass"]) continue;
 
-    NSString *ip = [dict[@"ip"] isKindOfClass:NSString.class] ? dict[@"ip"] : @"";
-    if (!ip.length) {
-        char ipStr[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &peerAddr.sin_addr, ipStr, sizeof(ipStr))) {
-            ip = [NSString stringWithUTF8String:ipStr] ?: @"";
+        NSString *ip = [dict[@"ip"] isKindOfClass:NSString.class] ? dict[@"ip"] : @"";
+        if (!ip.length) {
+            char ipStr[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &peerAddr.sin_addr, ipStr, sizeof(ipStr))) {
+                ip = [NSString stringWithUTF8String:ipStr] ?: @"";
+            }
         }
+        if (!ip.length) continue;
+
+        NSInteger rawPort = [dict[@"port"] respondsToSelector:@selector(integerValue)] ? [dict[@"port"] integerValue] : kWQWinBasePort;
+        uint16_t port = (rawPort > 0 && rawPort <= 65535) ? (uint16_t)rawPort : kWQWinBasePort;
+
+        // Filter out this iPhone's own active host server beacon.
+        NSString *selfIP = self.ignoreIP;
+        uint16_t selfPort = self.ignorePort;
+        if (selfIP.length && selfPort > 0 && port == selfPort && [ip isEqualToString:selfIP]) {
+            continue;
+        }
+
+        WQLanPeer *peer = [WQLanPeer new];
+        peer.device = [dict[@"device"] isKindOfClass:NSString.class] ? dict[@"device"] : @"Device";
+        peer.platform = [dict[@"platform"] isKindOfClass:NSString.class] ? dict[@"platform"] : @"ios";
+        peer.osVersion = [dict[@"osVersion"] isKindOfClass:NSString.class] ? dict[@"osVersion"] : @"";
+        peer.ip = ip;
+        peer.port = port;
+        peer.root = [dict[@"root"] isKindOfClass:NSString.class] ? dict[@"root"] : @"Downloads";
+        peer.lastSeen = CFAbsoluteTimeGetCurrent();
+
+        _peersByEndpoint[peer.endpoint] = peer;
+        [self notifyPeersLocked];
     }
-    if (!ip.length) return;
-
-    NSInteger rawPort = [dict[@"port"] respondsToSelector:@selector(integerValue)] ? [dict[@"port"] integerValue] : kWQWinBasePort;
-    uint16_t port = (rawPort > 0 && rawPort <= 65535) ? (uint16_t)rawPort : kWQWinBasePort;
-
-    // Filter out this iPhone's own active host server beacon.
-    NSString *selfIP = self.ignoreIP;
-    uint16_t selfPort = self.ignorePort;
-    if (selfIP.length && selfPort > 0 && port == selfPort && [ip isEqualToString:selfIP]) {
-        return;
-    }
-
-    WQLanPeer *peer = [WQLanPeer new];
-    peer.device = [dict[@"device"] isKindOfClass:NSString.class] ? dict[@"device"] : @"Device";
-    peer.platform = [dict[@"platform"] isKindOfClass:NSString.class] ? dict[@"platform"] : @"ios";
-    peer.osVersion = [dict[@"osVersion"] isKindOfClass:NSString.class] ? dict[@"osVersion"] : @"";
-    peer.ip = ip;
-    peer.port = port;
-    peer.root = [dict[@"root"] isKindOfClass:NSString.class] ? dict[@"root"] : @"Downloads";
-    peer.lastSeen = CFAbsoluteTimeGetCurrent();
-
-    _peersByEndpoint[peer.endpoint] = peer;
-    [self notifyPeersLocked];
 }
 
 - (void)pruneStaleLocked
@@ -1667,11 +1759,13 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
         if (!me) return;
         [me.refreshControl endRefreshing];
         if (error) {
+            wq_log_error(@"TransferBrowser", @"List directory '%@' on %@ failed: %@", me->_currentPath ?: @"", me->_baseURL ?: @"", error.localizedDescription ?: error);
             wq_alert(me, WQLocalized(@"Connection Error"), error.localizedDescription ?: WQLocalized(@"Unable to reach remote device."));
             return;
         }
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
         if (http.statusCode != 200 || !data.length) {
+            wq_log_error(@"TransferBrowser", @"List directory '%@' on %@ returned HTTP %ld", me->_currentPath ?: @"", me->_baseURL ?: @"", (long)http.statusCode);
             wq_alert(me, WQLocalized(@"Request Failed"), [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]);
             return;
         }
@@ -1952,6 +2046,7 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
         __strong typeof(weakSelf) me = weakSelf;
         if (!me) return;
         if (error) {
+            wq_log_error(@"TransferBrowser", @"POST %@ on %@ failed: %@", rel, me->_baseURL ?: @"", error.localizedDescription ?: error);
             wq_alert(me, WQLocalized(@"Operation Failed"), error.localizedDescription ?: WQLocalized(@"Network error"));
             return;
         }
@@ -1960,6 +2055,7 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
             wq_haptic_notify(UINotificationFeedbackTypeSuccess);
             [me refreshDirectory];
         } else {
+            wq_log_error(@"TransferBrowser", @"POST %@ on %@ returned HTTP %ld", rel, me->_baseURL ?: @"", (long)http.statusCode);
             wq_alert(me, WQLocalized(@"Operation Failed"), [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]);
         }
     }] resume];
@@ -1994,11 +2090,13 @@ didFinishDownloadingToURL:(NSURL *)location
     BOOL ok = [NSFileManager.defaultManager moveItemAtURL:location toURL:[NSURL fileURLWithPath:dst] error:&mvErr];
     _activeTask = nil;
     if (ok) {
+        wq_log(@"[TransferBrowser] Downloaded %@ to %@", _activeFileName ?: @"file", dst.lastPathComponent);
         _batchDoneCount++;
         [self pumpNextDownload];
     } else {
         [_downloadQueue removeAllObjects];
         [self hideProgress];
+        wq_log_error(@"TransferBrowser", @"Save downloaded file '%@' failed: %@", _activeFileName ?: @"", mvErr.localizedDescription ?: mvErr);
         wq_alert(self, WQLocalized(@"Save Failed"), mvErr.localizedDescription ?: WQLocalized(@"Could not save file."));
     }
 }
@@ -2032,6 +2130,7 @@ didCompleteWithError:(NSError *)error
         [_uploadQueue removeAllObjects];
         [self hideProgress];
         if (error.code != NSURLErrorCancelled) {
+            wq_log_error(@"TransferBrowser", @"Transfer of '%@' on %@ failed: %@", _activeFileName ?: @"", _baseURL ?: @"", error.localizedDescription ?: error);
             wq_alert(self, WQLocalized(@"Transfer Error"), error.localizedDescription ?: WQLocalized(@"Transfer failed."));
         }
         return;
@@ -2041,9 +2140,11 @@ didCompleteWithError:(NSError *)error
         if (http && (http.statusCode < 200 || http.statusCode >= 300)) {
             [_uploadQueue removeAllObjects];
             [self hideProgress];
+            wq_log_error(@"TransferBrowser", @"Upload of '%@' to %@ failed with HTTP %ld", _activeFileName ?: @"", _baseURL ?: @"", (long)http.statusCode);
             wq_alert(self, WQLocalized(@"Upload Failed"), [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]);
             return;
         }
+        wq_log(@"[TransferBrowser] Uploaded %@ to %@", _activeFileName ?: @"file", _baseURL ?: @"");
         _batchDoneCount++;
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         [self pumpNextUpload];
@@ -2184,6 +2285,8 @@ didCompleteWithError:(NSError *)error
     UILabel *_pinLabel;
     UILabel *_addrLabel;
     UILabel *_statusLabel;
+    UIBackgroundTaskIdentifier _bgTask;
+    BOOL _wasRunningBeforeBackground;
 }
 
 - (instancetype)initWithInitialRootPath:(NSString *)rootPath title:(NSString *)rootTitle
@@ -2198,10 +2301,20 @@ didCompleteWithError:(NSError *)error
         _peers = @[];
         _logs = [NSMutableArray new];
         _mode = 0;
+        _bgTask = UIBackgroundTaskInvalid;
+        _wasRunningBeforeBackground = NO;
         self.title = WQLocalized(@"LAN Transfer");
         self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
+}
+
+- (void)appendSessionLog:(NSString *)entry
+{
+    if (!entry.length) return;
+    [_logs insertObject:entry atIndex:0];
+    if (_logs.count > 60) [_logs removeLastObject];
+    if (_mode == 0) [self.tableView reloadData];
 }
 
 - (void)viewDidLoad
@@ -2222,9 +2335,7 @@ didCompleteWithError:(NSError *)error
     _server.onActivity = ^(NSString *entry) {
         __strong typeof(weakSelf) me = weakSelf;
         if (!me) return;
-        [me->_logs insertObject:entry atIndex:0];
-        if (me->_logs.count > 40) [me->_logs removeLastObject];
-        if (me->_mode == 0) [me.tableView reloadData];
+        [me appendSessionLog:entry];
     };
 
     _server.onRootChanged = ^{
@@ -2248,14 +2359,23 @@ didCompleteWithError:(NSError *)error
     }
 
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(appDidEnterBackground) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(appWillEnterForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
     [self buildHeroHeader];
     [self startServer];
+}
+
+- (void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidAppear:animated];
+    UIApplication.sharedApplication.idleTimerDisabled = YES;
 }
 
 - (void)viewWillDisappear:(BOOL)animated
 {
     [super viewWillDisappear:animated];
     if (self.isMovingFromParentViewController || self.isBeingDismissed) {
+        UIApplication.sharedApplication.idleTimerDisabled = NO;
+        [self endBackgroundKeepAliveTask];
         [_server stop];
         [_discovery stop];
     }
@@ -2263,16 +2383,49 @@ didCompleteWithError:(NSError *)error
 
 - (void)dealloc
 {
+    UIApplication.sharedApplication.idleTimerDisabled = NO;
+    [self endBackgroundKeepAliveTask];
     [_server stop];
     [_discovery stop];
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
+- (void)endBackgroundKeepAliveTask
+{
+    if (_bgTask != UIBackgroundTaskInvalid) {
+        [UIApplication.sharedApplication endBackgroundTask:_bgTask];
+        _bgTask = UIBackgroundTaskInvalid;
+    }
+}
+
 - (void)appDidEnterBackground
 {
-    [_server stop];
-    [_discovery stop];
-    [self refreshHeader];
+    _wasRunningBeforeBackground = _server.isRunning;
+    if (_server.isRunning && _bgTask == UIBackgroundTaskInvalid) {
+        __weak typeof(self) weakSelf = self;
+        _bgTask = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"WQGlassTransferKeepAlive" expirationHandler:^{
+            __strong typeof(weakSelf) me = weakSelf;
+            if (!me) return;
+            [me->_server stop];
+            [me->_discovery stop];
+            [me refreshHeader];
+            [me endBackgroundKeepAliveTask];
+        }];
+    }
+}
+
+- (void)appWillEnterForeground
+{
+    [self endBackgroundKeepAliveTask];
+    if (_wasRunningBeforeBackground && !_server.isRunning) {
+        [self startServer];
+    } else {
+        [self refreshHeader];
+    }
+    if (_mode == 1) {
+        [_discovery start];
+        [_discovery sendProbeNow];
+    }
 }
 
 - (void)modeChanged:(UISegmentedControl *)sender
@@ -2454,20 +2607,68 @@ didCompleteWithError:(NSError *)error
 
 - (void)connectToEndpoint:(NSString *)endpoint pin:(NSString *)pin fallbackName:(NSString *)fallbackName fallbackPlatform:(NSString *)fallbackPlatform
 {
-    NSString *clean = [endpoint stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    while ([clean hasSuffix:@"/"]) clean = [clean substringToIndex:clean.length - 1];
+    NSString *raw = [endpoint stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    while ([raw hasSuffix:@"/"]) raw = [raw substringToIndex:raw.length - 1];
+    NSString *clean = raw;
     if (![clean.lowercaseString hasPrefix:@"http://"] && ![clean.lowercaseString hasPrefix:@"https://"]) {
         clean = [@"http://" stringByAppendingString:clean];
     }
-    NSString *cleanPin = [pin stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSURL *infoURL = [NSURL URLWithString:[clean stringByAppendingString:@"/api/info"]];
-    if (!infoURL) {
+    NSURLComponents *comps = [NSURLComponents componentsWithString:clean];
+    if (!comps.host.length) {
+        wq_log_error(@"TransferClient", @"Invalid endpoint entered: '%@'", endpoint ?: @"");
+        [self appendSessionLog:[NSString stringWithFormat:@"❌ Invalid endpoint: %@", endpoint ?: @""]];
         wq_alert(self, WQLocalized(@"Invalid Address"), WQLocalized(@"Enter a valid IP:Port such as 192.168.1.42:8765"));
         return;
     }
 
+    NSString *host = comps.host;
+    NSInteger initialPort = comps.port ? comps.port.integerValue : kWQWinBasePort;
+    NSMutableArray<NSNumber *> *portsToTry = [NSMutableArray arrayWithObject:@(initialPort)];
+    for (uint16_t p = kWQWinBasePort; p < kWQWinBasePort + 4; p++) {
+        if ((NSInteger)p != initialPort) [portsToTry addObject:@(p)];
+    }
+
+    NSString *cleanPin = [pin stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *localIfaces = wq_win_all_network_interfaces_summary();
+    wq_log(@"[TransferClient] Connecting to %@:%ld (PIN len=%lu · local ifaces: %@)", host, (long)initialPort, (unsigned long)cleanPin.length, localIfaces);
+    [self appendSessionLog:[NSString stringWithFormat:@"→ Connecting to %@:%ld…", host, (long)initialPort]];
+
+    [self tryConnectHost:host ports:portsToTry index:0 pin:cleanPin fallbackName:fallbackName fallbackPlatform:fallbackPlatform lastError:nil];
+}
+
+- (void)tryConnectHost:(NSString *)host
+                 ports:(NSArray<NSNumber *> *)ports
+                 index:(NSUInteger)idx
+                   pin:(NSString *)cleanPin
+          fallbackName:(NSString *)fallbackName
+      fallbackPlatform:(NSString *)fallbackPlatform
+             lastError:(NSError *)lastError
+{
+    if (idx >= ports.count) {
+        NSInteger code = lastError.code;
+        NSString *errDesc = lastError.localizedDescription ?: WQLocalized(@"Unable to reach target device.");
+        NSString *ifaces = wq_win_all_network_interfaces_summary();
+        wq_log_error(@"TransferClient", @"Connect failed to %@ (ports tried: %@) · error=%@ (domain=%@ code=%ld) · local ifaces: %@",
+                     host, [ports componentsJoinedByString:@","], errDesc, lastError.domain ?: @"", (long)code, ifaces);
+        [self appendSessionLog:[NSString stringWithFormat:@"❌ Connect failed to %@: %@ (code %ld)", host, errDesc, (long)code]];
+
+        NSString *hint = nil;
+        if (code == NSURLErrorCannotConnectToHost) {
+            hint = [NSString stringWithFormat:WQLocalized(@"%@\n\nTarget %@ refused the connection. Make sure WQGlass Transfer is open on the Android/PC/iPhone and 'Start Sharing' (Share Device) is active."), errDesc, host];
+        } else if (code == NSURLErrorTimedOut || code == NSURLErrorNotConnectedToInternet || code == NSURLErrorNetworkConnectionLost) {
+            hint = [NSString stringWithFormat:WQLocalized(@"%@\n\nCould not reach %@.\n1. Check that both devices are on the same Wi-Fi or Mobile Hotspot.\n2. Verify Local Network permission is enabled in iOS Settings → Privacy & Security → Local Network → WQ Glass.\n3. If your Wi-Fi router has AP Isolation, turn on Mobile Hotspot on one phone and connect the other phone directly."), errDesc, host];
+        } else {
+            hint = [NSString stringWithFormat:@"%@ (code %ld)", errDesc, (long)code];
+        }
+        wq_alert(self, WQLocalized(@"Could Not Connect"), hint);
+        return;
+    }
+
+    NSInteger port = ports[idx].integerValue;
+    NSString *base = [NSString stringWithFormat:@"http://%@:%ld", host, (long)port];
+    NSURL *infoURL = [NSURL URLWithString:[base stringByAppendingString:@"/api/info"]];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:infoURL];
-    req.timeoutInterval = 8.0;
+    req.timeoutInterval = (idx == 0) ? 5.0 : 2.5;
     [req setValue:cleanPin forHTTPHeaderField:@"X-WQ-PIN"];
 
     __weak typeof(self) weakSelf = self;
@@ -2476,15 +2677,19 @@ didCompleteWithError:(NSError *)error
             __strong typeof(weakSelf) me = weakSelf;
             if (!me) return;
             if (error) {
-                wq_alert(me, WQLocalized(@"Could Not Connect"), error.localizedDescription ?: WQLocalized(@"Check that both devices are on the same Wi-Fi."));
+                [me tryConnectHost:host ports:ports index:idx + 1 pin:cleanPin fallbackName:fallbackName fallbackPlatform:fallbackPlatform lastError:error];
                 return;
             }
             NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
             if (http.statusCode == 401) {
+                wq_log_error(@"TransferClient", @"PIN rejected (HTTP 401) by %@:%ld", host, (long)port);
+                [me appendSessionLog:[NSString stringWithFormat:@"❌ Incorrect PIN for %@:%ld (HTTP 401)", host, (long)port]];
                 wq_alert(me, WQLocalized(@"Incorrect PIN"), WQLocalized(@"Check the PIN shown on the target PC or phone and try again."));
                 return;
             }
             if (http.statusCode != 200 || !data.length) {
+                wq_log_error(@"TransferClient", @"Unexpected HTTP %ld from %@:%ld", (long)http.statusCode, host, (long)port);
+                [me appendSessionLog:[NSString stringWithFormat:@"❌ HTTP %ld from %@:%ld", (long)http.statusCode, host, (long)port]];
                 wq_alert(me, WQLocalized(@"Could Not Connect"), [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]);
                 return;
             }
@@ -2497,11 +2702,14 @@ didCompleteWithError:(NSError *)error
                                 : [plat.lowercaseString isEqualToString:@"android"] ? @"Android"
                                 : @"iOS";
 
-            [NSUserDefaults.standardUserDefaults setObject:endpoint forKey:kWQWinLastEndpointPref];
+            NSString *resolvedEndpoint = [NSString stringWithFormat:@"%@:%ld", host, (long)port];
+            [NSUserDefaults.standardUserDefaults setObject:resolvedEndpoint forKey:kWQWinLastEndpointPref];
             [NSUserDefaults.standardUserDefaults setObject:cleanPin forKey:kWQWinLastPinPref];
+            wq_log(@"[TransferClient] Connected to %@ (%@) at %@ · /%@", dev, platLabel, resolvedEndpoint, root);
+            [me appendSessionLog:[NSString stringWithFormat:@"✓ Connected to %@ (%@) at %@", dev, platLabel, resolvedEndpoint]];
             wq_haptic_notify(UINotificationFeedbackTypeSuccess);
 
-            WQLanPeerBrowserViewController *browser = [[WQLanPeerBrowserViewController alloc] initWithBaseURL:clean
+            WQLanPeerBrowserViewController *browser = [[WQLanPeerBrowserViewController alloc] initWithBaseURL:base
                                                                                                           pin:cleanPin
                                                                                                    deviceName:dev
                                                                                                 platformLabel:platLabel
@@ -2605,6 +2813,7 @@ didCompleteWithError:(NSError *)error
     NSString *ver = info[@"CFBundleShortVersionString"] ?: @"4.0";
     NSString *bld = info[@"CFBundleVersion"] ?: @"1";
     NSString *dev = [NSString stringWithFormat:@"%@ · iOS %@", UIDevice.currentDevice.model ?: @"iPhone", UIDevice.currentDevice.systemVersion ?: @"26.0"];
+    NSString *ifaces = wq_win_all_network_interfaces_summary();
     NSString *crashes = wq_crash_log_text();
     NSString *session = wq_log_text();
     NSString *xferLogs = _logs.count ? [_logs componentsJoinedByString:@"\n"] : @"(No recent transfer activity entries)";
@@ -2615,6 +2824,7 @@ didCompleteWithError:(NSError *)error
             @"App Version : %@ (%@)\n"
             @"Device      : %@\n"
             @"Server      : %@ (%@:%u · /%@)\n"
+            @"Active IPs  : %@\n"
             @"==================================================================\n\n"
             @"--- PERSISTED CRASH & ERROR LOG ---\n%@\n\n"
             @"--- TRANSFER SESSION ACTIVITY ---\n%@\n\n"
@@ -2624,6 +2834,7 @@ didCompleteWithError:(NSError *)error
             _server.ipAddress ?: @"127.0.0.1",
             (unsigned)_server.port,
             _server.rootLabel ?: @"Downloads",
+            ifaces,
             crashes.length ? crashes : @"None recorded",
             xferLogs,
             session.length ? session : @"None"];

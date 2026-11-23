@@ -14,12 +14,20 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.URI
 import java.net.URL
 import kotlin.coroutines.coroutineContext
 
 class TransferClient(endpoint: String, pin: String) {
-    private val baseUrl: String
+    @Volatile
+    var baseUrl: String
+        private set
+    private val host: String
+    private val initialPort: Int
     private val cleanPin: String = pin.trim()
 
     init {
@@ -29,43 +37,88 @@ class TransferClient(endpoint: String, pin: String) {
         ) {
             clean = "http://$clean"
         }
-        baseUrl = clean
+        val uri = runCatching { URI(clean) }.getOrNull()
+        host = uri?.host?.ifBlank { null } ?: clean.removePrefix("http://").removePrefix("https://").substringBefore(':')
+        initialPort = uri?.port?.takeIf { it in 1..65535 } ?: ProtocolUtils.BASE_HTTP_PORT
+        baseUrl = "http://$host:$initialPort"
     }
 
-    private fun openConnection(method: String, relativeUrl: String): HttpURLConnection {
-        val conn = URL(baseUrl + relativeUrl).openConnection() as HttpURLConnection
+    val resolvedEndpoint: String
+        get() = baseUrl.removePrefix("http://").removePrefix("https://")
+
+    private fun openConnectionForBase(base: String, method: String, relativeUrl: String, timeoutMs: Int = 8000): HttpURLConnection {
+        val conn = URL(base + relativeUrl).openConnection() as HttpURLConnection
         conn.requestMethod = method
-        conn.connectTimeout = 8000
+        conn.connectTimeout = timeoutMs
         conn.readTimeout = 60000
         conn.useCaches = false
         conn.setRequestProperty("X-WQ-PIN", cleanPin)
         return conn
     }
 
+    private fun openConnection(method: String, relativeUrl: String): HttpURLConnection =
+        openConnectionForBase(baseUrl, method, relativeUrl)
+
     suspend fun getInfo(): RemoteInfo = withContext(Dispatchers.IO) {
-        val conn = openConnection("GET", "/api/info")
-        try {
-            val code = conn.responseCode
-            if (code == HttpURLConnection.HTTP_UNAUTHORIZED) {
-                throw IOException("Incorrect PIN. Check the PIN shown on the target device.")
+        val candidatePorts = LinkedHashSet<Int>().apply {
+            add(initialPort)
+            for (p in ProtocolUtils.BASE_HTTP_PORT until ProtocolUtils.BASE_HTTP_PORT + 4) {
+                add(p)
             }
-            if (code !in 200..299) {
-                throw IOException("Server returned HTTP $code")
+        }.toList()
+
+        val localIfaces = TransferServer.getActiveInterfacesSummary()
+        AppLogger.info("Client", "Connecting to $host:$initialPort (local ifaces: $localIfaces)")
+
+        var lastError: Exception? = null
+        for ((index, port) in candidatePorts.withIndex()) {
+            val candidateBase = "http://$host:$port"
+            val timeoutMs = if (index == 0) 5000 else 2500
+            val conn = openConnectionForBase(candidateBase, "GET", "/api/info", timeoutMs)
+            try {
+                val code = conn.responseCode
+                if (code == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                    baseUrl = candidateBase
+                    throw IOException("Incorrect PIN for $host:$port. Check the 4-digit PIN shown on the other phone/PC.")
+                }
+                if (code !in 200..299) {
+                    throw IOException("Server at $host:$port returned HTTP $code")
+                }
+                val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val j = JSONObject(body)
+                baseUrl = candidateBase
+                return@withContext RemoteInfo(
+                    device = j.optString("device", "Device"),
+                    platform = j.optString("platform", "ios"),
+                    osVersion = j.optString("osVersion", ""),
+                    iosVersion = j.optString("ios", ""),
+                    root = j.optString("root", "Downloads"),
+                    freeBytes = j.optLong("freeBytes", 0L),
+                    totalBytes = j.optLong("totalBytes", 0L)
+                )
+            } catch (e: IOException) {
+                if (e.message?.startsWith("Incorrect PIN") == true) {
+                    throw e
+                }
+                lastError = e
+            } catch (e: Exception) {
+                lastError = e
+            } finally {
+                conn.disconnect()
             }
-            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val j = JSONObject(body)
-            RemoteInfo(
-                device = j.optString("device", "Device"),
-                platform = j.optString("platform", "ios"),
-                osVersion = j.optString("osVersion", ""),
-                iosVersion = j.optString("ios", ""),
-                root = j.optString("root", "Downloads"),
-                freeBytes = j.optLong("freeBytes", 0L),
-                totalBytes = j.optLong("totalBytes", 0L)
-            )
-        } finally {
-            conn.disconnect()
         }
+
+        val err = lastError ?: IOException("Failed to connect to $host:$initialPort")
+        val msg = err.message.orEmpty()
+        val detailedMessage = when {
+            err is ConnectException && msg.contains("ECONNREFUSED", ignoreCase = true) || msg.contains("Connection refused", ignoreCase = true) ->
+                "Connection refused by $host:$initialPort — make sure WQ Glass is open on the other phone/PC and 'Share iPhone' / 'Start Sharing' server is running (keep the screen unlocked)."
+            err is SocketTimeoutException || err is NoRouteToHostException || err is ConnectException ->
+                "Could not reach $host:$initialPort (local IPs: $localIfaces). Ensure both phones are on the same Wi-Fi and 'Share iPhone' / 'Share Device' is running. If your Wi-Fi router blocks device-to-device traffic (AP Isolation), turn on Mobile Hotspot on one phone and connect the other phone directly to it."
+            else ->
+                "${err.message ?: "Connect failed"} (local IPs: $localIfaces)"
+        }
+        throw IOException(detailedMessage, err)
     }
 
     suspend fun list(remotePath: String): List<RemoteFileItem> = withContext(Dispatchers.IO) {

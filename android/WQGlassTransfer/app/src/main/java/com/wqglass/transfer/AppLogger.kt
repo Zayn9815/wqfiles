@@ -69,7 +69,7 @@ object AppLogger {
         }
         info(
             "Startup",
-            "WQGlass Transfer v2.2.0 started on ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT})"
+            "WQ Glass Studio v3.0.1 started on ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, SDK ${Build.VERSION.SDK_INT}) · ifaces: ${TransferServer.getActiveInterfacesSummary()}"
         )
     }
 
@@ -136,14 +136,18 @@ object AppLogger {
     fun buildFullReport(filter: String = "ALL"): String {
         val sb = StringBuilder()
         val now = SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())
+        val hs = TransferForegroundService.server.state.value
+        val hostSummary = if (hs.isRunning) "Running (${hs.ipAddress}:${hs.port} · PIN ${hs.pin} · /${hs.rootLabel})" else "Stopped"
         sb.appendLine("==================================================================")
-        sb.appendLine("WQGlass Transfer — Diagnostic, Error & Crash Report (Android)")
+        sb.appendLine("WQ Glass Studio — Diagnostic, Error & Crash Report (Android)")
         sb.appendLine("==================================================================")
         sb.appendLine("Generated   : $now")
-        sb.appendLine("App Version : 2.2.0 (220)")
+        sb.appendLine("App Version : 3.0.1 (301)")
         sb.appendLine("Device      : ${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE})")
         sb.appendLine("Android OS  : Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         sb.appendLine("ABIs        : ${Build.SUPPORTED_ABIS.joinToString(", ")}")
+        sb.appendLine("Host Server : $hostSummary")
+        sb.appendLine("Active IPs  : ${TransferServer.getActiveInterfacesSummary()}")
         sb.appendLine("==================================================================")
         sb.appendLine()
 
