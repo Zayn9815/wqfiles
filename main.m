@@ -66,6 +66,8 @@
 #import "WQWorkflows.h"
 #import "WQDownloadManager.h"
 #import "WQDownloadBrowser.h"
+#import "WQMediaConverter.h"
+#import "WQWinTransfer.h"
 #import <AVKit/AVKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
@@ -759,6 +761,17 @@ static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^st
                     } onFailure:^(NSString *reason) {
                         if (weakPlayer) playCopy([@"streaming failed: " stringByAppendingString:reason]);
                     }];
+            }
+            if (wq_is_convertible_media_path(path)) {
+                player.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+                    [UIAction actionWithTitle:WQLocalized(@"Convert")
+                                        image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"]
+                                   identifier:nil handler:^(UIAction *__unused a) {
+                    AVPlayerViewController *p = weakPlayer;
+                    if (!p) return;
+                    [p.player pause];
+                    wq_present_media_converter(p, path);
+                }]];
             }
             [nav pushViewController:player animated:YES];
             if (item) {
@@ -3955,7 +3968,7 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                 }]];
             }
             NSSet<NSString *> *imgExts = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"heic", @"heif", @"webp", @"tiff", @"tif"]];
-            NSSet<NSString *> *avExts = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"m4a", @"mp3", @"wav", @"aac", @"caf"]];
+            NSSet<NSString *> *avExts = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"ts", @"m4a", @"mp3", @"wav", @"aac", @"caf", @"aiff", @"aif", @"flac"]];
             if ([imgExts containsObject:ext]) {
                 [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Inspect & Optimize Image")
                                                        image:[UIImage systemImageNamed:@"camera.filters"]
@@ -3964,6 +3977,12 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                     if (latest && weakSelf) wq_present_media_tools(weakSelf, latest.path);
                 }]];
             } else if ([avExts containsObject:ext]) {
+                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Convert Format & Encoding…")
+                                                       image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    if (latest && weakSelf) wq_present_media_converter(weakSelf, latest.path);
+                }]];
                 [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Media Inspector / Extract Audio")
                                                        image:[UIImage systemImageNamed:@"waveform"]
                                                   identifier:nil handler:^(UIAction *__unused a) {
@@ -6342,20 +6361,12 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
 
     _modules = @[
         @{ @"id": @"browser", @"title": WQLocalized(@"IDM Browser & Media Grabber"), @"sub": WQLocalized(@"1DM/IDM ad-blocking browser, HLS Quality Picker & page link grabber"), @"sym": @"safari.fill" },
-        @{ @"id": @"downloads", @"title": WQLocalized(@"Download Manager (Multi-Part)"), @"sub": WQLocalized(@"IDM 2–16 part parallel downloads, pause/resume, HLS & audio extract"), @"sym": @"tray.and.arrow.down.fill" },
-        @{ @"id": @"hud", @"title": WQLocalized(@"Floating Telemetry Bubble"), @"sub": WQLocalized(@"Customizable live Net Speed + Battery Wattage (In-App & PiP)"), @"sym": @"pip.enter" },
-        @{ @"id": @"sys", @"title": WQLocalized(@"Device & Network Monitor"), @"sub": WQLocalized(@"Live RAM, Battery Wattage, Thermal, IP Interfaces, TCP Ping & DNS"), @"sym": @"cpu.fill" },
+        @{ @"id": @"downloads", @"title": WQLocalized(@"Download Manager (Multi-Part)"), @"sub": WQLocalized(@"IDM 2–16 part parallel downloads, pause/resume, HLS & format converter"), @"sym": @"tray.and.arrow.down.fill" },
+        @{ @"id": @"wintransfer", @"title": WQLocalized(@"iPhone ↔ Windows Transfer"), @"sub": WQLocalized(@"Auto-discovered Wi-Fi transfer with WQGlass Transfer Windows app & browser"), @"sym": @"laptopcomputer.and.iphone" },
         @{ @"id": @"smap", @"title": WQLocalized(@"Storage Analyzer"), @"sub": WQLocalized(@"DaisyDisk-style visual category breakdown & largest folders"), @"sym": @"chart.pie.fill" },
-        @{ @"id": @"ocr", @"title": WQLocalized(@"Offline OCR & PDF Watermark"), @"sub": WQLocalized(@"Apple Vision text extraction from images/PDFs & diagonal stamps"), @"sym": @"text.viewfinder" },
-        @{ @"id": @"grep", @"title": WQLocalized(@"Deep Content Grep (Regex)"), @"sub": WQLocalized(@"Search text, JSON, binary/XML plists & code inside App Data"), @"sym": @"doc.text.magnifyingglass" },
-        @{ @"id": @"net", @"title": WQLocalized(@"HTTP / REST API Studio"), @"sub": WQLocalized(@"Test GET/POST endpoints, inspect headers & copy cURL commands"), @"sym": @"network.badge.shield.half.filled" },
         @{ @"id": @"crypto", @"title": WQLocalized(@"Portable File Locker (.wqenc)"), @"sub": WQLocalized(@"Password-encrypt & decrypt shareable AES-256 + HMAC files"), @"sym": @"lock.doc.fill" },
-        @{ @"id": @"wf", @"title": WQLocalized(@"Folder Automation Workflows"), @"sub": WQLocalized(@"Auto-organize by type, clean junk, contact sheet PDF & audit CSV"), @"sym": @"wand.and.stars.inverse" },
-        @{ @"id": @"pdf", @"title": WQLocalized(@"PDF & Document Studio"), @"sub": WQLocalized(@"Images → PDF, Merge PDFs & Split/Extract Pages offline"), @"sym": @"doc.richtext.fill" },
-        @{ @"id": @"media", @"title": WQLocalized(@"Privacy Photo & Media Studio"), @"sub": WQLocalized(@"EXIF/GPS Scrubber, Image Resizer/Converter & Extract M4A Audio"), @"sym": @"camera.filters" },
-        @{ @"id": @"bench", @"title": WQLocalized(@"Everyday Utility Workbench"), @"sub": WQLocalized(@"QR Studio, Password/UUID Generator, Scratchpad & Dev Converters"), @"sym": @"wrench.and.screwdriver.fill" },
-        @{ @"id": @"dups", @"title": WQLocalized(@"Smart Duplicate File Hunter"), @"sub": WQLocalized(@"3-stage SHA-256 duplicate finder across App Data with auto-backup"), @"sym": @"doc.on.doc.fill" },
         @{ @"id": @"vault", @"title": WQLocalized(@"Private Encrypted Vault"), @"sub": WQLocalized(@"Face ID / Touch ID AES-256-CBC + HMAC protected files & notes"), @"sym": @"lock.shield.fill" },
+        @{ @"id": @"bench", @"title": WQLocalized(@"Everyday Utility Workbench"), @"sub": WQLocalized(@"QR Studio, Password/UUID Generator, Scratchpad & Dev Converters"), @"sym": @"wrench.and.screwdriver.fill" },
     ];
     [self installHubHeader];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
@@ -6464,44 +6475,19 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
         [self.navigationController pushViewController:[[WQDownloadBrowserViewController alloc] initWithInitialURL:nil] animated:YES];
     } else if ([mid isEqualToString:@"downloads"]) {
         [self.navigationController pushViewController:[WQDownloadManagerViewController new] animated:YES];
-    } else if ([mid isEqualToString:@"hud"]) {
-        [self.navigationController pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
-    } else if ([mid isEqualToString:@"sys"]) {
-        [self.navigationController pushViewController:[WQSystemMonitorViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"wintransfer"]) {
+        wq_present_windows_transfer(self, nil, nil);
     } else if ([mid isEqualToString:@"smap"]) {
         WQStorageMapViewController *smap = [[WQStorageMapViewController alloc]
             initWithRootPath:@"/private/var/mobile/Containers/Data/Application"
                        title:WQLocalized(@"App Data")];
         [self.navigationController pushViewController:smap animated:YES];
-    } else if ([mid isEqualToString:@"ocr"]) {
-        [self.navigationController pushViewController:[[WQOCRStudioViewController alloc] initWithInitialPath:nil] animated:YES];
-    } else if ([mid isEqualToString:@"grep"]) {
-        WQContentSearchViewController *grep = [[WQContentSearchViewController alloc]
-            initWithRootPath:@"/private/var/mobile/Containers/Data/Application"
-                       title:WQLocalized(@"App Data")
-                    readOnly:NO];
-        [self.navigationController pushViewController:grep animated:YES];
-    } else if ([mid isEqualToString:@"net"]) {
-        [self.navigationController pushViewController:[WQNetStudioViewController new] animated:YES];
     } else if ([mid isEqualToString:@"crypto"]) {
         [self.navigationController pushViewController:[[WQCryptoToolsViewController alloc] initWithInitialPath:nil] animated:YES];
-    } else if ([mid isEqualToString:@"wf"]) {
-        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSHomeDirectory();
-        WQWorkflowsViewController *wf = [[WQWorkflowsViewController alloc] initWithRootPath:docs title:WQLocalized(@"WQ Glass Documents")];
-        [self.navigationController pushViewController:wf animated:YES];
-    } else if ([mid isEqualToString:@"pdf"]) {
-        [self.navigationController pushViewController:[WQDocStudioViewController new] animated:YES];
-    } else if ([mid isEqualToString:@"media"]) {
-        [self.navigationController pushViewController:[[WQMediaToolsViewController alloc] initWithInitialPath:nil] animated:YES];
-    } else if ([mid isEqualToString:@"bench"]) {
-        [self.navigationController pushViewController:[WQWorkbenchViewController new] animated:YES];
-    } else if ([mid isEqualToString:@"dups"]) {
-        WQDuplicatesViewController *dups = [[WQDuplicatesViewController alloc]
-            initWithRootPath:@"/private/var/mobile/Containers/Data/Application"
-                       title:WQLocalized(@"App Data")];
-        [self.navigationController pushViewController:dups animated:YES];
     } else if ([mid isEqualToString:@"vault"]) {
         [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES];
+    } else if ([mid isEqualToString:@"bench"]) {
+        [self.navigationController pushViewController:[WQWorkbenchViewController new] animated:YES];
     }
 }
 
@@ -7292,8 +7278,9 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
 
     NSArray<NSArray<NSString *> *> *tools = @[
         @[@"IDM Browser", @"Ad-block browser, video sniffer & quality picker", @"safari.fill", @"aurora", @"1DM"],
-        @[@"Downloads", @"Multi-part IDM queue, HLS & audio extract", @"tray.and.arrow.down.fill", @"sky", @"IDM"],
-        @[@"Utility Hub", @"Telemetry, PDF, EXIF, QR & Duplicates", @"square.grid.2x2.fill", @"aurora", @"SUPER"],
+        @[@"Downloads", @"Multi-part IDM queue, HLS & format converter", @"tray.and.arrow.down.fill", @"sky", @"IDM"],
+        @[@"PC Transfer", @"Auto-discover Wi-Fi transfer to Windows PC", @"laptopcomputer.and.iphone", @"glacier", @"WIN"],
+        @[@"Utility Hub", @"Browser, Downloads, Transfer, Storage & Vault", @"square.grid.2x2.fill", @"aurora", @"HUB"],
         @[@"Private Vault", @"Face ID AES-256 encrypted files & notes", @"lock.shield.fill", @"glacier", @"AES"],
         @[@"Apps", @"App data backups, restores & info", @"square.grid.3x3.fill", @"sky", @""],
         @[@"Cache Cleaner", @"Clean Library/Caches, tmp & crash logs", @"sparkles", @"aurora", @""],
@@ -7673,12 +7660,13 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     switch (sender.tag) {
         case 0: [self.navigationController pushViewController:[[WQDownloadBrowserViewController alloc] initWithInitialURL:nil] animated:YES]; break;
         case 1: [self.navigationController pushViewController:[WQDownloadManagerViewController new] animated:YES]; break;
-        case 2: [self.navigationController pushViewController:[WQUtilityHubViewController new] animated:YES]; break;
-        case 3: [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES]; break;
-        case 4: [self openTab:1]; break;
-        case 5: [self openTab:2]; break;
-        case 6: [self goToPath]; break;
-        case 7: [self openTab:3]; break;
+        case 2: wq_present_windows_transfer(self, nil, nil); break;
+        case 3: [self.navigationController pushViewController:[WQUtilityHubViewController new] animated:YES]; break;
+        case 4: [self.navigationController pushViewController:[WQPrivateVaultViewController new] animated:YES]; break;
+        case 5: [self openTab:1]; break;
+        case 6: [self openTab:2]; break;
+        case 7: [self goToPath]; break;
+        case 8: [self openTab:3]; break;
         default: break;
     }
 }
@@ -8963,6 +8951,8 @@ static NSString *const kWQTroubleshootingFooter =
             [activeNav pushViewController:[[WQDownloadBrowserViewController alloc] initWithInitialURL:nil] animated:YES];
         } else if ([commandID isEqualToString:@"download_manager"]) {
             [activeNav pushViewController:[WQDownloadManagerViewController new] animated:YES];
+        } else if ([commandID isEqualToString:@"win_transfer"]) {
+            [activeNav pushViewController:[[WQWinTransferViewController alloc] initWithInitialRootPath:nil title:nil] animated:YES];
         } else if ([commandID isEqualToString:@"floating_hud"]) {
             [activeNav pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"utility_hub"]) {

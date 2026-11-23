@@ -131,6 +131,9 @@ static void wq_spotlight_save_recent(NSString *query)
 static NSArray<WQSpotlightResult *> *wq_spotlight_quick_commands(void)
 {
     NSArray<NSArray<NSString *> *> *specs = @[
+        @[@"IDM Browser & Media Grabber", @"1DM/IDM ad-blocking browser, HLS Quality Picker & sniffer", @"safari.fill", @"idm_browser"],
+        @[@"Download Manager (Multi-Part)", @"IDM 2–16 part parallel downloads, pause/resume, HLS & format converter", @"tray.and.arrow.down.fill", @"download_manager"],
+        @[@"iPhone ↔ Windows Transfer", @"Auto-discovered Wi-Fi transfer with WQGlass Transfer Windows app", @"laptopcomputer.and.iphone", @"win_transfer"],
         @[@"Floating Telemetry Bubble", @"Live Net Speed + Battery Wattage (In-App & PiP)", @"pip.enter", @"floating_hud"],
         @[@"Utility Hub", @"All-in-One iOS Super-Utility Toolkit", @"square.grid.2x2.fill", @"utility_hub"],
         @[@"Storage Analyzer", @"Visual category breakdown & largest folders", @"chart.pie.fill", @"storage_map"],

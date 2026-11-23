@@ -11,11 +11,13 @@
 #import "WQDownloadBrowser.h"
 #import "WQFloatingHUD.h"
 #import "WQLocalization.h"
+#import "WQMediaConverter.h"
 #import "WQMotion.h"
 #import "WQTheme.h"
 #import "WQUI.h"
 #import "WQWorkspace.h"
 #import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
 #import <CommonCrypto/CommonCryptor.h>
 #import <CommonCrypto/CommonDigest.h>
 #import <errno.h>
@@ -437,14 +439,39 @@ void wq_present_hls_quality_picker(UIViewController *host,
 
 #pragma mark - Active Multi-Part & Single-Stream Contexts
 
+static const NSUInteger kWQDLWriteBufBytes = 256 * 1024;
+
 @interface WQActivePartTask : NSObject
 @property (nonatomic, strong) WQDownloadItem *item;
 @property (nonatomic, strong) WQDownloadPart *part;
 @property (nonatomic, strong) NSURLSessionDataTask *dataTask;
 @property (nonatomic) int fd;
+@property (nonatomic, strong) NSMutableData *writeBuf;
+@property (nonatomic) int64_t writeBufOffset;
 @end
 @implementation WQActivePartTask
+- (instancetype)init
+{
+    if ((self = [super init])) {
+        _writeBuf = [NSMutableData dataWithCapacity:kWQDLWriteBufBytes];
+        _writeBufOffset = -1;
+    }
+    return self;
+}
 @end
+
+static BOOL wq_flush_part_task(WQActivePartTask *pt, int fd)
+{
+    if (!pt || fd < 0 || !pt.writeBuf.length) return YES;
+    int64_t off = (pt.writeBufOffset >= 0) ? pt.writeBufOffset : (pt.part.startOffset + pt.part.downloadedBytes);
+    BOOL ok = wq_pwrite_all(fd, pt.writeBuf.bytes, pt.writeBuf.length, off);
+    if (ok) {
+        pt.part.downloadedBytes += (int64_t)pt.writeBuf.length;
+        pt.writeBuf.length = 0;
+        pt.writeBufOffset = -1;
+    }
+    return ok;
+}
 
 @interface WQActiveDownloadRun : NSObject
 @property (nonatomic, strong) WQDownloadItem *item;
@@ -502,7 +529,7 @@ void wq_present_hls_quality_picker(UIViewController *host,
         _workQueue = dispatch_queue_create("com.wqglass.download.engine", DISPATCH_QUEUE_SERIAL);
 
         NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration defaultSessionConfiguration];
-        cfg.HTTPMaximumConnectionsPerHost = 16;
+        cfg.HTTPMaximumConnectionsPerHost = 24;
         cfg.timeoutIntervalForRequest = 30.0;
         cfg.timeoutIntervalForResource = 3600.0;
         cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
@@ -717,7 +744,7 @@ void wq_present_hls_quality_picker(UIViewController *host,
                     double dt = now - run.lastSpeedTime;
                     int64_t delta = MAX(0LL, it.downloadedBytes - run.lastSpeedBytes);
                     double inst = (double)delta / dt;
-                    it.bytesPerSec = (it.bytesPerSec > 0) ? (it.bytesPerSec * 0.5 + inst * 0.5) : inst;
+                    it.bytesPerSec = (it.bytesPerSec > 0) ? (it.bytesPerSec * 0.65 + inst * 0.35) : inst;
                 }
                 run.lastSpeedTime = now;
                 run.lastSpeedBytes = it.downloadedBytes;
@@ -861,10 +888,15 @@ void wq_present_hls_quality_picker(UIViewController *host,
                 }
             }];
         }
-        if (run.fd >= 0) {
-            fsync(run.fd);
-            close(run.fd);
-            run.fd = -1;
+        @synchronized (run) {
+            if (run.fd >= 0) {
+                for (WQActivePartTask *pt in run.partTasks) {
+                    wq_flush_part_task(pt, run.fd);
+                }
+                fsync(run.fd);
+                close(run.fd);
+                run.fd = -1;
+            }
         }
     }
     if (item.state != WQDownloadStateCompleted) {
@@ -1355,14 +1387,25 @@ didReceiveResponse:(NSURLResponse *)response
     if (!pt || !data.length) return;
     WQActiveDownloadRun *run = nil;
     @synchronized (_runs) { run = _runs[pt.item.itemID]; }
-    if (!run || run.cancelled || run.fd < 0) return;
+    if (!run || run.cancelled) return;
 
-    int64_t offset = pt.part.startOffset + pt.part.downloadedBytes;
-    if (!wq_pwrite_all(run.fd, data.bytes, data.length, offset)) {
+    BOOL writeFailed = NO;
+    @synchronized (run) {
+        if (run.cancelled || run.fd < 0) return;
+        if (pt.writeBufOffset < 0) {
+            pt.writeBufOffset = pt.part.startOffset + pt.part.downloadedBytes;
+        }
+        [pt.writeBuf appendData:data];
+        if (pt.writeBuf.length >= kWQDLWriteBufBytes) {
+            if (!wq_flush_part_task(pt, run.fd)) {
+                writeFailed = YES;
+            }
+        }
+    }
+    if (writeFailed) {
         [self failItem:pt.item message:WQLocalized(@"Disk write failed (storage full?).")];
         return;
     }
-    pt.part.downloadedBytes += (int64_t)data.length;
     pt.item.downloadedBytes += (int64_t)data.length;
 
     NSInteger limitKB = self.speedLimitKBps;
@@ -1382,10 +1425,20 @@ didReceiveResponse:(NSURLResponse *)response
         WQActiveDownloadRun *run = nil;
         @synchronized (_runs) { run = _runs[pt.item.itemID]; }
         if (!run || run.cancelled) return;
+        BOOL flushOK = YES;
+        @synchronized (run) {
+            if (!run.cancelled && run.fd >= 0) {
+                flushOK = wq_flush_part_task(pt, run.fd);
+            }
+        }
         if (error) {
             if (error.code != NSURLErrorCancelled) {
                 [self failItem:pt.item message:error.localizedDescription ?: WQLocalized(@"Segment failed.")];
             }
+            return;
+        }
+        if (!flushOK) {
+            [self failItem:pt.item message:WQLocalized(@"Disk write failed (storage full?).")];
             return;
         }
         pt.part.finished = YES;
@@ -1394,7 +1447,9 @@ didReceiveResponse:(NSURLResponse *)response
             if (!p.finished) { allDone = NO; break; }
         }
         if (allDone) {
-            if (run.fd >= 0) { fsync(run.fd); close(run.fd); run.fd = -1; }
+            @synchronized (run) {
+                if (run.fd >= 0) { fsync(run.fd); close(run.fd); run.fd = -1; }
+            }
             [self finalizeCompletedRun:run sourcePath:pt.item.partialPath];
         } else {
             [self saveState];
@@ -1498,7 +1553,9 @@ didFinishDownloadingToURL:(NSURL *)location
             @synchronized (_partByTaskID) { [_partByTaskID removeObjectForKey:@(pt.dataTask.taskIdentifier)]; }
         }
         [run.singleTask cancel];
-        if (run.fd >= 0) { close(run.fd); run.fd = -1; }
+        @synchronized (run) {
+            if (run.fd >= 0) { close(run.fd); run.fd = -1; }
+        }
     }
     item.state = WQDownloadStateFailed;
     item.bytesPerSec = 0;
@@ -1511,21 +1568,22 @@ didFinishDownloadingToURL:(NSURL *)location
 
 #pragma mark - Shared Frosted "Add Download" Confirmation Sheet
 
-void wq_present_add_download_sheet(UIViewController *host,
-                                   NSString *urlString,
-                                   NSString *suggestedFilename,
-                                   int64_t knownSize,
-                                   NSDictionary<NSString *, NSString *> *headers,
-                                   BOOL isHLS,
-                                   NSString *qualityLabel)
+static void wq_present_add_download_sheet_parts(UIViewController *host,
+                                                NSString *urlString,
+                                                NSString *suggestedFilename,
+                                                int64_t knownSize,
+                                                NSDictionary<NSString *, NSString *> *headers,
+                                                BOOL isHLS,
+                                                NSString *qualityLabel,
+                                                NSInteger chosenParts)
 {
     if (!host || !urlString.length) return;
     NSString *cleanName = wq_sanitize_filename(suggestedFilename, urlString);
     NSString *sizeTag = (knownSize > 0) ? wq_size_text((unsigned long long)knownSize) : (isHLS ? @"HLS Stream" : WQLocalized(@"Unknown size"));
     NSString *cat = isHLS ? @"Videos" : wq_download_category_for_filename(cleanName);
-    NSString *msg = [NSString stringWithFormat:@"%@\n%@ · %@ (%ld parts)",
-                     urlString.length > 90 ? [[urlString substringToIndex:90] stringByAppendingString:@"…"] : urlString,
-                     sizeTag, cat, (long)WQDownloadManager.sharedManager.defaultPartCount];
+    NSString *msg = [NSString stringWithFormat:@"%@\n%@ · Documents/Downloads/%@\nIDM Parallel Parts: %ld",
+                     urlString.length > 80 ? [[urlString substringToIndex:80] stringByAppendingString:@"…"] : urlString,
+                     sizeTag, cat, (long)chosenParts];
 
     UIAlertController *a = wq_alert_controller(qualityLabel.length ? WQLocalizedFormat(@"Download (%@)", qualityLabel) : WQLocalized(@"Add Download"),
                                                WQVerbatim(msg),
@@ -1535,18 +1593,26 @@ void wq_present_add_download_sheet(UIViewController *host,
         tf.placeholder = WQLocalized(@"Filename");
         tf.clearButtonMode = UITextFieldViewModeWhileEditing;
     }];
-    [a addAction:wq_alert_action(WQLocalized(@"Download Now"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+    [a addAction:wq_alert_action(WQLocalizedFormat(@"Download Now (%ld Parts)", (long)chosenParts), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
         NSString *fn = a.textFields.firstObject.text.length ? a.textFields.firstObject.text : cleanName;
         [WQDownloadManager.sharedManager enqueueURLString:urlString
                                         suggestedFilename:fn
                                            destinationDir:nil
                                                   headers:headers
-                                                partCount:WQDownloadManager.sharedManager.defaultPartCount
+                                                partCount:chosenParts
                                                     isHLS:isHLS
                                              qualityLabel:qualityLabel
                                                  startNow:YES];
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
     })];
+
+    if (!isHLS) {
+        NSInteger nextParts = (chosenParts == 2) ? 4 : (chosenParts == 4) ? 8 : (chosenParts == 8) ? 16 : 2;
+        [a addAction:wq_alert_action(WQLocalizedFormat(@"Change Parallel Parts → %ld Parts", (long)nextParts), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+            NSString *fn = a.textFields.firstObject.text.length ? a.textFields.firstObject.text : cleanName;
+            wq_present_add_download_sheet_parts(host, urlString, fn, knownSize, headers, isHLS, qualityLabel, nextParts);
+        })];
+    }
 
     NSArray<WQWorkspaceTab *> *tabs = wq_workspace_tabs();
     if (tabs.count > 0) {
@@ -1558,11 +1624,11 @@ void wq_present_add_download_sheet(UIViewController *host,
                     [WQDownloadManager.sharedManager enqueueURLString:urlString
                                                     suggestedFilename:fn
                                                        destinationDir:t.path
-                                                              headers:headers
-                                                            partCount:WQDownloadManager.sharedManager.defaultPartCount
-                                                                isHLS:isHLS
-                                                         qualityLabel:qualityLabel
-                                                             startNow:YES];
+                                                               headers:headers
+                                                             partCount:chosenParts
+                                                                 isHLS:isHLS
+                                                          qualityLabel:qualityLabel
+                                                              startNow:YES];
                     wq_haptic_notify(UINotificationFeedbackTypeSuccess);
                 })];
             }
@@ -1579,13 +1645,25 @@ void wq_present_add_download_sheet(UIViewController *host,
                                         suggestedFilename:fn
                                            destinationDir:nil
                                                   headers:headers
-                                                partCount:WQDownloadManager.sharedManager.defaultPartCount
+                                                partCount:chosenParts
                                                     isHLS:isHLS
                                              qualityLabel:qualityLabel
                                                  startNow:NO];
     })];
     [a addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
     [host presentViewController:a animated:YES completion:nil];
+}
+
+void wq_present_add_download_sheet(UIViewController *host,
+                                   NSString *urlString,
+                                   NSString *suggestedFilename,
+                                   int64_t knownSize,
+                                   NSDictionary<NSString *, NSString *> *headers,
+                                   BOOL isHLS,
+                                   NSString *qualityLabel)
+{
+    wq_present_add_download_sheet_parts(host, urlString, suggestedFilename, knownSize, headers, isHLS, qualityLabel,
+                                        WQDownloadManager.sharedManager.defaultPartCount);
 }
 
 #pragma mark - IDM Multi-Segment Progress Bar View & Cell
@@ -1850,6 +1928,11 @@ void wq_present_add_download_sheet(UIViewController *host,
     [self.tableView registerClass:WQDownloadCell.class forCellReuseIdentifier:@"dl-cell"];
 
     __weak typeof(self) weakSelf = self;
+    UIBarButtonItem *folderBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Folder") image:[UIImage systemImageNamed:@"folder.fill"] identifier:nil handler:^(UIAction *__unused a) {
+        wq_haptic_selection();
+        [weakSelf openDownloadsRootFolder];
+    }]];
     UIBarButtonItem *browserBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
         [UIAction actionWithTitle:WQLocalized(@"Browser") image:[UIImage systemImageNamed:@"safari.fill"] identifier:nil handler:^(UIAction *__unused a) {
         wq_haptic_selection();
@@ -1859,11 +1942,19 @@ void wq_present_add_download_sheet(UIViewController *host,
         [UIAction actionWithTitle:WQLocalized(@"Add") image:[UIImage systemImageNamed:@"plus.circle.fill"] identifier:nil handler:^(UIAction *__unused a) {
         [weakSelf showAddMenu];
     }]];
-    self.navigationItem.rightBarButtonItems = @[addBtn, browserBtn];
+    self.navigationItem.rightBarButtonItems = @[addBtn, browserBtn, folderBtn];
 
     [self installFilterHeader];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadItems) name:WQDownloadManagerDidUpdateNotification object:nil];
     [self reloadItems];
+}
+
+- (void)openDownloadsRootFolder
+{
+    NSString *root = wq_downloads_root_dir();
+    [NSFileManager.defaultManager createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:nil];
+    WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:root title:WQLocalized(@"Downloads")];
+    [self.navigationController pushViewController:dir animated:YES];
 }
 
 - (void)dealloc
@@ -1874,8 +1965,22 @@ void wq_present_add_download_sheet(UIViewController *host,
 - (void)installFilterHeader
 {
     CGFloat w = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 52)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 98)];
     box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    UIButton *locBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    locBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    locBtn.backgroundColor = [wq_theme_accent() colorWithAlphaComponent:0.12];
+    locBtn.layer.cornerRadius = 12;
+    locBtn.clipsToBounds = YES;
+    locBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    [locBtn setImage:[UIImage systemImageNamed:@"folder.badge.gearshape"] forState:UIControlStateNormal];
+    [locBtn setTitle:WQLocalized(@"  Saved in: Documents/Downloads  ›") forState:UIControlStateNormal];
+    locBtn.tintColor = wq_theme_accent();
+    locBtn.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    [locBtn addTarget:self action:@selector(openDownloadsRootFolder) forControlEvents:UIControlEventTouchUpInside];
+    [box addSubview:locBtn];
+
     _filter = [[UISegmentedControl alloc] initWithItems:@[
         WQLocalized(@"All"),
         WQLocalized(@"Active"),
@@ -1886,7 +1991,11 @@ void wq_present_add_download_sheet(UIViewController *host,
     [_filter addTarget:self action:@selector(reloadItems) forControlEvents:UIControlEventValueChanged];
     [box addSubview:_filter];
     [NSLayoutConstraint activateConstraints:@[
-        [_filter.topAnchor constraintEqualToAnchor:box.topAnchor constant:8],
+        [locBtn.topAnchor constraintEqualToAnchor:box.topAnchor constant:8],
+        [locBtn.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
+        [locBtn.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
+        [locBtn.heightAnchor constraintEqualToConstant:36],
+        [_filter.topAnchor constraintEqualToAnchor:locBtn.bottomAnchor constant:8],
         [_filter.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-8],
         [_filter.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
         [_filter.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
@@ -1904,8 +2013,29 @@ void wq_present_add_download_sheet(UIViewController *host,
         if (mode == 2 && it.state != WQDownloadStateCompleted) continue;
         [out addObject:it];
     }
+    BOOL sameOrder = (out.count == _visible.count && out.count > 0);
+    if (sameOrder) {
+        for (NSUInteger i = 0; i < out.count; i++) {
+            if (![out[i].itemID isEqualToString:_visible[i].itemID]) {
+                sameOrder = NO;
+                break;
+            }
+        }
+    }
     _visible = out;
-    [self.tableView reloadData];
+    if (sameOrder) {
+        // Update visible cells in-place for silky 60fps scrolling & unbroken swipe actions.
+        for (NSIndexPath *ip in self.tableView.indexPathsForVisibleRows) {
+            if (ip.row >= 0 && (NSUInteger)ip.row < _visible.count) {
+                UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:ip];
+                if ([cell isKindOfClass:WQDownloadCell.class]) {
+                    [(WQDownloadCell *)cell configureWithItem:_visible[(NSUInteger)ip.row]];
+                }
+            }
+        }
+    } else {
+        [self.tableView reloadData];
+    }
 }
 
 - (void)showAddMenu
@@ -2162,10 +2292,24 @@ void wq_present_add_download_sheet(UIViewController *host,
 - (void)showItemActions:(WQDownloadItem *)item sourceCell:(UITableViewCell *)cell
 {
     WQDownloadManager *mgr = WQDownloadManager.sharedManager;
-    UIAlertController *sheet = wq_alert_controller(WQVerbatim(item.filename), WQVerbatim(item.urlString), UIAlertControllerStyleActionSheet);
+    NSString *subtitle = (item.state == WQDownloadStateCompleted && item.localPath.length)
+        ? [NSString stringWithFormat:@"Saved in: Documents/Downloads/%@", item.category]
+        : item.urlString;
+    UIAlertController *sheet = wq_alert_controller(WQVerbatim(item.filename), WQVerbatim(subtitle), UIAlertControllerStyleActionSheet);
 
     if (item.state == WQDownloadStateCompleted && item.localPath.length) {
         NSString *ext = item.localPath.pathExtension.lowercaseString;
+        if (wq_is_convertible_media_path(item.localPath)) {
+            [sheet addAction:wq_alert_action(WQLocalized(@"Play Video / Audio"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+                [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
+                AVPlayerViewController *p = [AVPlayerViewController new];
+                p.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:item.localPath]];
+                [self presentViewController:p animated:YES completion:^{ [p.player play]; }];
+            })];
+            [sheet addAction:wq_alert_action(WQLocalized(@"Convert Format & Encoding…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+                wq_present_media_converter(self, item.localPath);
+            })];
+        }
         [sheet addAction:wq_alert_action(WQLocalized(@"Open Containing Folder"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:item.localPath.stringByDeletingLastPathComponent title:item.category];
             [self.navigationController pushViewController:dir animated:YES];
@@ -2176,13 +2320,13 @@ void wq_present_add_download_sheet(UIViewController *host,
             [self presentViewController:share animated:YES completion:nil];
         })];
         if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) {
-            [sheet addAction:wq_alert_action(WQLocalized(@"Extract Audio (.m4a) Offline"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            [sheet addAction:wq_alert_action(WQLocalized(@"Quick Extract Audio (.m4a)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
                 [self extractAudioFromVideoPath:item.localPath];
             })];
-            [sheet addAction:wq_alert_action(WQLocalized(@"Compress Video to 720p (.mp4)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            [sheet addAction:wq_alert_action(WQLocalized(@"Quick Compress 720p (.mp4)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
                 [self transcodeVideoPath:item.localPath preset:AVAssetExportPreset1280x720 label:@"720p"];
             })];
-            [sheet addAction:wq_alert_action(WQLocalized(@"Compress Video to 480p (.mp4)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            [sheet addAction:wq_alert_action(WQLocalized(@"Quick Compress 480p (.mp4)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
                 [self transcodeVideoPath:item.localPath preset:AVAssetExportPreset640x480 label:@"480p"];
             })];
         }

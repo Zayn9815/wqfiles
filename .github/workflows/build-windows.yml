@@ -1,0 +1,46 @@
+name: Build Windows WQGlass Transfer
+
+on:
+  push:
+    paths:
+      - "windows/WQGlassTransfer/**"
+      - ".github/workflows/build-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish single-file Windows x64 executable
+        run: |
+          dotnet publish windows/WQGlassTransfer/WQGlassTransfer.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -o windows/WQGlassTransfer/publish
+
+      - name: Build Windows Installer (WQGlassTransfer-Setup.exe)
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc windows/WQGlassTransfer/installer.iss
+
+      - name: Upload Windows Installer & Portable EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: WQGlassTransfer-Windows
+          path: |
+            windows/WQGlassTransfer/dist/WQGlassTransfer-Setup.exe
+            windows/WQGlassTransfer/publish/WQGlassTransfer.exe
+          if-no-files-found: error
