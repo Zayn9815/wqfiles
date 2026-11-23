@@ -338,20 +338,23 @@ static NSString *wq_win_web_ui_html(void)
     dispatch_source_t rs = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)ufd, 0, _netQueue);
     dispatch_source_set_event_handler(rs, ^{
         __strong typeof(weakSelf) me = weakSelf;
-        if (!me || atomic_load(&me->_stopped) || me->_udpFD < 0) return;
+        if (!me || atomic_load(&me->_stopped)) return;
         char buf[512];
         struct sockaddr_in peer;
         socklen_t peerLen = sizeof(peer);
-        ssize_t n = recvfrom(me->_udpFD, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&peer, &peerLen);
+        ssize_t n = recvfrom(ufd, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&peer, &peerLen);
         if (n > 0) {
             buf[n] = '\0';
             if (strstr(buf, "WQGLASS_DISCOVER") != NULL) {
                 NSData *resp = [me discoveryBeaconJSON];
                 if (resp.length) {
-                    sendto(me->_udpFD, resp.bytes, resp.length, 0, (struct sockaddr *)&peer, peerLen);
+                    sendto(ufd, resp.bytes, resp.length, 0, (struct sockaddr *)&peer, peerLen);
                 }
             }
         }
+    });
+    dispatch_source_set_cancel_handler(rs, ^{
+        close(ufd);
     });
     _udpReadSource = rs;
     dispatch_resume(rs);
@@ -360,7 +363,7 @@ static NSString *wq_win_web_ui_html(void)
     dispatch_source_set_timer(bt, dispatch_time(DISPATCH_TIME_NOW, 0), (uint64_t)(1.5 * NSEC_PER_SEC), (uint64_t)(0.3 * NSEC_PER_SEC));
     dispatch_source_set_event_handler(bt, ^{
         __strong typeof(weakSelf) me = weakSelf;
-        if (!me || atomic_load(&me->_stopped) || me->_udpFD < 0) return;
+        if (!me || atomic_load(&me->_stopped)) return;
         NSData *pkt = [me discoveryBeaconJSON];
         if (!pkt.length) return;
         struct sockaddr_in bcast;
@@ -368,7 +371,7 @@ static NSString *wq_win_web_ui_html(void)
         bcast.sin_family = AF_INET;
         bcast.sin_port = htons(kWQWinDiscoveryPort);
         bcast.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-        sendto(me->_udpFD, pkt.bytes, pkt.length, 0, (struct sockaddr *)&bcast, sizeof(bcast));
+        sendto(ufd, pkt.bytes, pkt.length, 0, (struct sockaddr *)&bcast, sizeof(bcast));
     });
     _beaconTimer = bt;
     dispatch_resume(bt);
@@ -421,7 +424,7 @@ static NSString *wq_win_web_ui_html(void)
         if (!me || atomic_load(&me->_stopped)) return;
         struct sockaddr_in cli;
         socklen_t cliLen = sizeof(cli);
-        int cfd = accept(me->_listenFD, (struct sockaddr *)&cli, &cliLen);
+        int cfd = accept(fd, (struct sockaddr *)&cli, &cliLen);
         if (cfd < 0) return;
         int yes = 1;
         setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
@@ -442,6 +445,9 @@ static NSString *wq_win_web_ui_html(void)
             dispatch_semaphore_signal(me->_connSlots);
         });
     });
+    dispatch_source_set_cancel_handler(acc, ^{
+        close(fd);
+    });
     _acceptSource = acc;
     dispatch_resume(acc);
 
@@ -454,11 +460,26 @@ static NSString *wq_win_web_ui_html(void)
 - (void)stop
 {
     atomic_store(&_stopped, true);
-    if (_beaconTimer) { dispatch_source_cancel(_beaconTimer); _beaconTimer = nil; }
-    if (_udpReadSource) { dispatch_source_cancel(_udpReadSource); _udpReadSource = nil; }
-    if (_acceptSource) { dispatch_source_cancel(_acceptSource); _acceptSource = nil; }
-    if (_udpFD >= 0) { close(_udpFD); _udpFD = -1; }
-    if (_listenFD >= 0) { close(_listenFD); _listenFD = -1; }
+    if (_beaconTimer) {
+        dispatch_source_cancel(_beaconTimer);
+        _beaconTimer = nil;
+    }
+    if (_udpReadSource) {
+        _udpFD = -1;
+        dispatch_source_cancel(_udpReadSource);
+        _udpReadSource = nil;
+    } else if (_udpFD >= 0) {
+        close(_udpFD);
+        _udpFD = -1;
+    }
+    if (_acceptSource) {
+        _listenFD = -1;
+        dispatch_source_cancel(_acceptSource);
+        _acceptSource = nil;
+    } else if (_listenFD >= 0) {
+        close(_listenFD);
+        _listenFD = -1;
+    }
 }
 
 #pragma mark HTTP Request Handling
@@ -957,7 +978,16 @@ static NSString *wq_win_speed_text(double bytesPerSec)
 
 - (void)dealloc
 {
-    [self stop];
+    atomic_store(&_running, false);
+    dispatch_source_t pt = _probeTimer;
+    dispatch_source_t rs = _readSource;
+    int fd = _udpFD;
+    _probeTimer = nil;
+    _readSource = nil;
+    _udpFD = -1;
+    if (pt) dispatch_source_cancel(pt);
+    if (rs) dispatch_source_cancel(rs);
+    else if (fd >= 0) close(fd);
 }
 
 - (void)start
@@ -967,6 +997,19 @@ static NSString *wq_win_speed_text(double bytesPerSec)
     dispatch_async(_queue, ^{
         __strong typeof(weakSelf) me = weakSelf;
         if (!me || !atomic_load(&me->_running)) return;
+
+        if (me->_probeTimer) {
+            dispatch_source_cancel(me->_probeTimer);
+            me->_probeTimer = nil;
+        }
+        if (me->_readSource) {
+            me->_udpFD = -1;
+            dispatch_source_cancel(me->_readSource);
+            me->_readSource = nil;
+        } else if (me->_udpFD >= 0) {
+            close(me->_udpFD);
+            me->_udpFD = -1;
+        }
 
         int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (fd < 0) {
@@ -994,6 +1037,9 @@ static NSString *wq_win_speed_text(double bytesPerSec)
             if (!inner || !atomic_load(&inner->_running) || inner->_udpFD < 0) return;
             [inner drainIncomingPackets];
         });
+        dispatch_source_set_cancel_handler(rs, ^{
+            close(fd);
+        });
         me->_readSource = rs;
         dispatch_resume(rs);
 
@@ -1012,19 +1058,22 @@ static NSString *wq_win_speed_text(double bytesPerSec)
 
 - (void)stop
 {
-    atomic_store(&_running, false);
+    if (!atomic_exchange(&_running, false)) return;
+    __weak typeof(self) weakSelf = self;
     dispatch_async(_queue, ^{
-        if (self->_probeTimer) {
-            dispatch_source_cancel(self->_probeTimer);
-            self->_probeTimer = nil;
+        __strong typeof(weakSelf) me = weakSelf;
+        if (!me) return;
+        if (me->_probeTimer) {
+            dispatch_source_cancel(me->_probeTimer);
+            me->_probeTimer = nil;
         }
-        if (self->_readSource) {
-            dispatch_source_cancel(self->_readSource);
-            self->_readSource = nil;
-        }
-        if (self->_udpFD >= 0) {
-            close(self->_udpFD);
-            self->_udpFD = -1;
+        if (me->_readSource) {
+            me->_udpFD = -1;
+            dispatch_source_cancel(me->_readSource);
+            me->_readSource = nil;
+        } else if (me->_udpFD >= 0) {
+            close(me->_udpFD);
+            me->_udpFD = -1;
         }
     });
 }
