@@ -51,6 +51,14 @@ static NSString *wq_win_documents_dir(void)
     return NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSTemporaryDirectory();
 }
 
+static NSString *wq_win_selected_outbox_dir(void)
+{
+    NSString *docs = wq_win_documents_dir();
+    NSString *outbox = [docs stringByAppendingPathComponent:@"WQGlass_SharedOutbox"];
+    [NSFileManager.defaultManager createDirectoryAtPath:outbox withIntermediateDirectories:YES attributes:nil error:nil];
+    return outbox;
+}
+
 static NSString *wq_win_wifi_ipv4(void)
 {
     struct ifaddrs *addrs = NULL;
@@ -239,6 +247,7 @@ static NSString *wq_win_web_ui_html(void)
 @property (nonatomic, readonly) uint16_t port;
 @property (nonatomic, readonly, getter=isRunning) BOOL running;
 @property (nonatomic, copy, nullable) void (^onActivity)(NSString *entry);
+@property (nonatomic, copy, nullable) void (^onRootChanged)(void);
 - (BOOL)startWithError:(NSString *_Nullable *_Nullable)errorOut;
 - (void)stop;
 @end
@@ -366,9 +375,10 @@ static NSString *wq_win_web_ui_html(void)
 {
     [self stop];
     NSString *ip = wq_win_wifi_ipv4();
-    if (!ip.length) {
-        if (errorOut) *errorOut = WQLocalized(@"Connect your iPhone and Windows PC to the same Wi-Fi network first.");
-        return NO;
+    BOOL wifiAvailable = (ip.length > 0);
+    if (!wifiAvailable) {
+        // Still start TCP server on 0.0.0.0:8765 so Windows PC can connect over Lightning/USB-C (usbmuxd) even with Wi-Fi OFF.
+        ip = @"127.0.0.1";
     }
 
     int fd = -1;
@@ -392,7 +402,7 @@ static NSString *wq_win_web_ui_html(void)
         close(s);
     }
     if (fd < 0) {
-        if (errorOut) *errorOut = WQLocalized(@"Could not bind a local Wi-Fi transfer port.");
+        if (errorOut) *errorOut = WQLocalized(@"Could not bind a local Wi-Fi / USB transfer port.");
         return NO;
     }
 
@@ -432,7 +442,9 @@ static NSString *wq_win_web_ui_html(void)
     _acceptSource = acc;
     dispatch_resume(acc);
 
-    [self startUDPDiscovery];
+    if (wifiAvailable) {
+        [self startUDPDiscovery];
+    }
     return YES;
 }
 
@@ -800,6 +812,31 @@ static NSString *wq_win_web_ui_html(void)
             });
             [self emitActivity:[NSString stringWithFormat:@"📋 Copied received text/link (%lu chars)", (unsigned long)txt.length]];
         }
+        return;
+    }
+
+    if ([route isEqualToString:@"/api/setroot"] && [method isEqualToString:@"POST"]) {
+        NSString *rootId = (query[@"id"] ?: @"").lowercaseString;
+        if ([rootId isEqualToString:@"downloads"]) {
+            self.rootPath = wq_win_downloads_dir();
+            self.rootLabel = @"Downloads";
+        } else if ([rootId isEqualToString:@"documents"]) {
+            self.rootPath = wq_win_documents_dir();
+            self.rootLabel = @"Documents";
+        } else if ([rootId isEqualToString:@"selected"]) {
+            self.rootPath = wq_win_selected_outbox_dir();
+            self.rootLabel = @"My Selected Files";
+        } else if ([rootId isEqualToString:@"appdata"]) {
+            self.rootPath = @"/private/var/mobile/Containers/Data/Application";
+            self.rootLabel = @"App Data";
+        } else {
+            [self sendJSON:@{ @"error": @"Unknown root id" } status:400 toFD:fd];
+            return;
+        }
+        [self sendJSON:@{ @"ok": @YES, @"root": self.rootLabel ?: @"Downloads" } status:200 toFD:fd];
+        [self emitActivity:[NSString stringWithFormat:@"📂 PC switched shared folder → %@", self.rootLabel]];
+        void (^rcb)(void) = self.onRootChanged;
+        if (rcb) dispatch_async(dispatch_get_main_queue(), rcb);
         return;
     }
 
@@ -2079,6 +2116,9 @@ didCompleteWithError:(NSError *)error
 
 #pragma mark - WQWinTransferViewController
 
+@interface WQWinTransferViewController () <UIDocumentPickerDelegate>
+@end
+
 @implementation WQWinTransferViewController {
     WQWinTransferServer *_server;
     WQLanDiscoveryClient *_discovery;
@@ -2132,6 +2172,12 @@ didCompleteWithError:(NSError *)error
         if (!me) return;
         [me->_logs insertObject:entry atIndex:0];
         if (me->_logs.count > 40) [me->_logs removeLastObject];
+        if (me->_mode == 0) [me.tableView reloadData];
+    };
+
+    _server.onRootChanged = ^{
+        __strong typeof(weakSelf) me = weakSelf;
+        if (!me) return;
         if (me->_mode == 0) [me.tableView reloadData];
     };
 
@@ -2267,20 +2313,90 @@ didCompleteWithError:(NSError *)error
 - (void)refreshHeader
 {
     if (_server.isRunning && _server.ipAddress.length) {
-        NSString *urlStr = [NSString stringWithFormat:@"http://%@:%u", _server.ipAddress, (unsigned)_server.port];
-        NSString *qrStr = [NSString stringWithFormat:@"%@/?pin=%@", urlStr, wq_win_query_encode(_server.pin)];
-        _statusLabel.text = WQLocalized(@"● Live · Open WQGlass Transfer on Windows, Android, or any Browser");
-        _statusLabel.textColor = UIColor.systemGreenColor;
-        _pinLabel.text = [NSString stringWithFormat:@"PIN  %@", _server.pin];
-        _addrLabel.text = urlStr;
-        _qrView.image = wq_win_qr_image(qrStr, 240.0);
-        _qrView.hidden = NO;
+        BOOL usbOnly = [_server.ipAddress isEqualToString:@"127.0.0.1"];
+        if (usbOnly) {
+            _statusLabel.text = WQLocalized(@"● USB Cable Ready · Plug into Windows PC & click 🍎 iPhone App Docs (USB)");
+            _statusLabel.textColor = UIColor.systemTealColor;
+            _pinLabel.text = [NSString stringWithFormat:@"PIN  %@", _server.pin];
+            _addrLabel.text = WQLocalized(@"USB Cable Mode (Wi-Fi Off · Direct Lightning / USB-C)");
+            _qrView.hidden = YES;
+        } else {
+            NSString *urlStr = [NSString stringWithFormat:@"http://%@:%u", _server.ipAddress, (unsigned)_server.port];
+            NSString *qrStr = [NSString stringWithFormat:@"%@/?pin=%@", urlStr, wq_win_query_encode(_server.pin)];
+            _statusLabel.text = WQLocalized(@"● Live · Wi-Fi + USB Cable Ready (Windows, Android, or Browser)");
+            _statusLabel.textColor = UIColor.systemGreenColor;
+            _pinLabel.text = [NSString stringWithFormat:@"PIN  %@", _server.pin];
+            _addrLabel.text = urlStr;
+            _qrView.image = wq_win_qr_image(qrStr, 240.0);
+            _qrView.hidden = NO;
+        }
     } else {
         _statusLabel.text = _errorText ?: WQLocalized(@"Server Stopped");
         _statusLabel.textColor = UIColor.systemOrangeColor;
         _pinLabel.text = @"----";
         _addrLabel.text = WQLocalized(@"Tap Start Server below");
         _qrView.hidden = YES;
+    }
+}
+
+- (NSUInteger)selectedOutboxCount
+{
+    NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:wq_win_selected_outbox_dir() error:nil] ?: @[];
+    NSUInteger count = 0;
+    for (NSString *n in names) {
+        if (![n hasPrefix:@"."]) count++;
+    }
+    return count;
+}
+
+- (void)openOutboxDocumentPicker
+{
+    UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeItem] asCopy:YES];
+    picker.allowsMultipleSelection = YES;
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)clearSelectedOutbox
+{
+    NSString *dir = wq_win_selected_outbox_dir();
+    NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:nil] ?: @[];
+    for (NSString *n in names) {
+        [NSFileManager.defaultManager removeItemAtPath:[dir stringByAppendingPathComponent:n] error:nil];
+    }
+    [_logs insertObject:@"🧹 Cleared My Selected Files outbox" atIndex:0];
+    if (_logs.count > 40) [_logs removeLastObject];
+    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    [self.tableView reloadData];
+}
+
+- (void)documentPicker:(UIDocumentPickerViewController *__unused)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
+{
+    if (!urls.count) return;
+    NSString *outbox = wq_win_selected_outbox_dir();
+    NSUInteger added = 0;
+    for (NSURL *u in urls) {
+        BOOL scoped = [u startAccessingSecurityScopedResource];
+        NSString *name = u.lastPathComponent.length ? u.lastPathComponent : @"shared_file";
+        NSString *dst = wq_win_unique_upload_path(outbox, name);
+        if (u.path.length && [NSFileManager.defaultManager copyItemAtPath:u.path toPath:dst error:nil]) {
+            added++;
+        }
+        if (scoped) [u stopAccessingSecurityScopedResource];
+    }
+    if (added > 0) {
+        _server.rootPath = outbox;
+        _server.rootLabel = @"My Selected Files";
+        NSString *entry = [NSString stringWithFormat:@"📤 Added %lu file(s) to My Selected Files — ready for PC!", (unsigned long)added];
+        [_logs insertObject:entry atIndex:0];
+        if (_logs.count > 40) [_logs removeLastObject];
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        [self.tableView reloadData];
+        wq_alert(self,
+                 WQLocalized(@"Files Ready to Share"),
+                 [NSString stringWithFormat:WQLocalized(@"Added %lu file(s) to \"My Selected Files\".\n\nOn Windows PC, click 🍎 iPhone App Docs (USB) or connect via Wi-Fi and click \"My Selected Files\" to download them."), (unsigned long)added]);
+    } else {
+        wq_alert(self, WQLocalized(@"Could Not Add Files"), WQLocalized(@"Please try selecting those files again."));
     }
 }
 
@@ -2438,7 +2554,7 @@ didCompleteWithError:(NSError *)error
 - (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
 {
     if (_mode == 0) {
-        if (section == 0) return 4;
+        if (section == 0) return 5;
         return MAX(1, (NSInteger)_logs.count);
     }
     if (section == 0) {
@@ -2450,7 +2566,7 @@ didCompleteWithError:(NSError *)error
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
     if (_mode == 0) {
-        return (section == 0) ? WQLocalized(@"Transfer Controls") : WQLocalized(@"Live Transfer Activity");
+        return (section == 0) ? WQLocalized(@"Transfer Controls (Wi-Fi & USB Cable)") : WQLocalized(@"Live Transfer Activity");
     }
     return (section == 0) ? WQLocalized(@"Nearby Devices on Wi-Fi (PC · Android · iOS)") : WQLocalized(@"QR & Manual Connection");
 }
@@ -2472,11 +2588,18 @@ didCompleteWithError:(NSError *)error
                 c.secondaryText = _server.rootLabel;
                 c.image = [UIImage systemImageNamed:@"folder.fill"];
             } else if (indexPath.row == 1) {
+                c.text = WQLocalized(@"Pick Files from iPhone to Share…");
+                NSUInteger cnt = [self selectedOutboxCount];
+                c.secondaryText = cnt > 0
+                    ? [NSString stringWithFormat:@"%lu ready", (unsigned long)cnt]
+                    : WQLocalized(@"Files / iCloud");
+                c.image = [UIImage systemImageNamed:@"plus.rectangle.on.folder.fill"];
+            } else if (indexPath.row == 2) {
                 c.text = WQLocalized(@"Copy Wi-Fi Address & PIN");
                 c.secondaryText = _server.isRunning ? _server.pin : @"--";
                 c.image = [UIImage systemImageNamed:@"doc.on.doc"];
                 cell.accessoryType = UITableViewCellAccessoryNone;
-            } else if (indexPath.row == 2) {
+            } else if (indexPath.row == 3) {
                 c.text = WQLocalized(@"Set Fixed Pairing PIN…");
                 NSString *fixed = [NSUserDefaults.standardUserDefaults stringForKey:kWQWinFixedPinPref];
                 c.secondaryText = fixed.length ? fixed : WQLocalized(@"Random");
@@ -2487,12 +2610,12 @@ didCompleteWithError:(NSError *)error
                 c.image = [UIImage systemImageNamed:_server.isRunning ? @"stop.circle.fill" : @"play.circle.fill"];
                 cell.accessoryType = UITableViewCellAccessoryNone;
             }
-            c.imageProperties.tintColor = wq_theme_accent();
+            c.imageProperties.tintColor = (indexPath.row == 1) ? UIColor.systemTealColor : wq_theme_accent();
         } else {
             c = [UIListContentConfiguration subtitleCellConfiguration];
             if (!_logs.count) {
-                c.text = WQLocalized(@"Waiting for Windows PC, Android, or Browser…");
-                c.secondaryText = WQLocalized(@"Open WQGlass Transfer on Windows or Android (or scan the QR code above).");
+                c.text = WQLocalized(@"Waiting for Windows PC (USB / Wi-Fi), Android, or Browser…");
+                c.secondaryText = WQLocalized(@"Tap 'Pick Files from iPhone to Share…' to choose files right from your screen, or plug into Windows PC & click 🍎 iPhone App Docs (USB).");
             } else {
                 c.text = _logs[(NSUInteger)indexPath.row];
             }
@@ -2568,7 +2691,7 @@ didCompleteWithError:(NSError *)error
     if (indexPath.section != 0) return;
 
     if (indexPath.row == 0) {
-        UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Choose Folder to Share on Wi-Fi"), nil, UIAlertControllerStyleActionSheet);
+        UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Choose Folder to Share (Wi-Fi & USB)"), nil, UIAlertControllerStyleActionSheet);
         [sheet addAction:wq_alert_action(WQLocalized(@"WQ Glass Downloads (Videos / Audio / Files)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             self->_server.rootPath = wq_win_downloads_dir();
             self->_server.rootLabel = @"Downloads";
@@ -2577,6 +2700,11 @@ didCompleteWithError:(NSError *)error
         [sheet addAction:wq_alert_action(WQLocalized(@"WQ Glass Documents (All Saved Files)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             self->_server.rootPath = wq_win_documents_dir();
             self->_server.rootLabel = @"Documents";
+            [self.tableView reloadData];
+        })];
+        [sheet addAction:wq_alert_action(WQLocalized(@"My Selected Files (Picked on iPhone)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            self->_server.rootPath = wq_win_selected_outbox_dir();
+            self->_server.rootLabel = @"My Selected Files";
             [self.tableView reloadData];
         })];
         [sheet addAction:wq_alert_action(WQLocalized(@"App Data Containers"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
@@ -2590,12 +2718,38 @@ didCompleteWithError:(NSError *)error
         sheet.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
         [self presentViewController:sheet animated:YES completion:nil];
     } else if (indexPath.row == 1) {
-        if (_server.isRunning && _server.ipAddress.length) {
-            UIPasteboard.generalPasteboard.string = [NSString stringWithFormat:@"http://%@:%u (PIN: %@)", _server.ipAddress, (unsigned)_server.port, _server.pin];
-            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
-            wq_alert(self, WQLocalized(@"Copied"), WQLocalized(@"Wi-Fi address & PIN copied to clipboard."));
+        NSUInteger cnt = [self selectedOutboxCount];
+        UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Share Specific Files from iPhone"),
+                                                       WQLocalized(@"Pick any files from Files, iCloud Drive, or On My iPhone so your PC can download them over USB cable or Wi-Fi."),
+                                                       UIAlertControllerStyleActionSheet);
+        [sheet addAction:wq_alert_action(WQLocalized(@"Pick Files from iPhone / iCloud Drive…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            [self openOutboxDocumentPicker];
+        })];
+        [sheet addAction:wq_alert_action(WQLocalized(@"Switch Shared Folder to My Selected Files"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            self->_server.rootPath = wq_win_selected_outbox_dir();
+            self->_server.rootLabel = @"My Selected Files";
+            [self.tableView reloadData];
+        })];
+        if (cnt > 0) {
+            [sheet addAction:wq_alert_action([NSString stringWithFormat:WQLocalized(@"Clear My Selected Files (%lu)"), (unsigned long)cnt], UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+                [self clearSelectedOutbox];
+            })];
         }
+        [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        sheet.popoverPresentationController.sourceView = cell ?: self.view;
+        sheet.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
+        [self presentViewController:sheet animated:YES completion:nil];
     } else if (indexPath.row == 2) {
+        if (_server.isRunning && _server.ipAddress.length) {
+            NSString *copyText = [_server.ipAddress isEqualToString:@"127.0.0.1"]
+                ? [NSString stringWithFormat:@"USB Cable Mode · PIN: %@", _server.pin]
+                : [NSString stringWithFormat:@"http://%@:%u (PIN: %@)", _server.ipAddress, (unsigned)_server.port, _server.pin];
+            UIPasteboard.generalPasteboard.string = copyText;
+            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+            wq_alert(self, WQLocalized(@"Copied"), WQLocalized(@"Transfer address & PIN copied to clipboard."));
+        }
+    } else if (indexPath.row == 3) {
         UIAlertController *a = wq_alert_controller(WQLocalized(@"Fixed Pairing PIN"),
                                                    WQLocalized(@"Enter a 4–8 digit PIN to reuse every time, or leave blank for a new random PIN."),
                                                    UIAlertControllerStyleAlert);

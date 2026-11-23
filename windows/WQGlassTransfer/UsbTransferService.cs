@@ -1,117 +1,228 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using MediaDevices;
 
 namespace WQGlassTransfer;
 
+/// <summary>
+/// Thread-safe STA-affinity Windows WPD/MTP USB Cable transfer engine.
+/// All MediaDevice COM calls execute on a dedicated ApartmentState.STA worker thread
+/// so folder navigation &amp; file listing work reliably on Android (Infinix, Samsung, Xiaomi, Pixel) &amp; iPhone.
+/// </summary>
 public sealed class UsbTransferService : IDisposable
 {
+    private readonly BlockingCollection<Action> _staQueue = new();
+    private readonly Thread _staThread;
     private MediaDevice? _activeDevice;
-    private readonly object _gate = new();
+    private volatile bool _disposed;
 
     public bool IsConnected => _activeDevice is not null;
     public UsbDeviceSummary? ConnectedSummary { get; private set; }
 
-    public List<UsbDeviceSummary> EnumerateConnectedDevices()
+    public UsbTransferService()
     {
-        var list = new List<UsbDeviceSummary>();
-        try
+        _staThread = new Thread(StaLoop)
         {
-            foreach (MediaDevice dev in MediaDevice.GetDevices())
-            {
-                try
-                {
-                    list.Add(new UsbDeviceSummary
-                    {
-                        DeviceId = dev.DeviceId ?? "",
-                        FriendlyName = string.IsNullOrWhiteSpace(dev.FriendlyName) ? (dev.Description ?? "USB Device") : dev.FriendlyName,
-                        Manufacturer = dev.Manufacturer ?? "",
-                        Model = dev.Description ?? ""
-                    });
-                }
-                finally
-                {
-                    dev.Dispose();
-                }
-            }
-        }
-        catch
-        {
-            // Ignore transient WPD enumeration errors during hot-plug.
-        }
-        return list;
+            IsBackground = true,
+            Name = "WQGlass-WPD-STA"
+        };
+        _staThread.SetApartmentState(ApartmentState.STA);
+        _staThread.Start();
     }
 
-    public bool Connect(UsbDeviceSummary summary, out string? error)
+    private void StaLoop()
     {
-        Disconnect();
-        error = null;
+        foreach (Action work in _staQueue.GetConsumingEnumerable())
+        {
+            try { work(); } catch { }
+        }
+    }
+
+    private Task<T> RunOnStaAsync<T>(Func<T> func)
+    {
+        var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (_disposed)
+        {
+            tcs.TrySetCanceled();
+            return tcs.Task;
+        }
         try
         {
-            MediaDevice? match = MediaDevice.GetDevices()
-                .FirstOrDefault(d => string.Equals(d.DeviceId, summary.DeviceId, StringComparison.OrdinalIgnoreCase));
-            if (match is null)
+            _staQueue.Add(() =>
             {
-                error = "USB device is no longer connected. Replug the cable and unlock your phone.";
-                return false;
-            }
-            match.Connect();
-            lock (_gate)
-            {
-                _activeDevice = match;
-                ConnectedSummary = summary;
-            }
-            return true;
+                try { tcs.TrySetResult(func()); }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            });
         }
         catch (Exception ex)
         {
-            error = $"Could not open USB device: {ex.Message}\n\nMake sure your phone is unlocked and set to File Transfer (MTP) / Trust This Computer.";
-            return false;
+            tcs.TrySetException(ex);
         }
+        return tcs.Task;
     }
 
-    public void Disconnect()
+    public Task<List<UsbDeviceSummary>> EnumerateConnectedDevicesAsync()
     {
-        lock (_gate)
+        return RunOnStaAsync(() =>
         {
-            if (_activeDevice is not null)
+            var list = new List<UsbDeviceSummary>();
+            try
             {
-                try { _activeDevice.Disconnect(); } catch { }
-                try { _activeDevice.Dispose(); } catch { }
-                _activeDevice = null;
+                foreach (MediaDevice dev in MediaDevice.GetDevices())
+                {
+                    try
+                    {
+                        list.Add(new UsbDeviceSummary
+                        {
+                            DeviceId = dev.DeviceId ?? "",
+                            FriendlyName = string.IsNullOrWhiteSpace(dev.FriendlyName) ? (dev.Description ?? "USB Device") : dev.FriendlyName,
+                            Manufacturer = dev.Manufacturer ?? "",
+                            Model = dev.Description ?? ""
+                        });
+                    }
+                    finally
+                    {
+                        dev.Dispose();
+                    }
+                }
             }
-            ConnectedSummary = null;
-        }
+            catch
+            {
+                // Ignore transient WPD errors during hot-plug.
+            }
+            return list;
+        });
     }
 
-    public List<UsbFileItem> ListDirectory(string path)
+    public Task<(bool ok, string? error)> ConnectAsync(UsbDeviceSummary summary)
+    {
+        return RunOnStaAsync(() =>
+        {
+            DisconnectInternal();
+            try
+            {
+                MediaDevice? match = null;
+                foreach (MediaDevice d in MediaDevice.GetDevices())
+                {
+                    if (match is null && string.Equals(d.DeviceId, summary.DeviceId, StringComparison.OrdinalIgnoreCase))
+                        match = d;
+                    else
+                        d.Dispose();
+                }
+
+                if (match is null)
+                    return (false, (string?)"USB device is no longer connected. Replug the cable and unlock your phone.");
+
+                match.Connect();
+                _activeDevice = match;
+                ConnectedSummary = summary;
+                return (true, (string?)null);
+            }
+            catch (Exception ex)
+            {
+                return (false, (string?)$"Could not open USB device: {ex.Message}\n\nMake sure your phone is unlocked and set to File Transfer (MTP) / Trust This Computer.");
+            }
+        });
+    }
+
+    public Task DisconnectAsync()
+    {
+        return RunOnStaAsync(() =>
+        {
+            DisconnectInternal();
+            return true;
+        });
+    }
+
+    private void DisconnectInternal()
+    {
+        if (_activeDevice is not null)
+        {
+            try { _activeDevice.Disconnect(); } catch { }
+            try { _activeDevice.Dispose(); } catch { }
+            _activeDevice = null;
+        }
+        ConnectedSummary = null;
+    }
+
+    public Task<List<UsbFileItem>> ListDirectoryAsync(string path)
+    {
+        return RunOnStaAsync(() => ListDirectoryInternal(path));
+    }
+
+    private List<UsbFileItem> ListDirectoryInternal(string path)
     {
         MediaDevice dev = RequireDevice();
         string norm = NormalizeUsbPath(path);
         var items = new List<UsbFileItem>();
 
-        MediaDirectoryInfo dir = dev.GetDirectoryInfo(norm);
-        foreach (MediaDirectoryInfo sub in dir.EnumerateDirectories())
+        try
         {
-            items.Add(new UsbFileItem
+            MediaDirectoryInfo dir = dev.GetDirectoryInfo(norm);
+            foreach (MediaDirectoryInfo sub in dir.EnumerateDirectories())
             {
-                Name = sub.Name,
-                FullPath = sub.FullName,
-                IsDir = true,
-                Size = 0,
-                Modified = sub.LastWriteTime
-            });
+                string full = NormalizeUsbPath(sub.FullName);
+                items.Add(new UsbFileItem
+                {
+                    Name = sub.Name,
+                    FullPath = full,
+                    IsDir = true,
+                    Size = 0,
+                    Modified = SanitizeDate(sub.LastWriteTime)
+                });
+            }
+            foreach (MediaFileInfo file in dir.EnumerateFiles())
+            {
+                string full = NormalizeUsbPath(file.FullName);
+                items.Add(new UsbFileItem
+                {
+                    Name = file.Name,
+                    FullPath = full,
+                    IsDir = false,
+                    Size = (long)file.Length,
+                    Modified = SanitizeDate(file.LastWriteTime)
+                });
+            }
         }
-        foreach (MediaFileInfo file in dir.EnumerateFiles())
+        catch
         {
-            items.Add(new UsbFileItem
+            // Fallback via flat path APIs for Android MTP implementations that dislike GetDirectoryInfo on certain nodes.
+            foreach (string subPath in dev.GetDirectories(norm))
             {
-                Name = file.Name,
-                FullPath = file.FullName,
-                IsDir = false,
-                Size = (long)file.Length,
-                Modified = file.LastWriteTime
-            });
+                string full = NormalizeUsbPath(subPath);
+                string name = Path.GetFileName(full.TrimEnd('\\'));
+                if (string.IsNullOrWhiteSpace(name)) name = full.Trim('\\');
+                items.Add(new UsbFileItem
+                {
+                    Name = name,
+                    FullPath = full,
+                    IsDir = true,
+                    Size = 0,
+                    Modified = null
+                });
+            }
+            foreach (string filePath in dev.GetFiles(norm))
+            {
+                string full = NormalizeUsbPath(filePath);
+                long size = 0;
+                DateTime? mod = null;
+                try
+                {
+                    var fi = dev.GetFileInfo(full);
+                    size = (long)fi.Length;
+                    mod = SanitizeDate(fi.LastWriteTime);
+                }
+                catch { }
+                items.Add(new UsbFileItem
+                {
+                    Name = Path.GetFileName(full),
+                    FullPath = full,
+                    IsDir = false,
+                    Size = size,
+                    Modified = mod
+                });
+            }
         }
 
         return items
@@ -120,7 +231,33 @@ public sealed class UsbTransferService : IDisposable
             .ToList();
     }
 
-    public long ExportFile(
+    public Task<List<(string remotePath, string localPath, long size)>> CollectExportsRecursiveAsync(
+        IReadOnlyList<UsbFileItem> items, string localRoot, CancellationToken ct)
+    {
+        return RunOnStaAsync(() =>
+        {
+            var jobs = new List<(string remotePath, string localPath, long size)>();
+            void Walk(UsbFileItem it, string localBase)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (it.IsDir)
+                {
+                    string subLocal = Path.Combine(localBase, it.Name);
+                    Directory.CreateDirectory(subLocal);
+                    foreach (var child in ListDirectoryInternal(it.FullPath))
+                        Walk(child, subLocal);
+                }
+                else
+                {
+                    jobs.Add((it.FullPath, Path.Combine(localBase, it.Name), it.Size));
+                }
+            }
+            foreach (var it in items) Walk(it, localRoot);
+            return jobs;
+        });
+    }
+
+    public Task<long> ExportFileAsync(
         string remoteUsbPath,
         string localDestinationPath,
         long knownSize,
@@ -130,23 +267,26 @@ public sealed class UsbTransferService : IDisposable
         IProgress<TransferProgressInfo>? progress,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        MediaDevice dev = RequireDevice();
-        string finalDest = TransferClient.ResolveConflictPath(localDestinationPath, conflictPolicy, out bool skip);
-        if (skip) return 0;
+        return RunOnStaAsync(() =>
+        {
+            ct.ThrowIfCancellationRequested();
+            MediaDevice dev = RequireDevice();
+            string finalDest = TransferClient.ResolveConflictPath(localDestinationPath, conflictPolicy, out bool skip);
+            if (skip) return 0L;
 
-        string? dir = Path.GetDirectoryName(finalDest);
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            string? dir = Path.GetDirectoryName(finalDest);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        string fileName = Path.GetFileName(finalDest);
-        using var fs = new FileStream(finalDest, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024);
-        using var tracker = new ProgressStream(fs, knownSize, fileName, fileIndex, fileCount, progress, ct);
-        dev.DownloadFile(remoteUsbPath, tracker);
-        tracker.FlushFinal();
-        return tracker.TotalProcessed;
+            string fileName = Path.GetFileName(finalDest);
+            using var fs = new FileStream(finalDest, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024);
+            using var tracker = new ProgressStream(fs, knownSize, fileName, fileIndex, fileCount, progress, ct);
+            dev.DownloadFile(NormalizeUsbPath(remoteUsbPath), tracker);
+            tracker.FlushFinal();
+            return tracker.TotalProcessed;
+        });
     }
 
-    public long ImportFile(
+    public Task<long> ImportFileAsync(
         string localFilePath,
         string remoteUsbDir,
         int fileIndex,
@@ -154,34 +294,49 @@ public sealed class UsbTransferService : IDisposable
         IProgress<TransferProgressInfo>? progress,
         CancellationToken ct)
     {
-        ct.ThrowIfCancellationRequested();
-        MediaDevice dev = RequireDevice();
-        var fi = new FileInfo(localFilePath);
-        if (!fi.Exists) throw new FileNotFoundException("Local file not found.", localFilePath);
+        return RunOnStaAsync(() =>
+        {
+            ct.ThrowIfCancellationRequested();
+            MediaDevice dev = RequireDevice();
+            var fi = new FileInfo(localFilePath);
+            if (!fi.Exists) throw new FileNotFoundException("Local file not found.", localFilePath);
 
-        string normDir = NormalizeUsbPath(remoteUsbDir);
-        string targetPath = normDir.EndsWith('\\') ? normDir + fi.Name : normDir + "\\" + fi.Name;
+            string normDir = NormalizeUsbPath(remoteUsbDir);
+            string targetPath = normDir == "\\" ? "\\" + fi.Name : normDir + "\\" + fi.Name;
 
-        using var fs = new FileStream(localFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024);
-        using var tracker = new ProgressStream(fs, fi.Length, fi.Name, fileIndex, fileCount, progress, ct);
-        dev.UploadFile(tracker, targetPath);
-        tracker.FlushFinal();
-        return fi.Length;
+            using var fs = new FileStream(localFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024);
+            using var tracker = new ProgressStream(fs, fi.Length, fi.Name, fileIndex, fileCount, progress, ct);
+            dev.UploadFile(tracker, targetPath);
+            tracker.FlushFinal();
+            return fi.Length;
+        });
     }
 
-    public void CreateFolder(string parentUsbPath, string folderName)
+    public Task CreateFolderAsync(string parentUsbPath, string folderName)
     {
-        MediaDevice dev = RequireDevice();
-        string norm = NormalizeUsbPath(parentUsbPath);
-        string target = norm.EndsWith('\\') ? norm + folderName : norm + "\\" + folderName;
-        dev.CreateDirectory(target);
+        return RunOnStaAsync(() =>
+        {
+            MediaDevice dev = RequireDevice();
+            string norm = NormalizeUsbPath(parentUsbPath);
+            string target = norm == "\\" ? "\\" + folderName : norm + "\\" + folderName;
+            if (!dev.DirectoryExists(target)) dev.CreateDirectory(target);
+            return true;
+        });
     }
 
-    public void DeleteItem(UsbFileItem item)
+    public Task DeleteItemsAsync(IReadOnlyList<UsbFileItem> items)
     {
-        MediaDevice dev = RequireDevice();
-        if (item.IsDir) dev.DeleteDirectory(item.FullPath, recursive: true);
-        else dev.DeleteFile(item.FullPath);
+        return RunOnStaAsync(() =>
+        {
+            MediaDevice dev = RequireDevice();
+            foreach (var item in items)
+            {
+                string p = NormalizeUsbPath(item.FullPath);
+                if (item.IsDir) dev.DeleteDirectory(p, recursive: true);
+                else dev.DeleteFile(p);
+            }
+            return true;
+        });
     }
 
     public static string NormalizeUsbPath(string path)
@@ -189,15 +344,22 @@ public sealed class UsbTransferService : IDisposable
         if (string.IsNullOrWhiteSpace(path)) return "\\";
         string p = path.Replace('/', '\\').Trim();
         if (!p.StartsWith('\\')) p = "\\" + p;
+        if (p.Length > 1) p = p.TrimEnd('\\');
         return p;
     }
 
     public static string GetParentUsbPath(string path)
     {
-        string p = NormalizeUsbPath(path).TrimEnd('\\');
-        if (string.IsNullOrEmpty(p)) return "\\";
+        string p = NormalizeUsbPath(path);
+        if (p == "\\") return "\\";
         int idx = p.LastIndexOf('\\');
         return idx <= 0 ? "\\" : p[..idx];
+    }
+
+    private static DateTime? SanitizeDate(DateTime? dt)
+    {
+        if (!dt.HasValue || dt.Value.Year < 1980) return null;
+        return dt;
     }
 
     public static string? FindAdbExecutable()
@@ -231,10 +393,7 @@ public sealed class UsbTransferService : IDisposable
                 }
                 catch { }
             }
-            else if (File.Exists(c))
-            {
-                return c;
-            }
+            else if (File.Exists(c)) return c;
         }
         return null;
     }
@@ -257,16 +416,12 @@ public sealed class UsbTransferService : IDisposable
                 CreateNoWindow = true
             };
             using var proc = Process.Start(psi);
-            if (proc is null)
-            {
-                message = "Failed to launch ADB.";
-                return false;
-            }
+            if (proc is null) { message = "Failed to launch ADB."; return false; }
             string stderr = proc.StandardError.ReadToEnd().Trim();
             proc.WaitForExit(5000);
             if (proc.ExitCode == 0)
             {
-                message = $"USB Turbo Tunnel active! Connect Wi-Fi Client to 127.0.0.1:{localPort} (full USB cable speed).";
+                message = $"USB Turbo Tunnel active! Connect to 127.0.0.1:{localPort} (full USB cable speed).";
                 return true;
             }
             message = string.IsNullOrWhiteSpace(stderr) ? "No ADB-authorized Android device detected." : stderr;
@@ -281,13 +436,16 @@ public sealed class UsbTransferService : IDisposable
 
     private MediaDevice RequireDevice()
     {
-        lock (_gate)
-        {
-            return _activeDevice ?? throw new InvalidOperationException("No USB device connected.");
-        }
+        return _activeDevice ?? throw new InvalidOperationException("No USB device connected.");
     }
 
-    public void Dispose() => Disconnect();
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        try { _staQueue.Add(DisconnectInternal); } catch { }
+        _staQueue.CompleteAdding();
+    }
 
     private sealed class ProgressStream : Stream
     {
@@ -344,11 +502,7 @@ public sealed class UsbTransferService : IDisposable
         {
             _ct.ThrowIfCancellationRequested();
             int n = _inner.Read(buffer, offset, count);
-            if (n > 0)
-            {
-                TotalProcessed += n;
-                Report();
-            }
+            if (n > 0) { TotalProcessed += n; Report(); }
             return n;
         }
 

@@ -363,7 +363,7 @@ class TransferServer {
                         }
                         val rawFiles = target.listFiles()
                         if (rawFiles == null) {
-                            sendJson(out, 403, JSONObject().put("error", "Grant 'All Files Access' on Android to read this folder"))
+                            sendJson(out, 403, JSONObject().put("error", "Storage permission needed on Android — open WQGlass Transfer → Share Device and tap Grant"))
                             return
                         }
                         val children = rawFiles

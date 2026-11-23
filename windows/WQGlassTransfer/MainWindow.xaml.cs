@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private readonly DiscoveryService _discovery = new();
     private readonly TransferServer _server = new();
     private readonly UsbTransferService _usb = new();
+    private readonly AppleUsbMuxBridge _appleMux = new();
     private readonly DispatcherTimer _usbPollTimer;
 
     private readonly ObservableCollection<DiscoveredPhone> _phones = new();
@@ -104,6 +105,7 @@ public partial class MainWindow : Window
             _discovery.Dispose();
             _server.Dispose();
             _usb.Dispose();
+            _appleMux.Dispose();
             _client?.Dispose();
         };
     }
@@ -234,6 +236,11 @@ public partial class MainWindow : Window
         {
             if (_activeNav == 0 && _client is not null) { DeselectAllWifi(); e.Handled = true; }
             else if (_activeNav == 1 && _usb.IsConnected) { DeselectAllUsb(); e.Handled = true; }
+        }
+        else if (e.Key == Key.Enter)
+        {
+            if (_activeNav == 0 && _client is not null) { WifiOpenFolderBtn_Click(this, new RoutedEventArgs()); e.Handled = true; }
+            else if (_activeNav == 1 && _usb.IsConnected) { UsbOpenFolderBtn_Click(this, new RoutedEventArgs()); e.Handled = true; }
         }
     }
 
@@ -384,11 +391,14 @@ public partial class MainWindow : Window
             SaveSettings();
 
             ConnectBtn.Content = "Disconnect";
-            StatusBadgeText.Text = $"● {info.PlatformIcon} {info.Device} [{info.OsSummary}] · /{info.Root}";
+            bool isUsbTunnel = ep.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase);
+            string transportTag = isUsbTunnel ? "🔌 USB Cable" : "📡 Wi-Fi";
+            StatusBadgeText.Text = $"● {transportTag} · {info.PlatformIcon} {info.Device} [{info.OsSummary}] · /{info.Root}";
             StatusBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(74, 222, 128));
             StorageLabel.Text = $"{RemoteFileItem.FormatBytes(info.FreeBytes)} free / {RemoteFileItem.FormatBytes(info.TotalBytes)}";
             StorageUsedBar.Value = info.UsedPercent;
             StorageMeterPanel.Visibility = info.TotalBytes > 0 ? Visibility.Visible : Visibility.Collapsed;
+            IphoneRootsBar.Visibility = info.NormalizedPlatform == "ios" ? Visibility.Visible : Visibility.Collapsed;
             SetWifiConnectedUI(true);
             await RefreshDirectoryAsync();
         }
@@ -403,12 +413,42 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void IphoneRootSwitch_Click(object sender, RoutedEventArgs e)
+    {
+        if (_client is null || sender is not Button btn || btn.Tag is not string rootId) return;
+        try
+        {
+            await _client.SwitchRemoteRootAsync(rootId);
+            _phoneInfo = await _client.GetInfoAsync();
+            _currentPath = "";
+            string ep = EndpointBox.Text.Trim();
+            string transportTag = ep.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase) ? "🔌 USB Cable" : "📡 Wi-Fi";
+            StatusBadgeText.Text = $"● {transportTag} · {_phoneInfo.PlatformIcon} {_phoneInfo.Device} [{_phoneInfo.OsSummary}] · /{_phoneInfo.Root}";
+            await RefreshDirectoryAsync();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not switch iPhone folder: {ex.Message}", "Switch Folder", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async void WifiOpenFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_client is null) return;
+        var dir = GetSelectedWifiItems().FirstOrDefault(i => i.IsDir)
+                  ?? (FilesList.SelectedItem is RemoteFileItem fi && fi.IsDir ? fi : null);
+        if (dir is null) return;
+        _currentPath = dir.Path;
+        await RefreshDirectoryAsync();
+    }
+
     private void Disconnect()
     {
         _transferCts?.Cancel();
         _client?.Dispose();
         _client = null;
         _phoneInfo = null;
+        _appleMux.StopTunnel();
         _allItems.Clear();
         _visibleItems.Clear();
         _currentPath = "";
@@ -416,6 +456,7 @@ public partial class MainWindow : Window
         StatusBadgeText.Text = _phones.Count > 0 ? $"Found {_phones.Count} device(s) on Wi-Fi" : "Disconnected";
         StatusBadgeText.Foreground = (Brush)FindResource("AccentCyan");
         StorageMeterPanel.Visibility = Visibility.Collapsed;
+        IphoneRootsBar.Visibility = Visibility.Collapsed;
         PathLabel.Text = "Not connected — Pick a Wi-Fi device above, Scan QR, or switch to 🔌 USB Cable";
         SetWifiConnectedUI(false);
     }
@@ -448,6 +489,7 @@ public partial class MainWindow : Window
         DownloadBtn.IsEnabled = hasSel;
         DeleteBtn.IsEnabled = hasSel;
         RenameBtn.IsEnabled = _client is not null && sel.Count == 1;
+        WifiOpenFolderBtn.IsEnabled = _client is not null && sel.Any(i => i.IsDir);
 
         long totalBytes = sel.Where(i => !i.IsDir).Sum(i => i.Size);
         int folders = sel.Count(i => i.IsDir);
@@ -522,7 +564,29 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             TransferStatusText.Text = $"Refresh failed: {ex.Message}";
+            if (ex.Message.Contains("403", StringComparison.OrdinalIgnoreCase) ||
+                ex.Message.Contains("All Files Access", StringComparison.OrdinalIgnoreCase) ||
+                ex.Message.Contains("permission", StringComparison.OrdinalIgnoreCase))
+            {
+                PathLabel.Text = "⚠ Android Storage Permission Needed — Tap 'Grant' inside WQGlass Transfer on your Android phone";
+                MessageBox.Show(this,
+                    "Android is currently blocking access to that folder.\n\n" +
+                    "On your Android phone, open WQGlass Transfer → Share Device tab and tap the amber 'Grant' button to allow Storage / All Files Access, then click Refresh here.",
+                    "Android Storage Permission Needed",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
         }
+    }
+
+    private static bool IsClickOnCheckBox(DependencyObject? src)
+    {
+        while (src is not null)
+        {
+            if (src is CheckBox) return true;
+            src = VisualTreeHelper.GetParent(src);
+        }
+        return false;
     }
 
     private void ApplyWifiFilterAndSort()
@@ -548,6 +612,7 @@ public partial class MainWindow : Window
 
     private async void FilesList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
+        if (IsClickOnCheckBox(e.OriginalSource as DependencyObject)) return;
         if (_client is null || FilesList.SelectedItem is not RemoteFileItem item) return;
         if (item.IsDir)
         {
@@ -791,49 +856,138 @@ public partial class MainWindow : Window
 
     #endregion
 
-    #region USB Cable Mode (Native WPD/MTP + ADB USB Bridge)
+    #region USB Cable Mode (Native WPD/MTP + Apple usbmuxd + ADB USB Bridge)
 
-    private void RefreshUsbDevicesList()
+    private async void RefreshUsbDevicesList()
     {
-        Task.Run(() => _usb.EnumerateConnectedDevices()).ContinueWith(t =>
+        try
         {
-            if (t.IsFaulted || t.Result is null) return;
-            Dispatcher.Invoke(() =>
-            {
-                var found = t.Result;
-                string? selectedId = (UsbDevicesBox.SelectedItem as UsbDeviceSummary)?.DeviceId;
-                _usbDevices.Clear();
-                foreach (var d in found) _usbDevices.Add(d);
-                UsbCountText.Text = _usbDevices.Count.ToString();
+            var wpdTask = _usb.EnumerateConnectedDevicesAsync();
+            var appleTask = Task.Run(() => _appleMux.ListUsbDevices());
+            await Task.WhenAll(wpdTask, appleTask);
 
-                if (_usbDevices.Count > 0)
+            var found = wpdTask.Result;
+            var appleDevs = appleTask.Result;
+
+            string? selectedId = (UsbDevicesBox.SelectedItem as UsbDeviceSummary)?.DeviceId;
+            _usbDevices.Clear();
+            foreach (var d in found) _usbDevices.Add(d);
+
+            int totalDetected = Math.Max(_usbDevices.Count, appleDevs.Count);
+            UsbCountText.Text = totalDetected.ToString();
+
+            if (_usbDevices.Count > 0)
+            {
+                var match = _usbDevices.FirstOrDefault(d => d.DeviceId == selectedId) ?? _usbDevices[0];
+                UsbDevicesBox.SelectedItem = match;
+                if (!_usb.IsConnected)
                 {
-                    var match = _usbDevices.FirstOrDefault(d => d.DeviceId == selectedId) ?? _usbDevices[0];
-                    UsbDevicesBox.SelectedItem = match;
-                    if (!_usb.IsConnected)
-                        UsbStatusBadge.Text = $"Detected {_usbDevices.Count} USB cable device(s) — click Open USB Device";
+                    UsbStatusBadge.Text = appleDevs.Count > 0
+                        ? $"Detected {_usbDevices.Count} USB device(s) + iPhone USB App Docs ready — click 🍎 iPhone App Docs (USB) or Open USB Device"
+                        : $"Detected {_usbDevices.Count} USB cable device(s) — click Open USB Device";
                 }
-                else if (!_usb.IsConnected)
-                {
-                    UsbStatusBadge.Text = "No USB phone detected — plug in Android (File Transfer/MTP) or iPhone & unlock";
-                }
-            });
-        });
+            }
+            else if (appleDevs.Count > 0 && !_usb.IsConnected)
+            {
+                UsbStatusBadge.Text = $"🍎 Detected {appleDevs.Count} iPhone over USB — click 🍎 iPhone App Docs (USB) for Documents & Downloads";
+            }
+            else if (!_usb.IsConnected)
+            {
+                UsbStatusBadge.Text = "No USB phone detected — plug in Android (File Transfer/MTP) or iPhone & unlock";
+            }
+        }
+        catch
+        {
+            // Ignore transient hot-plug enumeration failures.
+        }
     }
 
     private void UsbDetectBtn_Click(object sender, RoutedEventArgs e) => RefreshUsbDevicesList();
+
+    private async void UsbIphoneAppBtn_Click(object sender, RoutedEventArgs e)
+    {
+        UsbIphoneAppBtn.IsEnabled = false;
+        UsbStatusBadge.Text = "Searching for iPhone via Apple USB cable (usbmuxd)…";
+        try
+        {
+            var devices = await Task.Run(() => _appleMux.ListUsbDevices());
+            if (devices.Count == 0)
+            {
+                UsbStatusBadge.Text = "No iPhone detected on Apple USB service.";
+                MessageBox.Show(this,
+                    "No iPhone was detected on Apple's USB service (usbmuxd).\n\n" +
+                    "To connect iPhone App Documents & Downloads over Lightning/USB-C (like iTunes / 3uTools):\n" +
+                    "1. Plug your iPhone into this PC with a USB cable and tap 'Trust This Computer'.\n" +
+                    "2. Make sure Apple Devices or iTunes (or 3uTools driver) is installed on Windows so Apple Mobile Device Service is running.\n" +
+                    "3. Open WQ Glass on your iPhone → LAN Transfer (Share iPhone) — works even with Wi-Fi OFF!",
+                    "iPhone USB App Documents",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            AppleUsbDeviceInfo target = devices[0];
+            UsbStatusBadge.Text = $"Opening direct USB cable tunnel to iPhone WQ Glass…";
+
+            (bool ok, string localEndpoint, string? err) = await Task.Run(() =>
+            {
+                string? lastErr = null;
+                for (int port = 8765; port <= 8768; port++)
+                {
+                    if (_appleMux.StartTunnel(target.DeviceId, port, out string ep, out string? eMsg))
+                        return (true, ep, (string?)null);
+                    lastErr = eMsg;
+                }
+                return (false, "", lastErr);
+            });
+
+            if (!ok)
+            {
+                UsbStatusBadge.Text = "iPhone WQ Glass server not reachable over USB.";
+                MessageBox.Show(this,
+                    (err ?? "Could not reach WQ Glass on iPhone over USB.") +
+                    "\n\nOpen WQ Glass on your iPhone → Utility Hub → LAN Transfer (Share iPhone) and keep that screen open, then try again.",
+                    "iPhone USB App Documents",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            string defaultPin = PinBox.Text.Trim();
+            string? pin = PromptInput(
+                "iPhone USB Cable Ready (App Documents & Downloads)",
+                "Connected directly to iPhone over USB cable!\nEnter the 4–8 digit PIN shown on your iPhone WQ Glass screen:",
+                defaultPin);
+
+            if (string.IsNullOrWhiteSpace(pin))
+            {
+                UsbStatusBadge.Text = $"🍎 iPhone USB tunnel ready at {localEndpoint} — enter PIN in Wi-Fi / USB Explorer to connect.";
+                return;
+            }
+
+            if (_client is not null) Disconnect();
+            SwitchNav(0);
+            EndpointBox.Text = localEndpoint;
+            PinBox.Text = pin.Trim();
+            ConnectBtn_Click(sender, e);
+        }
+        finally
+        {
+            UsbIphoneAppBtn.IsEnabled = true;
+        }
+    }
 
     private async void UsbConnectBtn_Click(object sender, RoutedEventArgs e)
     {
         if (_usb.IsConnected)
         {
-            _usb.Disconnect();
+            await _usb.DisconnectAsync();
             _allUsbItems.Clear();
             _visibleUsbItems.Clear();
             _usbCurrentPath = "\\";
             UsbConnectBtn.Content = "🔌 Open USB Device";
             UsbStatusBadge.Text = "USB device disconnected.";
-            UsbPathLabel.Text = "No USB device opened";
+            UsbPathLabel.Text = "No USB device opened — Select a device above and click Open USB Device";
             SetUsbConnectedUI(false);
             return;
         }
@@ -848,8 +1002,7 @@ public partial class MainWindow : Window
         UsbStatusBadge.Text = $"Opening {summary.FriendlyName} over USB…";
         try
         {
-            string? err = null;
-            bool ok = await Task.Run(() => _usb.Connect(summary, out err));
+            var (ok, err) = await _usb.ConnectAsync(summary);
             if (!ok)
             {
                 UsbStatusBadge.Text = "USB open failed";
@@ -859,9 +1012,26 @@ public partial class MainWindow : Window
 
             _usbCurrentPath = "\\";
             UsbConnectBtn.Content = "Disconnect USB";
-            UsbStatusBadge.Text = $"● USB Cable Connected: {summary.DisplayName}";
+            UsbStatusBadge.Text = summary.IsApple
+                ? $"● USB Connected: {summary.DisplayName} (Camera Roll · For App Documents click 🍎 iPhone App Docs)"
+                : $"● USB Cable Connected: {summary.DisplayName}";
             SetUsbConnectedUI(true);
             await RefreshUsbDirectoryAsync();
+
+            // Auto-enter single storage volume (e.g. Android "Internal shared storage" or iPhone "Internal Storage")
+            // so users immediately see their folders and files without an extra step.
+            if (_allUsbItems.Count == 1 && _allUsbItems[0].IsDir)
+            {
+                _usbCurrentPath = _allUsbItems[0].FullPath;
+                await RefreshUsbDirectoryAsync();
+            }
+            else if (_allUsbItems.Count == 0)
+            {
+                UsbStatusBadge.Text = summary.IsApple
+                    ? "iPhone storage empty — unlock iPhone, tap 'Trust', or click 🍎 iPhone App Docs (USB)!"
+                    : "Android storage empty — unlock phone, tap USB notification and pick 'File Transfer (MTP)'!";
+                UsbPathLabel.Text = UsbStatusBadge.Text;
+            }
         }
         finally
         {
@@ -875,6 +1045,7 @@ public partial class MainWindow : Window
         MessageBox.Show(this, msg, "ADB USB Turbo Bridge", MessageBoxButton.OK, ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
         if (ok)
         {
+            if (_client is not null) Disconnect();
             EndpointBox.Text = "127.0.0.1:18765";
             SwitchNav(0);
             PinBox.Focus();
@@ -900,16 +1071,20 @@ public partial class MainWindow : Window
         if (!_usb.IsConnected) return;
         try
         {
-            var listed = await Task.Run(() => _usb.ListDirectory(_usbCurrentPath));
+            var listed = await _usb.ListDirectoryAsync(_usbCurrentPath);
             _allUsbItems.Clear();
             _allUsbItems.AddRange(listed);
             ApplyUsbFilter();
             UsbPathLabel.Text = $"USB:{_usbCurrentPath}   ({_allUsbItems.Count} items)";
             UsbUpBtn.IsEnabled = _usbCurrentPath != "\\";
+            TransferStatusText.Text = _allUsbItems.Count == 0
+                ? $"USB:{_usbCurrentPath} is empty (if Android, ensure USB mode is set to 'File Transfer / MTP' and phone is unlocked)."
+                : $"Opened USB:{_usbCurrentPath} ({_allUsbItems.Count} items) — double-click any folder or click 📂 Open Folder to browse inside.";
         }
         catch (Exception ex)
         {
             TransferStatusText.Text = $"USB folder read error: {ex.Message}";
+            UsbStatusBadge.Text = $"USB read error: {ex.Message}";
         }
     }
 
@@ -940,6 +1115,7 @@ public partial class MainWindow : Window
         var sel = GetSelectedUsbItems();
         bool hasSel = _usb.IsConnected && sel.Count > 0;
         UsbExportBtn.IsEnabled = hasSel;
+        UsbOpenFolderBtn.IsEnabled = _usb.IsConnected && sel.Any(i => i.IsDir);
         UsbDeleteBtn.IsEnabled = hasSel && _usb.ConnectedSummary?.IsApple != true;
         long total = sel.Where(i => !i.IsDir).Sum(i => i.Size);
         int folders = sel.Count(i => i.IsDir);
@@ -968,9 +1144,21 @@ public partial class MainWindow : Window
         ApplyUsbFilter();
     }
 
+    private async void UsbOpenFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_usb.IsConnected) return;
+        var dir = GetSelectedUsbItems().FirstOrDefault(i => i.IsDir);
+        if (dir is null) return;
+        _usbCurrentPath = dir.FullPath;
+        await RefreshUsbDirectoryAsync();
+    }
+
     private async void UsbFilesList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (!_usb.IsConnected || UsbFilesList.SelectedItem is not UsbFileItem item) return;
+        if (IsClickOnCheckBox(e.OriginalSource as DependencyObject)) return;
+        if (!_usb.IsConnected) return;
+        UsbFileItem? item = UsbFilesList.SelectedItem as UsbFileItem ?? GetSelectedUsbItems().FirstOrDefault();
+        if (item is null) return;
         if (item.IsDir)
         {
             _usbCurrentPath = item.FullPath;
@@ -1006,41 +1194,21 @@ public partial class MainWindow : Window
 
         try
         {
-            var jobs = new List<(string remotePath, string localPath, long size)>();
-            void CollectUsb(UsbFileItem it, string localBase)
-            {
-                _transferCts!.Token.ThrowIfCancellationRequested();
-                if (it.IsDir)
-                {
-                    string subLocal = Path.Combine(localBase, it.Name);
-                    Directory.CreateDirectory(subLocal);
-                    foreach (var child in _usb.ListDirectory(it.FullPath))
-                        CollectUsb(child, subLocal);
-                }
-                else
-                {
-                    jobs.Add((it.FullPath, Path.Combine(localBase, it.Name), it.Size));
-                }
-            }
-
-            await Task.Run(() => { foreach (var it in items) CollectUsb(it, _pcDownloadDir); }, _transferCts!.Token);
+            var jobs = await _usb.CollectExportsRecursiveAsync(items, _pcDownloadDir, _transferCts!.Token);
             if (jobs.Count == 0) { EndTransferUI("No files found in selected USB folder(s)."); return; }
 
             long grandTotal = jobs.Sum(j => Math.Max(0, j.size));
             var progress = CreateProgressHandler("USB Export", grandTotal);
 
-            await Task.Run(() =>
+            for (int i = 0; i < jobs.Count; i++)
             {
-                for (int i = 0; i < jobs.Count; i++)
-                {
-                    _transferCts.Token.ThrowIfCancellationRequested();
-                    var fsw = Stopwatch.StartNew();
-                    long bytes = _usb.ExportFile(jobs[i].remotePath, jobs[i].localPath, jobs[i].size, i + 1, jobs.Count, _conflictPolicy, progress, _transferCts.Token);
-                    totalBytes += bytes;
-                    double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
-                    RecordHistory("USB", "↓", Path.GetFileName(jobs[i].localPath), bytes, bps, "Completed", jobs[i].localPath);
-                }
-            }, _transferCts.Token);
+                _transferCts.Token.ThrowIfCancellationRequested();
+                var fsw = Stopwatch.StartNew();
+                long bytes = await _usb.ExportFileAsync(jobs[i].remotePath, jobs[i].localPath, jobs[i].size, i + 1, jobs.Count, _conflictPolicy, progress, _transferCts.Token);
+                totalBytes += bytes;
+                double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
+                RecordHistory("USB", "↓", Path.GetFileName(jobs[i].localPath), bytes, bps, "Completed", jobs[i].localPath);
+            }
 
             double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalBytes / sw.Elapsed.TotalSeconds : 0;
             EndTransferUI($"USB Export complete: {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s → {_pcDownloadDir}");
@@ -1077,7 +1245,7 @@ public partial class MainWindow : Window
         if (!_usb.IsConnected || localPaths.Count == 0) return;
         if (_usbCurrentPath == "\\")
         {
-            MessageBox.Show(this, "Double-click a storage volume (e.g. Internal shared storage) first before importing files over USB.", "Choose USB Storage Folder", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Open a storage volume (e.g. Internal shared storage) first before importing files over USB.", "Choose USB Storage Folder", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -1114,22 +1282,19 @@ public partial class MainWindow : Window
             long grandTotal = jobs.Sum(j => j.size);
             var progress = CreateProgressHandler("USB Import", grandTotal);
 
-            await Task.Run(() =>
+            foreach (var (parent, name) in dirsToCreate)
             {
-                foreach (var (parent, name) in dirsToCreate)
-                {
-                    try { _usb.CreateFolder(parent, name); } catch { }
-                }
-                for (int i = 0; i < jobs.Count; i++)
-                {
-                    _transferCts!.Token.ThrowIfCancellationRequested();
-                    var fsw = Stopwatch.StartNew();
-                    long bytes = _usb.ImportFile(jobs[i].localFile, jobs[i].usbDir, i + 1, jobs.Count, progress, _transferCts.Token);
-                    totalBytes += bytes;
-                    double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
-                    RecordHistory("USB", "↑", Path.GetFileName(jobs[i].localFile), bytes, bps, "Completed", jobs[i].localFile);
-                }
-            }, _transferCts!.Token);
+                try { await _usb.CreateFolderAsync(parent, name); } catch { }
+            }
+            for (int i = 0; i < jobs.Count; i++)
+            {
+                _transferCts!.Token.ThrowIfCancellationRequested();
+                var fsw = Stopwatch.StartNew();
+                long bytes = await _usb.ImportFileAsync(jobs[i].localFile, jobs[i].usbDir, i + 1, jobs.Count, progress, _transferCts.Token);
+                totalBytes += bytes;
+                double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
+                RecordHistory("USB", "↑", Path.GetFileName(jobs[i].localFile), bytes, bps, "Completed", jobs[i].localFile);
+            }
 
             double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalBytes / sw.Elapsed.TotalSeconds : 0;
             EndTransferUI($"USB Import complete: {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s!");
@@ -1153,7 +1318,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(name)) return;
         try
         {
-            await Task.Run(() => _usb.CreateFolder(_usbCurrentPath, name.Trim()));
+            await _usb.CreateFolderAsync(_usbCurrentPath, name.Trim());
             await RefreshUsbDirectoryAsync();
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "USB New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
@@ -1167,7 +1332,7 @@ public partial class MainWindow : Window
             return;
         try
         {
-            await Task.Run(() => { foreach (var it in sel) _usb.DeleteItem(it); });
+            await _usb.DeleteItemsAsync(sel);
             await RefreshUsbDirectoryAsync();
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "USB Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error); }

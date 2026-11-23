@@ -85,6 +85,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -107,6 +108,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.CancellationException
@@ -1066,7 +1070,25 @@ private fun HostScreen(
     }
     var hasAllAccess by remember { mutableStateOf(hasFullStorageAccess(context)) }
 
-    // Refresh permission flag whenever HostScreen recomposes
+    val hostStoragePermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        hasAllAccess = hasFullStorageAccess(context)
+        if (hasAllAccess) {
+            Toast.makeText(context, "Storage access granted! PC & iPhone can now see all folders.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Refresh permission flag whenever HostScreen resumes from Android Settings or permission dialog
+    val lifecycleOwner = context as? LifecycleOwner
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasAllAccess = hasFullStorageAccess(context)
+            }
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
+    }
+
     LaunchedEffect(hostState.isRunning, sharedPath) {
         hasAllAccess = hasFullStorageAccess(context)
     }
@@ -1109,7 +1131,7 @@ private fun HostScreen(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Prominent Full Storage Access banner (prevents empty/unreadable folder bugs on Android 11+!)
+        // Prominent Full Storage Access banner (prevents empty/unreadable folder bugs on Android 10 & 11+!)
         if (!hasAllAccess) {
             item {
                 Card(
@@ -1125,17 +1147,26 @@ private fun HostScreen(
                     ) {
                         Icon(Icons.Default.Security, contentDescription = null, tint = WarnAmber)
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("All Files Access Required", color = WarnAmber, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                            Text("Storage / All Files Access Required", color = WarnAmber, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
                             Text(
-                                "Android hides Downloads, DCIM, and Internal Storage from transfer apps until you enable All Files Access.",
+                                "Android hides Downloads, DCIM, and Internal Storage from PC until you grant Storage Access.",
                                 color = TextPrimary,
                                 fontSize = 11.5.sp
                             )
                         }
                         Button(
                             onClick = {
-                                onRequestRuntimePermissions()
-                                openStorageAccessSettings(context)
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                    onRequestRuntimePermissions()
+                                    openStorageAccessSettings(context)
+                                } else {
+                                    hostStoragePermLauncher.launch(
+                                        arrayOf(
+                                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                        )
+                                    )
+                                }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = WarnAmber)
                         ) {

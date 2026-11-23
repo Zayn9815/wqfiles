@@ -176,22 +176,25 @@
             <Setter Property="Foreground" Value="{StaticResource AccentCyan}"/>
         </Style>
 
-        <!-- Glass TextBox -->
+        <!-- Glass TextBox (properly centered, zero vertical text clipping at any DPI) -->
         <Style TargetType="TextBox" x:Key="GlassTextBox">
             <Setter Property="Background" Value="{StaticResource InputBg}"/>
             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
             <Setter Property="CaretBrush" Value="{StaticResource AccentCyan}"/>
+            <Setter Property="SelectionBrush" Value="{StaticResource AccentBlue}"/>
             <Setter Property="BorderBrush" Value="{StaticResource CardBorder}"/>
             <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="10,6"/>
-            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="FontSize" Value="13"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
                         <Border x:Name="bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8">
-                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="Center"/>
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="10,0">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="0" VerticalAlignment="Center"
+                                          HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsKeyboardFocused" Value="True">

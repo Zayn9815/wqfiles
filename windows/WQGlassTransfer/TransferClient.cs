@@ -122,6 +122,14 @@ public sealed class TransferClient : IDisposable
         resp.EnsureSuccessStatusCode();
     }
 
+    public async Task SwitchRemoteRootAsync(string rootId, CancellationToken ct = default)
+    {
+        string q = Uri.EscapeDataString(rootId);
+        using var req = CreateRequest(HttpMethod.Post, $"/api/setroot?id={q}");
+        using var resp = await _http.SendAsync(req, ct);
+        resp.EnsureSuccessStatusCode();
+    }
+
     public async Task<long> DownloadFileAsync(
         string remotePath,
         string localDestinationPath,

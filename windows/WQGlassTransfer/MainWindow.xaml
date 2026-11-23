@@ -142,23 +142,23 @@
 
                             <StackPanel Grid.Column="0" Margin="0,0,8,0">
                                 <TextBlock Text="Auto-Discovered Wi-Fi Devices (iPhone · Android · PC)" FontSize="10.5" Foreground="{StaticResource TextSecondary}" Margin="2,0,0,4"/>
-                                <ComboBox x:Name="DiscoveredBox" Style="{StaticResource GlassComboBox}" Height="34"
+                                <ComboBox x:Name="DiscoveredBox" Style="{StaticResource GlassComboBox}" Height="36"
                                           SelectionChanged="DiscoveredBox_SelectionChanged" DisplayMemberPath="DisplayName"/>
                             </StackPanel>
 
                             <StackPanel Grid.Column="1" Margin="0,0,8,0">
                                 <TextBlock Text="Address (IP:Port)" FontSize="10.5" Foreground="{StaticResource TextSecondary}" Margin="2,0,0,4"/>
-                                <TextBox x:Name="EndpointBox" Style="{StaticResource GlassTextBox}" Height="34" ToolTip="Example: 192.168.1.42:8765"/>
+                                <TextBox x:Name="EndpointBox" Style="{StaticResource GlassTextBox}" Height="36" ToolTip="Example: 192.168.1.42:8765"/>
                             </StackPanel>
 
                             <StackPanel Grid.Column="2" Margin="0,0,8,0">
                                 <TextBlock Text="PIN" FontSize="10.5" Foreground="{StaticResource TextSecondary}" Margin="2,0,0,4"/>
-                                <TextBox x:Name="PinBox" Style="{StaticResource GlassTextBox}" Height="34" MaxLength="8" KeyDown="PinBox_KeyDown"/>
+                                <TextBox x:Name="PinBox" Style="{StaticResource GlassTextBox}" Height="36" MaxLength="8" KeyDown="PinBox_KeyDown"/>
                             </StackPanel>
 
-                            <Button x:Name="ConnectBtn" Grid.Column="3" Content="Connect" Style="{StaticResource PrimaryBtn}" Height="34" VerticalAlignment="Bottom" Margin="0,0,6,0" Click="ConnectBtn_Click"/>
-                            <Button x:Name="QrScanBtn" Grid.Column="4" Content="📷 Scan QR" Style="{StaticResource EmeraldBtn}" Height="34" VerticalAlignment="Bottom" Margin="0,0,6,0" Click="QrScanBtn_Click"/>
-                            <Button x:Name="ScanBtn" Grid.Column="5" Content="↻" ToolTip="Scan Wi-Fi" Style="{StaticResource GlassBtn}" Height="34" Width="38" Padding="0" VerticalAlignment="Bottom" Click="ScanBtn_Click"/>
+                            <Button x:Name="ConnectBtn" Grid.Column="3" Content="Connect" Style="{StaticResource PrimaryBtn}" Height="36" VerticalAlignment="Bottom" Margin="0,0,6,0" Click="ConnectBtn_Click"/>
+                            <Button x:Name="QrScanBtn" Grid.Column="4" Content="📷 Scan QR" Style="{StaticResource EmeraldBtn}" Height="36" VerticalAlignment="Bottom" Margin="0,0,6,0" Click="QrScanBtn_Click"/>
+                            <Button x:Name="ScanBtn" Grid.Column="5" Content="↻" ToolTip="Scan Wi-Fi" Style="{StaticResource GlassBtn}" Height="36" Width="38" Padding="0" VerticalAlignment="Bottom" Click="ScanBtn_Click"/>
                         </Grid>
                     </Grid>
                 </Border>
@@ -166,11 +166,21 @@
                 <!-- Wi-Fi File Actions, Selection Controls & Category Filters -->
                 <Border Grid.Row="1" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="14" Padding="12" Margin="0,0,0,10">
                     <StackPanel>
+                        <!-- iPhone App Folder Quick-Switcher (visible when connected to iPhone over USB Cable or Wi-Fi) -->
+                        <WrapPanel x:Name="IphoneRootsBar" Orientation="Horizontal" Margin="0,0,0,8" Visibility="Collapsed">
+                            <TextBlock Text="🍎 iPhone Folder:" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource AccentCyan}" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Button Content="📥 Downloads" Style="{StaticResource FilterChipBtn}" Tag="downloads" Click="IphoneRootSwitch_Click"/>
+                            <Button Content="📄 App Documents" Style="{StaticResource FilterChipBtn}" Tag="documents" Click="IphoneRootSwitch_Click"/>
+                            <Button Content="⭐ My Selected Files (Picked on iPhone)" Style="{StaticResource FilterChipBtn}" Tag="selected" Click="IphoneRootSwitch_Click"/>
+                            <Button Content="📦 App Data" Style="{StaticResource FilterChipBtn}" Tag="appdata" Click="IphoneRootSwitch_Click"/>
+                        </WrapPanel>
+
                         <!-- Primary Transfer Actions -->
                         <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
                             <Button x:Name="SendFilesBtn" Content="⬆ Send Files" Style="{StaticResource PrimaryBtn}" Margin="0,0,6,0" IsEnabled="False" Click="SendFilesBtn_Click"/>
                             <Button x:Name="SendFolderBtn" Content="📁 Send Folder" Style="{StaticResource GlassBtn}" Margin="0,0,6,0" IsEnabled="False" Click="SendFolderBtn_Click"/>
                             <Button x:Name="DownloadBtn" Content="⬇ Download Selected" Style="{StaticResource EmeraldBtn}" Margin="0,0,6,0" IsEnabled="False" Click="DownloadBtn_Click"/>
+                            <Button x:Name="WifiOpenFolderBtn" Content="📂 Open Folder" Style="{StaticResource GlassBtn}" Margin="0,0,6,0" IsEnabled="False" Click="WifiOpenFolderBtn_Click"/>
                             <Button x:Name="NewFolderBtn" Content="+ Folder" Style="{StaticResource GlassBtn}" Margin="0,0,6,0" IsEnabled="False" Click="NewFolderBtn_Click"/>
                             <Button x:Name="RenameBtn" Content="✎ Rename" Style="{StaticResource GlassBtn}" Margin="0,0,6,0" IsEnabled="False" Click="RenameBtn_Click"/>
                             <Button x:Name="DeleteBtn" Content="🗑 Delete" Style="{StaticResource DangerBtn}" Margin="0,0,6,0" IsEnabled="False" Click="DeleteBtn_Click"/>
@@ -214,13 +224,13 @@
                                 <TextBlock x:Name="PathLabel" Text="Not connected — Pick a Wi-Fi device above, Scan QR, or switch to 🔌 USB Cable"
                                            Foreground="{StaticResource TextSecondary}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                             </Border>
-                            <ComboBox x:Name="SortBox" Grid.Column="3" Style="{StaticResource GlassComboBox}" Height="32" Margin="0,0,8,0" SelectedIndex="0" SelectionChanged="SortBox_SelectionChanged">
+                            <ComboBox x:Name="SortBox" Grid.Column="3" Style="{StaticResource GlassComboBox}" Height="36" Margin="0,0,8,0" SelectedIndex="0" SelectionChanged="SortBox_SelectionChanged">
                                 <ComboBoxItem Content="Sort: Name"/>
                                 <ComboBoxItem Content="Sort: Size ↓"/>
                                 <ComboBoxItem Content="Sort: Newest"/>
                                 <ComboBoxItem Content="Sort: Type"/>
                             </ComboBox>
-                            <TextBox x:Name="SearchBox" Grid.Column="4" Style="{StaticResource GlassTextBox}" Height="32" ToolTip="Filter current folder…" TextChanged="SearchBox_TextChanged"/>
+                            <TextBox x:Name="SearchBox" Grid.Column="4" Style="{StaticResource GlassTextBox}" Height="36" ToolTip="Filter current folder…" TextChanged="SearchBox_TextChanged"/>
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -278,10 +288,13 @@
                         </Grid.RowDefinitions>
 
                         <DockPanel Grid.Row="0" Margin="0,0,0,10">
-                            <Border DockPanel.Dock="Left" Background="#0D2A29" BorderBrush="#14B8A6" BorderThickness="1" CornerRadius="10" Padding="10,4">
+                            <Border DockPanel.Dock="Left" Background="#0D2A29" BorderBrush="#14B8A6" BorderThickness="1" CornerRadius="10" Padding="10,4" VerticalAlignment="Center">
                                 <TextBlock x:Name="UsbStatusBadge" Text="Plug in an Android phone or iPhone via USB cable for full wire-speed transfer" FontSize="12" FontWeight="SemiBold" Foreground="#5EEAD4"/>
                             </Border>
-                            <Button DockPanel.Dock="Right" Content="⚡ ADB USB Turbo Bridge" ToolTip="Forward Android WQGlass Server over USB cable (100+ MB/s)" Style="{StaticResource GlassBtn}" Padding="10,5" FontSize="11.5" Click="UsbAdbBridgeBtn_Click"/>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="UsbIphoneAppBtn" Content="🍎 iPhone App Docs (USB)" ToolTip="Connect to iPhone WQ Glass Documents, Downloads &amp; Selected Files via Lightning/USB-C (like iTunes / 3uTools)" Style="{StaticResource PrimaryBtn}" Padding="11,5" FontSize="11.5" Margin="0,0,6,0" Click="UsbIphoneAppBtn_Click"/>
+                                <Button Content="⚡ Android ADB Turbo" ToolTip="Forward Android WQGlass Server over USB cable (100+ MB/s)" Style="{StaticResource GlassBtn}" Padding="10,5" FontSize="11.5" Click="UsbAdbBridgeBtn_Click"/>
+                            </StackPanel>
                         </DockPanel>
 
                         <Grid Grid.Row="1">
@@ -292,12 +305,12 @@
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0" Margin="0,0,10,0">
-                                <TextBlock Text="Connected USB Cable Devices (Android MTP · iPhone PTP/DCIM)" FontSize="10.5" Foreground="{StaticResource TextSecondary}" Margin="2,0,0,4"/>
-                                <ComboBox x:Name="UsbDevicesBox" Style="{StaticResource GlassComboBox}" Height="34" DisplayMemberPath="DisplayName"/>
+                                <TextBlock Text="Connected USB Cable Devices (Android Storage · iPhone Camera Roll)" FontSize="10.5" Foreground="{StaticResource TextSecondary}" Margin="2,0,0,4"/>
+                                <ComboBox x:Name="UsbDevicesBox" Style="{StaticResource GlassComboBox}" Height="36" DisplayMemberPath="DisplayName"/>
                             </StackPanel>
 
-                            <Button x:Name="UsbConnectBtn" Grid.Column="1" Content="🔌 Open USB Device" Style="{StaticResource EmeraldBtn}" Height="34" VerticalAlignment="Bottom" Margin="0,0,8,0" Click="UsbConnectBtn_Click"/>
-                            <Button Content="↻ Detect USB" Style="{StaticResource GlassBtn}" Height="34" VerticalAlignment="Bottom" Click="UsbDetectBtn_Click"/>
+                            <Button x:Name="UsbConnectBtn" Grid.Column="1" Content="🔌 Open USB Device" Style="{StaticResource EmeraldBtn}" Height="36" VerticalAlignment="Bottom" Margin="0,0,8,0" Click="UsbConnectBtn_Click"/>
+                            <Button Grid.Column="2" Content="↻ Detect USB" Style="{StaticResource GlassBtn}" Height="36" VerticalAlignment="Bottom" Click="UsbDetectBtn_Click"/>
                         </Grid>
                     </Grid>
                 </Border>
@@ -306,9 +319,10 @@
                 <Border Grid.Row="1" Background="{StaticResource CardBg}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="14" Padding="12" Margin="0,0,0,10">
                     <StackPanel>
                         <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
-                            <Button x:Name="UsbImportFilesBtn" Content="⬆ Import Files to Phone (USB)" Style="{StaticResource PrimaryBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbImportFilesBtn_Click"/>
-                            <Button x:Name="UsbImportFolderBtn" Content="📁 Import Folder (USB)" Style="{StaticResource GlassBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbImportFolderBtn_Click"/>
-                            <Button x:Name="UsbExportBtn" Content="⬇ Export Selected to PC (USB)" Style="{StaticResource EmeraldBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbExportBtn_Click"/>
+                            <Button x:Name="UsbOpenFolderBtn" Content="📂 Open Folder" Style="{StaticResource PrimaryBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbOpenFolderBtn_Click"/>
+                            <Button x:Name="UsbImportFilesBtn" Content="⬆ Import Files to Phone" Style="{StaticResource PrimaryBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbImportFilesBtn_Click"/>
+                            <Button x:Name="UsbImportFolderBtn" Content="📁 Import Folder" Style="{StaticResource GlassBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbImportFolderBtn_Click"/>
+                            <Button x:Name="UsbExportBtn" Content="⬇ Export Selected to PC" Style="{StaticResource EmeraldBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbExportBtn_Click"/>
                             <Button x:Name="UsbNewFolderBtn" Content="+ Folder" Style="{StaticResource GlassBtn}" Margin="0,0,6,0" IsEnabled="False" Click="UsbNewFolderBtn_Click"/>
                             <Button x:Name="UsbDeleteBtn" Content="🗑 Delete" Style="{StaticResource DangerBtn}" IsEnabled="False" Click="UsbDeleteBtn_Click"/>
                         </WrapPanel>
@@ -345,7 +359,7 @@
                             <Border Grid.Column="2" Background="{StaticResource InputBg}" BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="8" Padding="10,5" Margin="0,0,8,0">
                                 <TextBlock x:Name="UsbPathLabel" Text="No USB device opened — Select a device above and click Open USB Device" Foreground="{StaticResource TextSecondary}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                             </Border>
-                            <TextBox x:Name="UsbSearchBox" Grid.Column="3" Style="{StaticResource GlassTextBox}" Height="32" ToolTip="Filter USB folder…" TextChanged="UsbSearchBox_TextChanged"/>
+                            <TextBox x:Name="UsbSearchBox" Grid.Column="3" Style="{StaticResource GlassTextBox}" Height="36" ToolTip="Filter USB folder…" TextChanged="UsbSearchBox_TextChanged"/>
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -439,16 +453,16 @@
 
                             <StackPanel Grid.Column="0" Margin="0,0,8,0">
                                 <TextBlock Text="Shared Folder on This PC" FontSize="10.5" Foreground="{StaticResource TextSecondary}" Margin="2,0,0,4"/>
-                                <TextBox x:Name="HostFolderBox" Style="{StaticResource GlassTextBox}" Height="34" IsReadOnly="True"/>
+                                <TextBox x:Name="HostFolderBox" Style="{StaticResource GlassTextBox}" Height="36" IsReadOnly="True"/>
                             </StackPanel>
-                            <Button Grid.Column="1" Content="📁 Browse…" Style="{StaticResource GlassBtn}" Height="34" VerticalAlignment="Bottom" Click="HostChooseFolderBtn_Click"/>
+                            <Button Grid.Column="1" Content="📁 Browse…" Style="{StaticResource GlassBtn}" Height="36" VerticalAlignment="Bottom" Click="HostChooseFolderBtn_Click"/>
 
                             <StackPanel Grid.Column="3" Margin="0,0,8,0">
                                 <TextBlock Text="Fixed PIN (optional)" FontSize="10.5" Foreground="{StaticResource TextSecondary}" Margin="2,0,0,4"/>
-                                <TextBox x:Name="HostFixedPinBox" Style="{StaticResource GlassTextBox}" Height="34" MaxLength="8"/>
+                                <TextBox x:Name="HostFixedPinBox" Style="{StaticResource GlassTextBox}" Height="36" MaxLength="8"/>
                             </StackPanel>
-                            <Button Grid.Column="4" Content="Apply" Style="{StaticResource PrimaryBtn}" Height="34" VerticalAlignment="Bottom" Margin="0,0,6,0" Click="HostApplyPinBtn_Click"/>
-                            <Button Grid.Column="5" Content="🎲" ToolTip="Random PIN" Style="{StaticResource GlassBtn}" Height="34" Width="38" Padding="0" VerticalAlignment="Bottom" Click="HostRandomPinBtn_Click"/>
+                            <Button Grid.Column="4" Content="Apply" Style="{StaticResource PrimaryBtn}" Height="36" VerticalAlignment="Bottom" Margin="0,0,6,0" Click="HostApplyPinBtn_Click"/>
+                            <Button Grid.Column="5" Content="🎲" ToolTip="Random PIN" Style="{StaticResource GlassBtn}" Height="36" Width="38" Padding="0" VerticalAlignment="Bottom" Click="HostRandomPinBtn_Click"/>
                         </Grid>
 
                         <WrapPanel Orientation="Horizontal">

@@ -272,7 +272,9 @@ public sealed class UsbFileItem : INotifyPropertyChanged
     public string TypeLabel => IsDir ? "Folder" : RemoteFileItem.GetTypeLabel(Name);
     public string Icon => IsDir ? "📁" : RemoteFileItem.GetFileEmoji(Name);
     public string SizeText => IsDir ? "Folder" : RemoteFileItem.FormatBytes(Size);
-    public string ModifiedText => Modified.HasValue ? Modified.Value.ToString("yyyy-MM-dd HH:mm") : "";
+    public string ModifiedText => (Modified.HasValue && Modified.Value.Year >= 1980)
+        ? Modified.Value.ToString("yyyy-MM-dd HH:mm")
+        : "";
 }
 
 public sealed class TransferProgressInfo
