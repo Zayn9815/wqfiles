@@ -165,6 +165,7 @@ class TransferServer {
         val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         val line = "[$ts] $message"
         _logs.value = (listOf(line) + _logs.value).take(100)
+        AppLogger.info("HostServer", message)
     }
 
     private fun deviceName(): String {

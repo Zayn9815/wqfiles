@@ -13,9 +13,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// Log shared with the UI.
+// Log shared with the UI, plus persistent crash & error log on disk.
 void wq_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
+void wq_log_error(NSString *source, NSString *message);
 NSString *wq_log_text(void);
+NSString *wq_crash_log_text(void);
+void wq_clear_logs(void);
+void wq_install_crash_reporter(void);
 
 // Picks the app group the signer actually gave us. Nil when there is none.
 NSString *_Nullable wq_app_group(void);

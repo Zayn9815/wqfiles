@@ -72,10 +72,51 @@ BOOL wq_scan_wait(WQScanCancellation *cancellation)
     return !cancellation.isCancelled;
 }
 
-#pragma mark - Log
+#pragma mark - Log & Crash Reporter
+
+#include <execinfo.h>
+#include <signal.h>
 
 static NSMutableString *gLog;
 static NSLock *gLogLock;
+static char gCrashLogPathC[1024];
+
+static NSString *wq_logs_dir_path(void)
+{
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSTemporaryDirectory();
+    NSString *dir = [docs stringByAppendingPathComponent:@"WQGlass_Logs"];
+    [NSFileManager.defaultManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    return dir;
+}
+
+static NSString *wq_session_log_file_path(void)
+{
+    return [wq_logs_dir_path() stringByAppendingPathComponent:@"wqglass-session.log"];
+}
+
+static NSString *wq_crash_log_file_path(void)
+{
+    return [wq_logs_dir_path() stringByAppendingPathComponent:@"wqglass-crashes.log"];
+}
+
+static void wq_append_disk_log(NSString *path, NSString *text)
+{
+    if (!path.length || !text.length) return;
+    int fd = open(path.fileSystemRepresentation, O_CREAT | O_WRONLY | O_APPEND, 0644);
+    if (fd < 0) return;
+    struct stat st;
+    if (fstat(fd, &st) == 0 && st.st_size > 2 * 1024 * 1024) {
+        close(fd);
+        NSString *prev = [path stringByAppendingString:@".prev"];
+        unlink(prev.fileSystemRepresentation);
+        rename(path.fileSystemRepresentation, prev.fileSystemRepresentation);
+        fd = open(path.fileSystemRepresentation, O_CREAT | O_WRONLY | O_APPEND, 0644);
+        if (fd < 0) return;
+    }
+    NSData *d = [text dataUsingEncoding:NSUTF8StringEncoding];
+    if (d.length) (void)write(fd, d.bytes, d.length);
+    close(fd);
+}
 
 void wq_log(NSString *format, ...)
 {
@@ -89,10 +130,27 @@ void wq_log(NSString *format, ...)
     NSString *line = [[NSString alloc] initWithFormat:format arguments:args];
     va_end(args);
     NSLog(@"[wqfiles] %@", line);
+
+    NSDateFormatter *df = [NSDateFormatter new];
+    df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    df.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    NSString *stamped = [NSString stringWithFormat:@"[%@] %@\n", [df stringFromDate:[NSDate date]], line];
+
     [gLogLock lock];
     [gLog appendFormat:@"%@\n", line];
+    wq_append_disk_log(wq_session_log_file_path(), stamped);
+    if ([line rangeOfString:@"ERROR" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [line rangeOfString:@"FAILED" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+        [line rangeOfString:@"CRASH" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        wq_append_disk_log(wq_crash_log_file_path(), stamped);
+    }
     [gLogLock unlock];
     errno = savedErrno;
+}
+
+void wq_log_error(NSString *source, NSString *message)
+{
+    wq_log(@"[ERROR] [%@] %@", source ?: @"App", message ?: @"");
 }
 
 NSString *wq_log_text(void)
@@ -101,6 +159,71 @@ NSString *wq_log_text(void)
     NSString *text = [gLog copy] ?: @"";
     [gLogLock unlock];
     return text;
+}
+
+NSString *wq_crash_log_text(void)
+{
+    [gLogLock lock];
+    NSString *crashPath = wq_crash_log_file_path();
+    NSString *disk = [NSString stringWithContentsOfFile:crashPath encoding:NSUTF8StringEncoding error:nil] ?: @"";
+    [gLogLock unlock];
+    return disk;
+}
+
+void wq_clear_logs(void)
+{
+    [gLogLock lock];
+    [gLog setString:@""];
+    unlink(wq_session_log_file_path().fileSystemRepresentation);
+    unlink(wq_crash_log_file_path().fileSystemRepresentation);
+    [gLogLock unlock];
+    wq_log(@"[INFO] Diagnostic, error & crash logs cleared by user.");
+}
+
+static void wq_uncaught_exception_handler(NSException *exception)
+{
+    NSString *entry = [NSString stringWithFormat:@"\n=== UNCAUGHT OBJC EXCEPTION (%@) ===\nName: %@\nReason: %@\nCallStack:\n%@\n=====================================\n",
+                       [NSDate date],
+                       exception.name ?: @"Unknown",
+                       exception.reason ?: @"None",
+                       [exception.callStackSymbols componentsJoinedByString:@"\n"] ?: @""];
+    wq_append_disk_log(wq_crash_log_file_path(), entry);
+    wq_append_disk_log(wq_session_log_file_path(), entry);
+}
+
+static void wq_fatal_signal_handler(int sig)
+{
+    if (gCrashLogPathC[0] != '\0') {
+        int fd = open(gCrashLogPathC, O_CREAT | O_WRONLY | O_APPEND, 0644);
+        if (fd >= 0) {
+            char hdr[128];
+            int n = snprintf(hdr, sizeof(hdr), "\n=== FATAL POSIX SIGNAL %d ===\n", sig);
+            if (n > 0) (void)write(fd, hdr, (size_t)n);
+            void *frames[64];
+            int count = backtrace(frames, 64);
+            backtrace_symbols_fd(frames, count, fd);
+            const char *ftr = "==============================\n";
+            (void)write(fd, ftr, strlen(ftr));
+            close(fd);
+        }
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+void wq_install_crash_reporter(void)
+{
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        NSString *cPath = wq_crash_log_file_path();
+        strncpy(gCrashLogPathC, cPath.fileSystemRepresentation, sizeof(gCrashLogPathC) - 1);
+        gCrashLogPathC[sizeof(gCrashLogPathC) - 1] = '\0';
+        NSSetUncaughtExceptionHandler(&wq_uncaught_exception_handler);
+        int sigs[] = { SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP };
+        for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+            signal(sigs[i], wq_fatal_signal_handler);
+        }
+    });
 }
 
 static NSString *wq_errno(int err) { return [NSString stringWithFormat:@"%s (errno %d)", strerror(err), err]; }

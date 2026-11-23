@@ -47,7 +47,9 @@ public partial class MainWindow : Window
     private long _sessionTotalBytes;
     private double _sessionPeakBps;
     private CancellationTokenSource? _transferCts;
-    private int _activeNav; // 0=WiFi, 1=USB, 2=Host, 3=History, 4=Settings
+    private int _activeNav; // 0=WiFi, 1=USB, 2=Host, 3=History, 4=Settings, 5=Logs
+    private string _logFilterLevel = "ALL";
+    private int _errorLogCount;
 
     private static string SettingsPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WQGlassTransfer", "settings.json");
@@ -69,6 +71,10 @@ public partial class MainWindow : Window
 
         HostFolderBox.Text = _server.RootPath;
         SettingsDownloadDirBox.Text = _pcDownloadDir;
+        LogsFileLocationText.Text = $"Saved to: {AppLogger.LogsDirectory} (wqglass-transfer.log & wqglass-crashes.log)";
+
+        AppLogger.EntryAdded += OnLogEntryAdded;
+        UpdateErrorBadgeCount();
 
         _discovery.LocalServerPortProvider = () => _server.IsRunning ? _server.Port : null;
         _discovery.PhoneDiscovered += OnPhoneDiscovered;
@@ -76,6 +82,7 @@ public partial class MainWindow : Window
 
         _server.ActivityLogged += line =>
         {
+            AppLogger.Info("HostServer", line);
             Dispatcher.Invoke(() =>
             {
                 _hostLogs.Insert(0, line);
@@ -84,6 +91,7 @@ public partial class MainWindow : Window
         };
         _server.TextReceived += text =>
         {
+            AppLogger.Info("HostServer", $"Received text/link ({text.Length} chars)");
             Dispatcher.Invoke(() =>
             {
                 try { Clipboard.SetText(text); } catch { }
@@ -100,6 +108,7 @@ public partial class MainWindow : Window
 
         Closed += (_, _) =>
         {
+            AppLogger.EntryAdded -= OnLogEntryAdded;
             _usbPollTimer.Stop();
             _transferCts?.Cancel();
             _discovery.Dispose();
@@ -140,7 +149,7 @@ public partial class MainWindow : Window
                 }
             }
         }
-        catch { }
+        catch (Exception ex) { AppLogger.Warn("Settings", "Could not load settings.json", ex.Message); }
 
         ParallelStreamsBox.SelectedIndex = _parallelStreams - 1;
         ConflictPolicyBox.SelectedIndex = _conflictPolicy switch
@@ -169,7 +178,7 @@ public partial class MainWindow : Window
             };
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(s));
         }
-        catch { }
+        catch (Exception ex) { AppLogger.Warn("Settings", "Could not save settings.json", ex.Message); }
     }
 
     private void SettingsChooseDownloadDir_Click(object sender, RoutedEventArgs e)
@@ -205,6 +214,7 @@ public partial class MainWindow : Window
         HostPanel.Visibility = index == 2 ? Visibility.Visible : Visibility.Collapsed;
         HistoryPanel.Visibility = index == 3 ? Visibility.Visible : Visibility.Collapsed;
         SettingsPanel.Visibility = index == 4 ? Visibility.Visible : Visibility.Collapsed;
+        LogsPanel.Visibility = index == 5 ? Visibility.Visible : Visibility.Collapsed;
 
         Style normal = (Style)FindResource("SidebarNavBtn");
         Style active = (Style)FindResource("SidebarNavActiveBtn");
@@ -213,9 +223,11 @@ public partial class MainWindow : Window
         NavHostBtn.Style = index == 2 ? active : normal;
         NavHistoryBtn.Style = index == 3 ? active : normal;
         NavSettingsBtn.Style = index == 4 ? active : normal;
+        NavLogsBtn.Style = index == 5 ? active : normal;
 
         if (index == 1) RefreshUsbDevicesList();
         if (index == 2) RefreshHostUI();
+        if (index == 5) RefreshLogsView();
     }
 
     private void NavWifiBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(0);
@@ -223,6 +235,7 @@ public partial class MainWindow : Window
     private void NavHostBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(2);
     private void NavHistoryBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(3);
     private void NavSettingsBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(4);
+    private void NavLogsBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(5);
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -399,11 +412,13 @@ public partial class MainWindow : Window
             StorageUsedBar.Value = info.UsedPercent;
             StorageMeterPanel.Visibility = info.TotalBytes > 0 ? Visibility.Visible : Visibility.Collapsed;
             IphoneRootsBar.Visibility = info.NormalizedPlatform == "ios" ? Visibility.Visible : Visibility.Collapsed;
+            AppLogger.Info("Client", $"Connected to {info.Device} ({info.NormalizedPlatform} {info.OsSummary}) at {ep} · root=/{info.Root}");
             SetWifiConnectedUI(true);
             await RefreshDirectoryAsync();
         }
         catch (Exception ex)
         {
+            AppLogger.Error("Client", $"Failed connecting to {ep}", ex);
             StatusBadgeText.Text = "Connection failed";
             MessageBox.Show(this, ex.Message, "Could Not Connect", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
@@ -424,10 +439,12 @@ public partial class MainWindow : Window
             string ep = EndpointBox.Text.Trim();
             string transportTag = ep.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase) ? "🔌 USB Cable" : "📡 Wi-Fi";
             StatusBadgeText.Text = $"● {transportTag} · {_phoneInfo.PlatformIcon} {_phoneInfo.Device} [{_phoneInfo.OsSummary}] · /{_phoneInfo.Root}";
+            AppLogger.Info("Client", $"Switched iPhone shared folder to /{_phoneInfo.Root} (id={rootId})");
             await RefreshDirectoryAsync();
         }
         catch (Exception ex)
         {
+            AppLogger.Error("Client", $"Failed switching iPhone folder (id={rootId})", ex);
             MessageBox.Show(this, $"Could not switch iPhone folder: {ex.Message}", "Switch Folder", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -563,6 +580,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            AppLogger.Error("Client", $"RefreshDirectoryAsync failed at path '{_currentPath}'", ex);
             TransferStatusText.Text = $"Refresh failed: {ex.Message}";
             if (ex.Message.Contains("403", StringComparison.OrdinalIgnoreCase) ||
                 ex.Message.Contains("All Files Access", StringComparison.OrdinalIgnoreCase) ||
@@ -672,6 +690,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            AppLogger.Error("Client", "SendClipboardTextAsync failed", ex);
             MessageBox.Show(this, $"Target device may not support /api/text yet: {ex.Message}", "Send Text", MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
@@ -734,14 +753,17 @@ public partial class MainWindow : Window
 
             await Task.WhenAll(tasks);
             double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalDoneBytes / sw.Elapsed.TotalSeconds : 0;
+            AppLogger.Info("Client", $"Downloaded {completedCount} file(s) ({RemoteFileItem.FormatBytes(totalDoneBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s");
             EndTransferUI($"Downloaded {completedCount} file(s) ({RemoteFileItem.FormatBytes(totalDoneBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s → {_pcDownloadDir}");
         }
         catch (OperationCanceledException)
         {
+            AppLogger.Warn("Client", "Batch download cancelled by user.");
             EndTransferUI("Download cancelled.");
         }
         catch (Exception ex)
         {
+            AppLogger.Error("Client", "Batch download failed", ex);
             EndTransferUI($"Download error: {ex.Message}");
             MessageBox.Show(this, ex.Message, "Download Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -805,15 +827,18 @@ public partial class MainWindow : Window
 
             await Task.WhenAll(tasks);
             double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalSent / sw.Elapsed.TotalSeconds : 0;
+            AppLogger.Info("Client", $"Uploaded {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalSent)}) to {targetName} at {RemoteFileItem.FormatBytes((long)avgBps)}/s");
             EndTransferUI($"Sent {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalSent)}) to {targetName} at {RemoteFileItem.FormatBytes((long)avgBps)}/s!");
             await RefreshDirectoryAsync();
         }
         catch (OperationCanceledException)
         {
+            AppLogger.Warn("Client", "Batch upload cancelled by user.");
             EndTransferUI("Upload cancelled.");
         }
         catch (Exception ex)
         {
+            AppLogger.Error("Client", "Batch upload failed", ex);
             EndTransferUI($"Upload error: {ex.Message}");
             MessageBox.Show(this, ex.Message, "Upload Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -826,7 +851,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(name)) return;
         string target = string.IsNullOrEmpty(_currentPath) ? name.Trim() : $"{_currentPath}/{name.Trim()}";
         try { await _client.CreateFolderAsync(target); await RefreshDirectoryAsync(); }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { AppLogger.Error("Client", $"CreateFolderAsync failed for '{target}'", ex); MessageBox.Show(this, ex.Message, "New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private async void RenameBtn_Click(object sender, RoutedEventArgs e)
@@ -837,7 +862,7 @@ public partial class MainWindow : Window
         string? newName = PromptInput("Rename", $"Rename '{item.Name}' to:", item.Name);
         if (string.IsNullOrWhiteSpace(newName) || newName.Trim() == item.Name) return;
         try { await _client.RenameAsync(item.Path, newName.Trim()); await RefreshDirectoryAsync(); }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Rename Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { AppLogger.Error("Client", $"RenameAsync failed for '{item.Path}'", ex); MessageBox.Show(this, ex.Message, "Rename Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private async void DeleteBtn_Click(object sender, RoutedEventArgs e)
@@ -851,7 +876,7 @@ public partial class MainWindow : Window
             foreach (var it in items) await _client.DeleteAsync(it.Path);
             await RefreshDirectoryAsync();
         }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { AppLogger.Error("Client", "DeleteAsync failed", ex); MessageBox.Show(this, ex.Message, "Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     #endregion
@@ -943,6 +968,7 @@ public partial class MainWindow : Window
 
             if (!ok)
             {
+                AppLogger.Error("AppleUsbMux", "Could not start USB tunnel to iPhone WQ Glass", err);
                 UsbStatusBadge.Text = "iPhone WQ Glass server not reachable over USB.";
                 MessageBox.Show(this,
                     (err ?? "Could not reach WQ Glass on iPhone over USB.") +
@@ -953,6 +979,7 @@ public partial class MainWindow : Window
                 return;
             }
 
+            AppLogger.Info("AppleUsbMux", $"Started iPhone USB tunnel at {localEndpoint} (DeviceID={target.DeviceId})");
             string defaultPin = PinBox.Text.Trim();
             string? pin = PromptInput(
                 "iPhone USB Cable Ready (App Documents & Downloads)",
@@ -982,6 +1009,7 @@ public partial class MainWindow : Window
         if (_usb.IsConnected)
         {
             await _usb.DisconnectAsync();
+            AppLogger.Info("USB-MTP", "Disconnected USB device.");
             _allUsbItems.Clear();
             _visibleUsbItems.Clear();
             _usbCurrentPath = "\\";
@@ -1005,11 +1033,13 @@ public partial class MainWindow : Window
             var (ok, err) = await _usb.ConnectAsync(summary);
             if (!ok)
             {
+                AppLogger.Error("USB-MTP", $"Failed opening USB device '{summary.DisplayName}'", err);
                 UsbStatusBadge.Text = "USB open failed";
                 MessageBox.Show(this, err ?? "Could not open USB device.", "USB Cable Transfer", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
+            AppLogger.Info("USB-MTP", $"Connected USB device: {summary.DisplayName} (ID={summary.DeviceId})");
             _usbCurrentPath = "\\";
             UsbConnectBtn.Content = "Disconnect USB";
             UsbStatusBadge.Text = summary.IsApple
@@ -1027,6 +1057,7 @@ public partial class MainWindow : Window
             }
             else if (_allUsbItems.Count == 0)
             {
+                AppLogger.Warn("USB-MTP", $"USB device '{summary.DisplayName}' returned 0 root storage volumes.");
                 UsbStatusBadge.Text = summary.IsApple
                     ? "iPhone storage empty — unlock iPhone, tap 'Trust', or click 🍎 iPhone App Docs (USB)!"
                     : "Android storage empty — unlock phone, tap USB notification and pick 'File Transfer (MTP)'!";
@@ -1042,6 +1073,8 @@ public partial class MainWindow : Window
     private void UsbAdbBridgeBtn_Click(object sender, RoutedEventArgs e)
     {
         bool ok = UsbTransferService.TrySetupAdbUsbTunnel(18765, 8765, out string msg);
+        if (ok) AppLogger.Info("ADB-USB", msg);
+        else AppLogger.Warn("ADB-USB", msg);
         MessageBox.Show(this, msg, "ADB USB Turbo Bridge", MessageBoxButton.OK, ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
         if (ok)
         {
@@ -1083,6 +1116,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            AppLogger.Error("USB-MTP", $"Failed reading USB folder '{_usbCurrentPath}'", ex);
             TransferStatusText.Text = $"USB folder read error: {ex.Message}";
             UsbStatusBadge.Text = $"USB read error: {ex.Message}";
         }
@@ -1211,14 +1245,17 @@ public partial class MainWindow : Window
             }
 
             double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalBytes / sw.Elapsed.TotalSeconds : 0;
+            AppLogger.Info("USB-MTP", $"Exported {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s");
             EndTransferUI($"USB Export complete: {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s → {_pcDownloadDir}");
         }
         catch (OperationCanceledException)
         {
+            AppLogger.Warn("USB-MTP", "USB export cancelled by user.");
             EndTransferUI("USB Export cancelled.");
         }
         catch (Exception ex)
         {
+            AppLogger.Error("USB-MTP", "USB export failed", ex);
             EndTransferUI($"USB Export error: {ex.Message}");
             MessageBox.Show(this, ex.Message, "USB Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -1297,15 +1334,18 @@ public partial class MainWindow : Window
             }
 
             double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalBytes / sw.Elapsed.TotalSeconds : 0;
+            AppLogger.Info("USB-MTP", $"Imported {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s");
             EndTransferUI($"USB Import complete: {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s!");
             await RefreshUsbDirectoryAsync();
         }
         catch (OperationCanceledException)
         {
+            AppLogger.Warn("USB-MTP", "USB import cancelled by user.");
             EndTransferUI("USB Import cancelled.");
         }
         catch (Exception ex)
         {
+            AppLogger.Error("USB-MTP", "USB import failed", ex);
             EndTransferUI($"USB Import error: {ex.Message}");
             MessageBox.Show(this, ex.Message, "USB Import Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -1321,7 +1361,7 @@ public partial class MainWindow : Window
             await _usb.CreateFolderAsync(_usbCurrentPath, name.Trim());
             await RefreshUsbDirectoryAsync();
         }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "USB New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { AppLogger.Error("USB-MTP", $"CreateFolderAsync failed in '{_usbCurrentPath}'", ex); MessageBox.Show(this, ex.Message, "USB New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private async void UsbDeleteBtn_Click(object sender, RoutedEventArgs e)
@@ -1335,7 +1375,7 @@ public partial class MainWindow : Window
             await _usb.DeleteItemsAsync(sel);
             await RefreshUsbDirectoryAsync();
         }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "USB Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { AppLogger.Error("USB-MTP", "DeleteItemsAsync failed", ex); MessageBox.Show(this, ex.Message, "USB Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     #endregion
@@ -1632,6 +1672,121 @@ public partial class MainWindow : Window
         tb.SelectAll();
         tb.Focus();
         return win.ShowDialog() == true ? tb.Text : null;
+    }
+
+    #endregion
+
+    #region Diagnostic, Error & Crash Logs
+
+    private void OnLogEntryAdded(DiagnosticLogItem item)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (item.Level is "ERROR" or "WARN" or "CRASH")
+            {
+                _errorLogCount++;
+                UpdateErrorBadgeCount();
+            }
+            if (_activeNav == 5 && AppLogger.MatchesFilter(item, _logFilterLevel))
+            {
+                DiagnosticLogBox.AppendText(item.formattedLine + Environment.NewLine);
+                DiagnosticLogBox.ScrollToEnd();
+            }
+        });
+    }
+
+    private void UpdateErrorBadgeCount()
+    {
+        int count = Math.Max(_errorLogCount, AppLogger.GetRecentItems().Count(i => i.Level is "ERROR" or "WARN" or "CRASH"));
+        if (count > 0)
+        {
+            ErrorCountText.Text = count.ToString();
+            ErrorCountBadge.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            ErrorCountBadge.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void RefreshLogsView()
+    {
+        DiagnosticLogBox.Text = AppLogger.BuildFullDiagnosticReport(_logFilterLevel);
+        DiagnosticLogBox.ScrollToEnd();
+        UpdateErrorBadgeCount();
+    }
+
+    private void LogFilterChip_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string level) return;
+        _logFilterLevel = level;
+        Style inactive = (Style)FindResource("FilterChipBtn");
+        Style active = (Style)FindResource("FilterChipActiveBtn");
+        foreach (Button b in new[] { LogChipAll, LogChipErrors, LogChipCrashes })
+            b.Style = ReferenceEquals(b, btn) ? active : inactive;
+        RefreshLogsView();
+    }
+
+    private void RefreshLogsBtn_Click(object sender, RoutedEventArgs e) => RefreshLogsView();
+
+    private void CopyLogsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string report = AppLogger.BuildFullDiagnosticReport(_logFilterLevel);
+            Clipboard.SetText(report);
+            TransferStatusText.Text = "📋 Full diagnostic, error & crash report copied to clipboard — ready to paste & share!";
+            MessageBox.Show(this, "Full diagnostic, error & crash report copied to your clipboard!", "Logs Copied", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Copy Logs Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ExportLogsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new SaveFileDialog
+        {
+            Title = "Export WQGlass Transfer Diagnostic & Crash Log",
+            Filter = "Log File (*.log;*.txt)|*.log;*.txt|All Files (*.*)|*.*",
+            FileName = $"WQGlassTransfer-Windows-Log-{DateTime.Now:yyyyMMdd-HHmmss}.txt"
+        };
+        if (dlg.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dlg.FileName))
+        {
+            try
+            {
+                File.WriteAllText(dlg.FileName, AppLogger.BuildFullDiagnosticReport("ALL"));
+                TransferStatusText.Text = $"💾 Saved diagnostic & crash log to {dlg.FileName}";
+                MessageBox.Show(this, $"Saved full diagnostic & crash report to:\n{dlg.FileName}", "Log Exported", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Export Log Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+    }
+
+    private void OpenLogFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppLogger.LogsDirectory);
+            Process.Start(new ProcessStartInfo { FileName = AppLogger.LogsDirectory, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Open Log Folder Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ClearLogsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (MessageBox.Show(this, "Clear all saved diagnostic, error, and crash logs?", "Clear Logs", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        _errorLogCount = 0;
+        AppLogger.ClearAllLogs();
+        RefreshLogsView();
     }
 
     #endregion

@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Close
@@ -57,6 +58,7 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Upload
@@ -140,6 +142,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLogger.init(this)
 
         discovery = DiscoveryService(this) {
             TransferForegroundService.server.currentPort()
@@ -196,6 +199,10 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
     val prefs = remember { context.getSharedPreferences("wqglass_transfer", Context.MODE_PRIVATE) }
     var selectedTab by remember { mutableIntStateOf(0) }
     val hostState by TransferForegroundService.server.state.collectAsState()
+    val logEntries by AppLogger.entries.collectAsState()
+    val errorCount = remember(logEntries) {
+        logEntries.count { it.level == "ERROR" || it.level == "WARN" || it.level == "CRASH" }
+    }
     val history = remember { mutableStateListOf<TransferHistoryItem>() }
 
     val notifPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -221,13 +228,19 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
                     icon = { Icon(Icons.Default.Upload, contentDescription = null) },
-                    label = { Text(if (hostState.isRunning) "Share · Live" else "Share Device") }
+                    label = { Text(if (hostState.isRunning) "Share · Live" else "Share") }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
                     icon = { Icon(Icons.Default.History, contentDescription = null) },
                     label = { Text("History (${history.size})") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 3,
+                    onClick = { selectedTab = 3 },
+                    icon = { Icon(Icons.Default.BugReport, contentDescription = null) },
+                    label = { Text(if (errorCount > 0) "Logs ($errorCount)" else "Logs") }
                 )
             }
         }
@@ -262,10 +275,11 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
                         }
                     }
                 )
-                else -> HistoryScreen(
+                2 -> HistoryScreen(
                     history = history,
                     onClear = { history.clear() }
                 )
+                else -> LogsScreen()
             }
         }
     }
@@ -331,6 +345,7 @@ private fun ClientScreen(
                 selectedPaths = emptySet()
                 statusText = "/${remoteInfo?.root ?: "Shared"}${if (path.isEmpty()) "" else "/$path"} (${allItems.size} items)"
             } catch (e: Exception) {
+                AppLogger.error("Client", "List failed for path '$path'", e)
                 statusText = "List error: ${e.message}"
             }
         }
@@ -354,8 +369,10 @@ private fun ClientScreen(
                 currentPath = ""
                 activeCategory = "All"
                 searchQuery = ""
+                AppLogger.info("Client", "Connected to ${info.device} (${info.platformBadge} ${info.osVersion}) at $cleanEp · /${info.root}")
                 refreshList(c, "")
             } catch (e: Exception) {
+                AppLogger.error("Client", "Connect failed to $cleanEp", e)
                 statusText = "Connection failed: ${e.message}"
                 Toast.makeText(context, e.message ?: "Could not connect", Toast.LENGTH_LONG).show()
             }
@@ -373,6 +390,7 @@ private fun ClientScreen(
                 statusText = "Scanned ${parsed.endpoint} — enter PIN and tap Connect."
             }
         } else {
+            AppLogger.warn("QR", "Unrecognized QR code payload: $raw")
             Toast.makeText(context, "Unrecognized WQGlass QR code", Toast.LENGTH_SHORT).show()
         }
     }
@@ -412,12 +430,15 @@ private fun ClientScreen(
                 progress = null
                 val totalSec = ((System.nanoTime() - startNs) / 1e9).coerceAtLeast(0.01)
                 statusText = "Sent ${uris.size} file(s) (${ProtocolUtils.formatBytes(totalBytes)}) at ${ProtocolUtils.formatSpeed(totalBytes / totalSec)}!"
+                AppLogger.info("Client", statusText)
                 refreshList(activeClient, currentPath)
             } catch (_: CancellationException) {
                 progress = null
                 statusText = "Upload cancelled."
+                AppLogger.warn("Client", "Upload cancelled by user.")
             } catch (e: Exception) {
                 progress = null
+                AppLogger.error("Client", "Upload failed", e)
                 statusText = "Upload failed: ${e.message}"
                 Toast.makeText(context, e.message ?: "Upload failed", Toast.LENGTH_LONG).show()
             }
@@ -455,12 +476,15 @@ private fun ClientScreen(
                 progress = null
                 val totalSec = ((System.nanoTime() - startNs) / 1e9).coerceAtLeast(0.01)
                 statusText = "Uploaded folder (${jobs.size} files, ${ProtocolUtils.formatBytes(totalBytes)}) at ${ProtocolUtils.formatSpeed(totalBytes / totalSec)}!"
+                AppLogger.info("Client", statusText)
                 refreshList(activeClient, currentPath)
             } catch (_: CancellationException) {
                 progress = null
                 statusText = "Folder upload cancelled."
+                AppLogger.warn("Client", "Folder upload cancelled by user.")
             } catch (e: Exception) {
                 progress = null
+                AppLogger.error("Client", "Folder upload failed", e)
                 statusText = "Folder upload failed: ${e.message}"
                 Toast.makeText(context, e.message ?: "Folder upload failed", Toast.LENGTH_LONG).show()
             }
@@ -498,12 +522,15 @@ private fun ClientScreen(
                 progress = null
                 val totalSec = ((System.nanoTime() - startNs) / 1e9).coerceAtLeast(0.01)
                 statusText = "Saved ${jobs.size} file(s) (${ProtocolUtils.formatBytes(totalBytes)}) at ${ProtocolUtils.formatSpeed(totalBytes / totalSec)} → Downloads/WQGlass"
+                AppLogger.info("Client", statusText)
                 Toast.makeText(context, "Saved ${jobs.size} file(s) to Downloads/WQGlass", Toast.LENGTH_SHORT).show()
             } catch (_: CancellationException) {
                 progress = null
                 statusText = "Download cancelled."
+                AppLogger.warn("Client", "Download cancelled by user.")
             } catch (e: Exception) {
                 progress = null
+                AppLogger.error("Client", "Download failed", e)
                 statusText = "Download failed: ${e.message}"
                 Toast.makeText(context, e.message ?: "Download failed", Toast.LENGTH_LONG).show()
             }
@@ -1442,6 +1469,170 @@ private fun HistoryScreen(
                                 Text("${h.timestamp} · ${ProtocolUtils.formatBytes(h.bytes)} · ${ProtocolUtils.formatSpeed(h.avgBytesPerSec)}", color = TextSecondary, fontSize = 11.5.sp)
                             }
                             Text(h.status, color = SuccessGreen, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LogsScreen() {
+    val context = LocalContext.current
+    val entries by AppLogger.entries.collectAsState()
+    val crashText by AppLogger.crashDiskText.collectAsState()
+    var filter by remember { mutableStateOf("ALL") }
+
+    val filteredEntries = remember(entries, filter) {
+        entries.filter { AppLogger.matchesFilter(it, filter) }
+    }
+
+    fun copyReport() {
+        val report = AppLogger.buildFullReport(filter)
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("WQGlass Transfer Log", report))
+        Toast.makeText(context, "Diagnostic & crash report copied to clipboard!", Toast.LENGTH_SHORT).show()
+    }
+
+    fun shareReport() {
+        val report = AppLogger.buildFullReport("ALL")
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "WQGlass Transfer Android Diagnostic & Crash Log")
+            putExtra(Intent.EXTRA_TEXT, report)
+        }
+        context.startActivity(Intent.createChooser(sendIntent, "Share WQGlass Transfer Log"))
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        GlassCard {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Diagnostic, Error & Crash Logs", color = TextPrimary, fontSize = 16.5.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "${entries.size} session event(s) · ${if (crashText.isBlank()) "0 saved crashes" else "Persisted error/crash log available"}",
+                            color = AccentCyan,
+                            fontSize = 11.5.sp
+                        )
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = ::copyReport,
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Copy Log", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = ::shareReport,
+                        colors = ButtonDefaults.buttonColors(containerColor = AccentEmerald)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("Share Log", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { AppLogger.clearAll() },
+                        border = BorderStroke(1.dp, DangerRed)
+                    ) {
+                        Text("Clear", color = Color(0xFFFCA5A5), fontSize = 12.sp)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf("ALL" to "All Logs", "ERRORS" to "Errors & Warnings", "CRASHES" to "Crash Reports").forEach { (key, label) ->
+                        FilterChip(
+                            selected = filter == key,
+                            onClick = { filter = key },
+                            label = { Text(label, fontSize = 11.5.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFF1B3A6B),
+                                selectedLabelColor = AccentCyan
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        if (crashText.isNotBlank() && (filter == "ALL" || filter == "ERRORS" || filter == "CRASHES")) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2A1215)),
+                border = BorderStroke(1.dp, DangerRed)
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Persisted Error / Crash Dump (wqglass-crashes.log)", color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                    Text(
+                        text = crashText.takeLast(2400),
+                        color = TextPrimary,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 12,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+
+        LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (filteredEntries.isEmpty()) {
+                item {
+                    GlassCard {
+                        Text("No log entries matching the selected filter.", color = TextSecondary, fontSize = 13.sp)
+                    }
+                }
+            } else {
+                items(filteredEntries) { entry ->
+                    val badgeColor = when (entry.level) {
+                        "CRASH" -> DangerRed
+                        "ERROR" -> Color(0xFFF87171)
+                        "WARN" -> WarnAmber
+                        else -> AccentCyan
+                    }
+                    GlassCard {
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "[${entry.level}] ${entry.source}",
+                                    color = badgeColor,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Text(entry.timestamp, color = TextSecondary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            Text(entry.message, color = TextPrimary, fontSize = 12.5.sp, fontFamily = FontFamily.Monospace)
+                            if (!entry.detail.isNullOrBlank()) {
+                                Text(
+                                    entry.detail,
+                                    color = Color(0xFFFCA5A5),
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    maxLines = 10,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }

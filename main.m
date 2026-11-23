@@ -4897,25 +4897,62 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 
 @implementation WQLogViewController {
     UITextView *_textView;
+    UISegmentedControl *_filterSeg;
 }
 
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = WQLocalizedNullable(@"Log");
+    self.title = WQLocalizedNullable(@"Logs & Crash Reports");
     self.view.backgroundColor = UIColor.clearColor;
+    if (wq_prism_enabled()) {
+        wq_prism_install_background(self);
+    }
+
+    _filterSeg = [[UISegmentedControl alloc] initWithItems:@[
+        WQLocalized(@"All Logs"),
+        WQLocalized(@"Errors & Warnings"),
+        WQLocalized(@"Crash Reports")
+    ]];
+    _filterSeg.selectedSegmentIndex = 0;
+    _filterSeg.translatesAutoresizingMaskIntoConstraints = NO;
+    [_filterSeg addTarget:self action:@selector(filterChanged) forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:_filterSeg];
+
     _textView = [[UITextView alloc] initWithFrame:self.view.bounds];
     _textView.backgroundColor = UIColor.clearColor;   // glacier canvas shows through
     _textView.textColor = wq_theme_primary_text();
-    _textView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _textView.translatesAutoresizingMaskIntoConstraints = NO;
     _textView.editable = NO;
     _textView.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightRegular];
     _textView.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     _textView.textAlignment = NSTextAlignmentLeft;   // log lines stay left to right
     wq_theme_apply_scroll_insets(_textView, 28.0);
     [self.view addSubview:_textView];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
-                                                                                           target:self action:@selector(share:)];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [_filterSeg.topAnchor constraintEqualToAnchor:safe.topAnchor constant:8],
+        [_filterSeg.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:14],
+        [_filterSeg.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-14],
+        [_textView.topAnchor constraintEqualToAnchor:_filterSeg.bottomAnchor constant:8],
+        [_textView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_textView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_textView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
+
+    UIBarButtonItem *shareItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
+                                                                               target:self action:@selector(share:)];
+    __weak typeof(self) weakSelf = self;
+    UIBarButtonItem *copyItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Copy") image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil handler:^(UIAction *__unused a) {
+        [weakSelf copyCurrentLog];
+    }]];
+    UIBarButtonItem *clearItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Clear") image:[UIImage systemImageNamed:@"trash"] identifier:nil handler:^(UIAction *__unused a) {
+        [weakSelf confirmClearLogs];
+    }]];
+    self.navigationItem.rightBarButtonItems = @[shareItem, copyItem, clearItem];
 }
 
 // App version, device and iOS first, so a Log someone sends in says where it
@@ -4923,14 +4960,72 @@ static NSString *const kSystemGroupRoot = @"/private/var/containers/Shared/Syste
 - (NSString *)fullLog
 {
     NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-    return WQLocalizedFormat(@"WQ Glass %@ (%@)\n%@\n\n%@",
-            info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?", wq_device_line(), wq_log_text());
+    NSString *header = WQLocalizedFormat(@"WQ Glass %@ (%@)\n%@\n",
+            info[@"CFBundleShortVersionString"] ?: @"?", info[@"CFBundleVersion"] ?: @"?", wq_device_line());
+    NSString *crashes = wq_crash_log_text();
+    NSString *session = wq_log_text();
+    NSInteger mode = _filterSeg ? _filterSeg.selectedSegmentIndex : 0;
+
+    if (mode == 2) {
+        NSString *crashBody = crashes.length ? crashes : WQLocalized(@"No crash reports or fatal signals recorded.");
+        return [NSString stringWithFormat:@"%@\n=== PERSISTED CRASH & ERROR LOG ===\n%@", header, crashBody];
+    }
+
+    if (mode == 1) {
+        NSMutableArray<NSString *> *errLines = [NSMutableArray new];
+        for (NSString *line in [session componentsSeparatedByString:@"\n"]) {
+            if ([line rangeOfString:@"error" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [line rangeOfString:@"fail" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [line rangeOfString:@"warn" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [line rangeOfString:@"crash" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [line rangeOfString:@"refused" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                [line rangeOfString:@"errno" options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                [errLines addObject:line];
+            }
+        }
+        NSString *filtered = errLines.count ? [errLines componentsJoinedByString:@"\n"] : WQLocalized(@"No errors or warnings in current session.");
+        if (crashes.length) {
+            return [NSString stringWithFormat:@"%@\n=== PERSISTED CRASH & ERROR LOG ===\n%@\n\n=== SESSION ERRORS & WARNINGS ===\n%@", header, crashes, filtered];
+        }
+        return [NSString stringWithFormat:@"%@\n=== SESSION ERRORS & WARNINGS ===\n%@", header, filtered];
+    }
+
+    if (crashes.length) {
+        return [NSString stringWithFormat:@"%@\n=== PERSISTED CRASH & ERROR LOG ===\n%@\n\n=== SESSION DIAGNOSTIC LOG ===\n%@", header, crashes, session];
+    }
+    return [NSString stringWithFormat:@"%@\n%@", header, session];
+}
+
+- (void)filterChanged
+{
+    wq_haptic_selection();
+    _textView.text = [self fullLog];
 }
 
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
     _textView.text = [self fullLog];
+}
+
+- (void)copyCurrentLog
+{
+    UIPasteboard.generalPasteboard.string = [self fullLog];
+    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    wq_alert(self, WQLocalized(@"Logs Copied"), WQLocalized(@"Full diagnostic, error & crash log copied to clipboard."));
+}
+
+- (void)confirmClearLogs
+{
+    UIAlertController *a = wq_alert_controller(WQLocalized(@"Clear All Logs?"),
+                                               WQLocalized(@"This will clear the current session log and saved crash reports."),
+                                               UIAlertControllerStyleAlert);
+    [a addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(WQLocalized(@"Clear"), UIAlertActionStyleDestructive, ^(UIAlertAction *__unused act) {
+        wq_clear_logs();
+        self->_textView.text = [self fullLog];
+    })];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (void)share:(UIBarButtonItem *)sender
@@ -10021,6 +10116,7 @@ configurationForConnectingSceneSession:(UISceneSession *)session
 int main(int argc, char *argv[])
 {
     @autoreleasepool {
+        wq_install_crash_reporter();
         // Container folders get their bundle id from the LaunchServices database
         // when the identifier attribute can't be read (iOS 27.2).
         wq_set_container_label_resolver(wq_bundle_id_for_container);

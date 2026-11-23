@@ -7,6 +7,7 @@
 //
 
 #import "WQWinTransfer.h"
+#import "WQAccess.h"
 #import "WQLocalization.h"
 #import "WQTheme.h"
 #import "WQMotion.h"
@@ -291,7 +292,9 @@ static NSString *wq_win_web_ui_html(void)
 
 - (void)emitActivity:(NSString *)line
 {
-    if (!self.onActivity || !line.length) return;
+    if (!line.length) return;
+    wq_log(@"[Transfer] %@", line);
+    if (!self.onActivity) return;
     void (^cb)(NSString *) = self.onActivity;
     dispatch_async(dispatch_get_main_queue(), ^{ cb(line); });
 }
@@ -2547,6 +2550,64 @@ didCompleteWithError:(NSError *)error
     }
 }
 
+- (NSString *)buildTransferDiagnosticReport
+{
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    NSString *ver = info[@"CFBundleShortVersionString"] ?: @"4.0";
+    NSString *bld = info[@"CFBundleVersion"] ?: @"1";
+    NSString *dev = [NSString stringWithFormat:@"%@ · iOS %@", UIDevice.currentDevice.model ?: @"iPhone", UIDevice.currentDevice.systemVersion ?: @"26.0"];
+    NSString *crashes = wq_crash_log_text();
+    NSString *session = wq_log_text();
+    NSString *xferLogs = _logs.count ? [_logs componentsJoinedByString:@"\n"] : @"(No recent transfer activity entries)";
+    return [NSString stringWithFormat:
+            @"==================================================================\n"
+            @"WQ Glass (iOS) — Transfer, Error & Crash Diagnostic Report\n"
+            @"==================================================================\n"
+            @"App Version : %@ (%@)\n"
+            @"Device      : %@\n"
+            @"Server      : %@ (%@:%u · /%@)\n"
+            @"==================================================================\n\n"
+            @"--- PERSISTED CRASH & ERROR LOG ---\n%@\n\n"
+            @"--- TRANSFER SESSION ACTIVITY ---\n%@\n\n"
+            @"--- FULL APP DIAGNOSTIC LOG ---\n%@\n",
+            ver, bld, dev,
+            _server.isRunning ? @"Running" : @"Stopped",
+            _server.ipAddress ?: @"127.0.0.1",
+            (unsigned)_server.port,
+            _server.rootLabel ?: @"Downloads",
+            crashes.length ? crashes : @"None recorded",
+            xferLogs,
+            session.length ? session : @"None"];
+}
+
+- (void)presentDiagnosticLogsSheetFromSource:(UIView *)sourceView
+{
+    UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Diagnostic, Error & Crash Logs"),
+                                                   WQLocalized(@"Copy or share the full diagnostic & crash report so any issue can be inspected and fixed immediately."),
+                                                   UIAlertControllerStyleActionSheet);
+    [sheet addAction:wq_alert_action(WQLocalized(@"Copy Full Log & Crash Report"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        UIPasteboard.generalPasteboard.string = [self buildTransferDiagnosticReport];
+        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        wq_alert(self, WQLocalized(@"Logs Copied"), WQLocalized(@"Full diagnostic, error & crash report copied to clipboard."));
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Share Log File…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        NSString *report = [self buildTransferDiagnosticReport];
+        UIActivityViewController *avc = [[UIActivityViewController alloc] initWithActivityItems:@[report] applicationActivities:nil];
+        avc.popoverPresentationController.sourceView = sourceView ?: self.view;
+        avc.popoverPresentationController.sourceRect = sourceView ? sourceView.bounds : self.view.bounds;
+        [self presentViewController:avc animated:YES completion:nil];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Clear Saved Logs & Crash History"), UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+        wq_clear_logs();
+        [self->_logs removeAllObjects];
+        [self.tableView reloadData];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    sheet.popoverPresentationController.sourceView = sourceView ?: self.view;
+    sheet.popoverPresentationController.sourceRect = sourceView ? sourceView.bounds : self.view.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
 #pragma mark - TableView DataSource & Delegate
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 2; }
@@ -2554,13 +2615,13 @@ didCompleteWithError:(NSError *)error
 - (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
 {
     if (_mode == 0) {
-        if (section == 0) return 5;
+        if (section == 0) return 6;
         return MAX(1, (NSInteger)_logs.count);
     }
     if (section == 0) {
         return (NSInteger)_peers.count + 1;
     }
-    return 2;
+    return 3;
 }
 
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
@@ -2568,7 +2629,7 @@ didCompleteWithError:(NSError *)error
     if (_mode == 0) {
         return (section == 0) ? WQLocalized(@"Transfer Controls (Wi-Fi & USB Cable)") : WQLocalized(@"Live Transfer Activity");
     }
-    return (section == 0) ? WQLocalized(@"Nearby Devices on Wi-Fi (PC · Android · iOS)") : WQLocalized(@"QR & Manual Connection");
+    return (section == 0) ? WQLocalized(@"Nearby Devices on Wi-Fi (PC · Android · iOS)") : WQLocalized(@"QR, Manual & Diagnostics");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -2604,13 +2665,18 @@ didCompleteWithError:(NSError *)error
                 NSString *fixed = [NSUserDefaults.standardUserDefaults stringForKey:kWQWinFixedPinPref];
                 c.secondaryText = fixed.length ? fixed : WQLocalized(@"Random");
                 c.image = [UIImage systemImageNamed:@"key.fill"];
+            } else if (indexPath.row == 4) {
+                c.text = WQLocalized(@"Share / Copy Diagnostic & Crash Logs…");
+                NSString *crashes = wq_crash_log_text();
+                c.secondaryText = crashes.length ? WQLocalized(@"Has Crash/Error Log") : WQLocalized(@"Export");
+                c.image = [UIImage systemImageNamed:@"ladybug.fill"];
             } else {
                 c.text = _server.isRunning ? WQLocalized(@"Stop Transfer Server") : WQLocalized(@"Start Transfer Server");
                 c.textProperties.color = _server.isRunning ? UIColor.systemRedColor : wq_theme_accent();
                 c.image = [UIImage systemImageNamed:_server.isRunning ? @"stop.circle.fill" : @"play.circle.fill"];
                 cell.accessoryType = UITableViewCellAccessoryNone;
             }
-            c.imageProperties.tintColor = (indexPath.row == 1) ? UIColor.systemTealColor : wq_theme_accent();
+            c.imageProperties.tintColor = (indexPath.row == 1 || indexPath.row == 4) ? UIColor.systemTealColor : wq_theme_accent();
         } else {
             c = [UIListContentConfiguration subtitleCellConfiguration];
             if (!_logs.count) {
@@ -2655,12 +2721,18 @@ didCompleteWithError:(NSError *)error
         c.image = [UIImage systemImageNamed:@"qrcode.viewfinder"];
         c.imageProperties.tintColor = UIColor.systemTealColor;
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    } else {
+    } else if (indexPath.row == 1) {
         c.text = WQLocalized(@"Connect by IP:Port & PIN…");
         NSString *last = [NSUserDefaults.standardUserDefaults stringForKey:kWQWinLastEndpointPref];
         c.secondaryText = last.length ? [NSString stringWithFormat:@"Last: %@", last] : WQLocalized(@"Example: 192.168.1.42:8765");
         c.image = [UIImage systemImageNamed:@"network"];
         c.imageProperties.tintColor = wq_theme_accent();
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else {
+        c.text = WQLocalized(@"Share / Copy Diagnostic & Crash Logs…");
+        c.secondaryText = WQLocalized(@"Export error & crash log if a connection fails");
+        c.image = [UIImage systemImageNamed:@"ladybug.fill"];
+        c.imageProperties.tintColor = UIColor.systemTealColor;
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
 
@@ -2682,8 +2754,11 @@ didCompleteWithError:(NSError *)error
             }
         } else if (indexPath.row == 0) {
             [self presentQRScanner];
-        } else {
+        } else if (indexPath.row == 1) {
             [self promptManualConnect];
+        } else {
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+            [self presentDiagnosticLogsSheetFromSource:cell ?: self.view];
         }
         return;
     }
@@ -2775,6 +2850,9 @@ didCompleteWithError:(NSError *)error
             [self.tableView reloadData];
         })];
         [self presentViewController:a animated:YES completion:nil];
+    } else if (indexPath.row == 4) {
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        [self presentDiagnosticLogsSheetFromSource:cell ?: self.view];
     } else {
         if (_server.isRunning) {
             [_server stop];
