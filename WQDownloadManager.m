@@ -1749,6 +1749,7 @@ void wq_present_add_download_sheet(UIViewController *host,
 @end
 
 @interface WQDownloadCell : UITableViewCell
+- (void)configureWithItem:(WQDownloadItem *)item;
 - (void)configureWithItem:(WQDownloadItem *)item onToggle:(void (^)(void))onToggle;
 @end
 
@@ -1840,6 +1841,11 @@ void wq_present_add_download_sheet(UIViewController *host,
 - (void)configureWithItem:(WQDownloadItem *)item onToggle:(void (^)(void))onToggle
 {
     _onToggle = [onToggle copy];
+    [self configureWithItem:item];
+}
+
+- (void)configureWithItem:(WQDownloadItem *)item
+{
     _icon.image = [UIImage systemImageNamed:wq_symbol_for_category(item.category)];
     _icon.tintColor = (item.state == WQDownloadStateCompleted) ? UIColor.systemGreenColor
                     : (item.state == WQDownloadStateFailed) ? UIColor.systemRedColor

@@ -9,6 +9,7 @@
 #import "WQMediaConverter.h"
 #import "WQLocalization.h"
 #import "WQTheme.h"
+#import "WQMotion.h"
 #import "WQUI.h"
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
