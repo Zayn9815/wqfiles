@@ -610,6 +610,7 @@ static void wq_parse_h264_sps_size(const uint8_t *nal, size_t len, NSInteger *ou
         }
     }
     if (rlen < 4) return;
+    const uint8_t *rbspPtr = rbsp;
     __block size_t bitPos = 0;
     uint32_t (^readBits)(int count) = ^uint32_t(int count) {
         uint32_t v = 0;
@@ -617,7 +618,7 @@ static void wq_parse_h264_sps_size(const uint8_t *nal, size_t len, NSInteger *ou
             size_t bIdx = bitPos / 8;
             int bOff = 7 - (int)(bitPos % 8);
             if (bIdx >= rlen) return 0;
-            v = (v << 1) | ((rbsp[bIdx] >> bOff) & 1U);
+            v = (v << 1) | ((rbspPtr[bIdx] >> bOff) & 1U);
             bitPos++;
         }
         return v;
@@ -1280,38 +1281,41 @@ static uint64_t wq_ebml_read_uint(const uint8_t *b, size_t len)
     return v;
 }
 
-typedef struct {
-    uint64_t trackNum;
-    uint8_t trackType; // 1=video, 2=audio
-    char codecID[64];
-    NSInteger width;
-    NSInteger height;
-    double sampleRate;
-    NSInteger channels;
-    NSData *codecPrivate;
-} WQMkvTrackInfo;
+@interface WQMkvTrackInfo : NSObject
+@property (nonatomic) uint64_t trackNum;
+@property (nonatomic) uint8_t trackType; // 1=video, 2=audio
+@property (nonatomic, copy, nullable) NSString *codecID;
+@property (nonatomic) NSInteger width;
+@property (nonatomic) NSInteger height;
+@property (nonatomic) double sampleRate;
+@property (nonatomic) NSInteger channels;
+@property (nonatomic, strong, nullable) NSData *codecPrivate;
+@end
 
-static NSString *wq_mkv_friendly_codec(const char *cid)
+@implementation WQMkvTrackInfo
+@end
+
+static NSString *wq_mkv_friendly_codec(NSString *cid)
 {
-    if (!cid || !cid[0]) return nil;
-    if (strstr(cid, "V_MPEG4/ISO/AVC")) return @"H.264";
-    if (strstr(cid, "V_MPEGH/ISO/HEVC")) return @"HEVC (H.265)";
-    if (strstr(cid, "V_VP9")) return @"VP9";
-    if (strstr(cid, "V_VP8")) return @"VP8";
-    if (strstr(cid, "V_AV1")) return @"AV1";
-    if (strstr(cid, "A_AAC")) return @"AAC";
-    if (strstr(cid, "A_MPEG/L3")) return @"MP3";
-    if (strstr(cid, "A_AC3")) return @"AC-3";
-    if (strstr(cid, "A_EAC3")) return @"E-AC-3";
-    if (strstr(cid, "A_OPUS")) return @"Opus";
-    if (strstr(cid, "A_VORBIS")) return @"Vorbis";
-    if (strstr(cid, "A_FLAC")) return @"FLAC";
-    return [NSString stringWithUTF8String:cid];
+    if (!cid.length) return nil;
+    if ([cid containsString:@"V_MPEG4/ISO/AVC"]) return @"H.264";
+    if ([cid containsString:@"V_MPEGH/ISO/HEVC"]) return @"HEVC (H.265)";
+    if ([cid containsString:@"V_VP9"]) return @"VP9";
+    if ([cid containsString:@"V_VP8"]) return @"VP8";
+    if ([cid containsString:@"V_AV1"]) return @"AV1";
+    if ([cid containsString:@"A_AAC"]) return @"AAC";
+    if ([cid containsString:@"A_MPEG/L3"]) return @"MP3";
+    if ([cid containsString:@"A_AC3"]) return @"AC-3";
+    if ([cid containsString:@"A_EAC3"]) return @"E-AC-3";
+    if ([cid containsString:@"A_OPUS"]) return @"Opus";
+    if ([cid containsString:@"A_VORBIS"]) return @"Vorbis";
+    if ([cid containsString:@"A_FLAC"]) return @"FLAC";
+    return cid;
 }
 
 static void wq_mkv_parse_header_from_buffer(const uint8_t *buf, size_t len,
                                             BOOL *isWebM, uint64_t *timecodeScale, double *durationRaw,
-                                            NSMutableArray<NSValue *> *tracksOut)
+                                            NSMutableArray<WQMkvTrackInfo *> *tracksOut)
 {
     size_t pos = 0;
     uint64_t tcScale = 1000000; // default 1ms in ns
@@ -1342,8 +1346,7 @@ static void wq_mkv_parse_header_from_buffer(const uint8_t *buf, size_t len,
         } else if (eid == 0x4489) { // Duration
             *durationRaw = wq_ebml_read_float(buf + body, (size_t)esize);
         } else if (eid == 0xAE) { // TrackEntry
-            WQMkvTrackInfo t;
-            memset(&t, 0, sizeof(t));
+            WQMkvTrackInfo *t = [WQMkvTrackInfo new];
             t.sampleRate = 44100.0;
             t.channels = 2;
             size_t tp = body;
@@ -1361,9 +1364,8 @@ static void wq_mkv_parse_header_from_buffer(const uint8_t *buf, size_t len,
                 if (tid == 0xD7) t.trackNum = wq_ebml_read_uint(buf + tbody, (size_t)tsz);
                 else if (tid == 0x83) t.trackType = (uint8_t)wq_ebml_read_uint(buf + tbody, (size_t)tsz);
                 else if (tid == 0x86) {
-                    size_t cl = (size_t)MIN(tsz, (uint64_t)(sizeof(t.codecID) - 1));
-                    memcpy(t.codecID, buf + tbody, cl);
-                    t.codecID[cl] = '\0';
+                    size_t cl = (size_t)MIN(tsz, (uint64_t)128);
+                    t.codecID = [[NSString alloc] initWithBytes:buf + tbody length:cl encoding:NSUTF8StringEncoding];
                 } else if (tid == 0xB0) t.width = (NSInteger)wq_ebml_read_uint(buf + tbody, (size_t)tsz);
                 else if (tid == 0xBA) t.height = (NSInteger)wq_ebml_read_uint(buf + tbody, (size_t)tsz);
                 else if (tid == 0xB5) t.sampleRate = wq_ebml_read_float(buf + tbody, (size_t)tsz);
@@ -1373,7 +1375,7 @@ static void wq_mkv_parse_header_from_buffer(const uint8_t *buf, size_t len,
                 }
                 tp = tbody + (size_t)tsz;
             }
-            [tracksOut addObject:[NSValue valueWithBytes:&t objCType:@encode(WQMkvTrackInfo)]];
+            [tracksOut addObject:t];
         }
         pos = body + (size_t)esize;
     }
@@ -1393,7 +1395,7 @@ static WQMediaProbeInfo *wq_probe_ebml(int fd, unsigned long long fileSize)
     BOOL isWebM = NO;
     uint64_t tcScale = 1000000;
     double durRaw = 0;
-    NSMutableArray<NSValue *> *tracks = [NSMutableArray new];
+    NSMutableArray<WQMkvTrackInfo *> *tracks = [NSMutableArray new];
     if (n > 16) {
         wq_mkv_parse_header_from_buffer(buf, (size_t)n, &isWebM, &tcScale, &durRaw, tracks);
     }
@@ -1406,9 +1408,7 @@ static WQMediaProbeInfo *wq_probe_ebml(int fd, unsigned long long fileSize)
         }
     }
     NSMutableArray<NSString *> *audioNames = [NSMutableArray new];
-    for (NSValue *v in tracks) {
-        WQMkvTrackInfo t;
-        [v getValue:&t];
+    for (WQMkvTrackInfo *t in tracks) {
         NSString *cname = wq_mkv_friendly_codec(t.codecID);
         if (t.trackType == 1) {
             info.hasVideo = YES;
@@ -1442,7 +1442,7 @@ static BOOL wq_remux_ebml(int fd, unsigned long long fileSize, NSURL *outURL, AV
     BOOL isWebM = NO;
     uint64_t tcScale = 1000000;
     double durRaw = 0;
-    NSMutableArray<NSValue *> *tracks = [NSMutableArray new];
+    NSMutableArray<WQMkvTrackInfo *> *tracks = [NSMutableArray new];
     wq_mkv_parse_header_from_buffer(buf, (size_t)n, &isWebM, &tcScale, &durRaw, tracks);
 
     NSError *err = nil;
@@ -1451,17 +1451,15 @@ static BOOL wq_remux_ebml(int fd, unsigned long long fileSize, NSURL *outURL, AV
     if (!muxer.writer || err) { free(buf); if (errorOut) *errorOut = err.localizedDescription; return NO; }
 
     uint64_t vTrackNum = 0, aTrackNum = 0;
-    for (NSValue *v in tracks) {
-        WQMkvTrackInfo t;
-        [v getValue:&t];
+    for (WQMkvTrackInfo *t in tracks) {
         if (t.trackType == 1 && !vTrackNum && t.codecPrivate.length) {
-            if (strstr(t.codecID, "V_MPEG4/ISO/AVC")) {
+            if ([t.codecID containsString:@"V_MPEG4/ISO/AVC"]) {
                 CMVideoFormatDescriptionRef vf = wq_create_video_format_with_atom(kCMVideoCodecType_H264,
                                                                                    (int32_t)(t.width ?: 1280),
                                                                                    (int32_t)(t.height ?: 720),
                                                                                    @"avcC", t.codecPrivate);
                 if (vf) { [muxer configureVideoFormat:vf]; CFRelease(vf); vTrackNum = t.trackNum; }
-            } else if (strstr(t.codecID, "V_MPEGH/ISO/HEVC")) {
+            } else if ([t.codecID containsString:@"V_MPEGH/ISO/HEVC"]) {
                 CMVideoFormatDescriptionRef vf = wq_create_video_format_with_atom(kCMVideoCodecType_HEVC,
                                                                                    (int32_t)(t.width ?: 1280),
                                                                                    (int32_t)(t.height ?: 720),
@@ -1469,10 +1467,10 @@ static BOOL wq_remux_ebml(int fd, unsigned long long fileSize, NSURL *outURL, AV
                 if (vf) { [muxer configureVideoFormat:vf]; CFRelease(vf); vTrackNum = t.trackNum; }
             }
         } else if (t.trackType == 2 && !aTrackNum) {
-            if (strstr(t.codecID, "A_AAC") && t.codecPrivate.length >= 2) {
+            if ([t.codecID containsString:@"A_AAC"] && t.codecPrivate.length >= 2) {
                 CMAudioFormatDescriptionRef af = wq_create_aac_format_from_asc(t.codecPrivate.bytes, t.codecPrivate.length);
                 if (af) { [muxer configureAudioFormat:af]; CFRelease(af); aTrackNum = t.trackNum; }
-            } else if (strstr(t.codecID, "A_MPEG/L3")) {
+            } else if ([t.codecID containsString:@"A_MPEG/L3"]) {
                 CMAudioFormatDescriptionRef af = wq_create_mp3_format((uint32_t)t.sampleRate, (uint32_t)t.channels);
                 if (af) { [muxer configureAudioFormat:af]; CFRelease(af); aTrackNum = t.trackNum; }
             }
