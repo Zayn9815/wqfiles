@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
@@ -143,6 +144,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLogger.init(this)
+        WQThemeEngine.init(this)
 
         discovery = DiscoveryService(this) {
             TransferForegroundService.server.currentPort()
@@ -150,14 +152,15 @@ class MainActivity : ComponentActivity() {
         discovery.start()
 
         setContent {
+            val activeTheme by WQThemeEngine.currentTheme.collectAsState()
             MaterialTheme(
                 colorScheme = darkColorScheme(
-                    primary = AccentBlue,
-                    secondary = AccentCyan,
-                    background = BgCanvas,
-                    surface = CardBg,
-                    onBackground = TextPrimary,
-                    onSurface = TextPrimary,
+                    primary = activeTheme.accent,
+                    secondary = activeTheme.secondaryAccent,
+                    background = activeTheme.canvasTop,
+                    surface = activeTheme.cardBg,
+                    onBackground = activeTheme.textPrimary,
+                    onSurface = activeTheme.textPrimary,
                     error = DangerRed
                 )
             ) {
@@ -197,8 +200,14 @@ private fun openStorageAccessSettings(context: Context) {
 private fun WQGlassTransferApp(discovery: DiscoveryService) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("wqglass_transfer", Context.MODE_PRIVATE) }
-    var selectedTab by remember { mutableIntStateOf(0) }
+    val activeTheme by WQThemeEngine.currentTheme.collectAsState()
+    var selectedTab by remember { mutableIntStateOf(0) } // 0=Files, 1=IDM & Web, 2=Transfer, 3=Hub & Themes, 4=Logs
+    var transferSubTab by remember { mutableIntStateOf(0) } // 0=Connect, 1=Share Device, 2=History
+    var hubSubScreen by remember { mutableStateOf("") }
+
     val hostState by TransferForegroundService.server.state.collectAsState()
+    val idmTasks by WqIdmDownloadEngine.tasks.collectAsState()
+    val activeDownloads = remember(idmTasks) { idmTasks.count { it.status == DownloadStatus.DOWNLOADING } }
     val logEntries by AppLogger.entries.collectAsState()
     val errorCount = remember(logEntries) {
         logEntries.count { it.level == "ERROR" || it.level == "WARN" || it.level == "CRASH" }
@@ -215,32 +224,38 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
     }
 
     Scaffold(
-        containerColor = BgCanvas,
+        containerColor = activeTheme.canvasTop,
         bottomBar = {
-            NavigationBar(containerColor = CardBg) {
+            NavigationBar(containerColor = activeTheme.cardBg) {
                 NavigationBarItem(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Wifi, contentDescription = null) },
-                    label = { Text("Connect") }
+                    icon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                    label = { Text("Files", fontSize = 11.sp) }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.Upload, contentDescription = null) },
-                    label = { Text(if (hostState.isRunning) "Share · Live" else "Share") }
+                    icon = { Icon(Icons.Default.Download, contentDescription = null) },
+                    label = { Text(if (activeDownloads > 0) "IDM ($activeDownloads)" else "IDM & Web", fontSize = 11.sp) }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Default.History, contentDescription = null) },
-                    label = { Text("History (${history.size})") }
+                    icon = { Icon(Icons.Default.SwapHoriz, contentDescription = null) },
+                    label = { Text(if (hostState.isRunning) "Transfer ●" else "Transfer", fontSize = 11.sp) }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 3,
-                    onClick = { selectedTab = 3 },
+                    onClick = { selectedTab = 3; hubSubScreen = "" },
+                    icon = { Icon(Icons.Default.Apps, contentDescription = null) },
+                    label = { Text("Hub & Themes", fontSize = 11.sp) }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 4,
+                    onClick = { selectedTab = 4 },
                     icon = { Icon(Icons.Default.BugReport, contentDescription = null) },
-                    label = { Text(if (errorCount > 0) "Logs ($errorCount)" else "Logs") }
+                    label = { Text(if (errorCount > 0) "Logs ($errorCount)" else "Logs", fontSize = 11.sp) }
                 )
             }
         }
@@ -249,35 +264,75 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(BgCanvas)
+                .background(activeTheme.canvasTop)
         ) {
             when (selectedTab) {
-                0 -> ClientScreen(
-                    discovery = discovery,
-                    prefs = prefs,
-                    onRecordHistory = ::recordHistory
+                0 -> LocalFilesStudioScreen(
+                    onOpenTool = { toolId ->
+                        hubSubScreen = toolId
+                        selectedTab = 3
+                    }
                 )
-                1 -> HostScreen(
-                    prefs = prefs,
-                    onRequestRuntimePermissions = {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-                        ) {
-                            notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                            legacyStorageLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                                )
+                1 -> IdmAndBrowserStudioScreen()
+                2 -> Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Button(
+                            onClick = { transferSubTab = 0 },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (transferSubTab == 0) activeTheme.accent else activeTheme.cardElevated)
+                        ) { Text("Connect Peer", fontSize = 11.5.sp) }
+                        Button(
+                            onClick = { transferSubTab = 1 },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (transferSubTab == 1) activeTheme.accent else activeTheme.cardElevated)
+                        ) { Text(if (hostState.isRunning) "Share · Live" else "Share Device", fontSize = 11.5.sp) }
+                        Button(
+                            onClick = { transferSubTab = 2 },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (transferSubTab == 2) activeTheme.accent else activeTheme.cardElevated)
+                        ) { Text("History (${history.size})", fontSize = 11.5.sp) }
+                    }
+
+                    Box(modifier = Modifier.weight(1f)) {
+                        when (transferSubTab) {
+                            0 -> ClientScreen(
+                                discovery = discovery,
+                                prefs = prefs,
+                                onRecordHistory = ::recordHistory
+                            )
+                            1 -> HostScreen(
+                                prefs = prefs,
+                                onRequestRuntimePermissions = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    }
+                                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                                        legacyStorageLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.READ_EXTERNAL_STORAGE,
+                                                Manifest.permission.WRITE_EXTERNAL_STORAGE
+                                            )
+                                        )
+                                    }
+                                }
+                            )
+                            else -> HistoryScreen(
+                                history = history,
+                                onClear = { history.clear() }
                             )
                         }
                     }
-                )
-                2 -> HistoryScreen(
-                    history = history,
-                    onClear = { history.clear() }
+                }
+                3 -> UtilityHubStudioScreen(
+                    activeSubScreen = hubSubScreen,
+                    onSelectSubScreen = { hubSubScreen = it }
                 )
                 else -> LogsScreen()
             }
@@ -1478,7 +1533,7 @@ private fun HistoryScreen(
 }
 
 @Composable
-private fun LogsScreen() {
+internal fun LogsScreen() {
     val context = LocalContext.current
     val entries by AppLogger.entries.collectAsState()
     val crashText by AppLogger.crashDiskText.collectAsState()
@@ -1646,26 +1701,8 @@ private fun GlassCard(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = CardBg),
-        border = BorderStroke(1.dp, CardBorder)
-    ) {
-        Box(modifier = Modifier.padding(12.dp)) {
-            content()
-        }
-    }
+    ThemedGlassCard(modifier = modifier, content = content)
 }
 
 @Composable
-private fun glassTextFieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = TextPrimary,
-    unfocusedTextColor = TextPrimary,
-    focusedContainerColor = InputBg,
-    unfocusedContainerColor = InputBg,
-    focusedBorderColor = AccentCyan,
-    unfocusedBorderColor = CardBorder,
-    focusedLabelColor = AccentCyan,
-    unfocusedLabelColor = TextSecondary
-)
+private fun glassTextFieldColors() = themedTextFieldColors()
