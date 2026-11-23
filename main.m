@@ -50,6 +50,7 @@
 #import "WQScanTask.h"
 #import "WQSecurity.h"
 #import "WQMediaStream.h"
+#import "WQProMediaPlayer.h"
 #import "WQSystemMonitor.h"
 #import "WQDocStudio.h"
 #import "WQMediaTools.h"
@@ -62,6 +63,7 @@
 #import "WQOCRStudio.h"
 #import "WQContentSearch.h"
 #import "WQNetStudio.h"
+#import "WQRemoteDrives.h"
 #import "WQCryptoTools.h"
 #import "WQWorkflows.h"
 #import "WQDownloadManager.h"
@@ -722,32 +724,24 @@ static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^st
         unsigned long long size = reader.size;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!stillWanted()) return;
-            [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
-            AVPlayerViewController *player = [AVPlayerViewController new];
-            player.title = path.lastPathComponent;
-            __weak AVPlayerViewController *weakPlayer = player;
-            // Fallback: copy, then swap the copy into the same player. The
-            // player owns the copy's folder from then on.
+            WQProMediaPlayerViewController *player = [[WQProMediaPlayerViewController alloc] initWithTitle:path.lastPathComponent sourcePath:path];
+            __weak WQProMediaPlayerViewController *weakPlayer = player;
             void (^playCopy)(NSString *) = ^(NSString *why) {
                 wq_log(@"media: %@: %@; copying it first", path.lastPathComponent, why);
-                AVPlayerViewController *p = weakPlayer;
-                if (p && !p.player) p.player = [AVPlayer new];
+                WQProMediaPlayerViewController *p = weakPlayer;
                 UIAlertController *hud = wq_alert_controller(@"Preparing…", path.lastPathComponent, UIAlertControllerStyleAlert);
                 UIViewController *presenter = p.viewIfLoaded.window ? p : host;
                 [presenter presentViewController:hud animated:YES completion:nil];
                 wq_media_copy(path, ^(NSURL *local, WQMediaCopyDir *dir, NSString *error) {
                     void (^finish)(void) = ^{
-                        AVPlayerViewController *q = weakPlayer;
+                        WQProMediaPlayerViewController *q = weakPlayer;
                         if (!local) {
                             wq_alert(q.viewIfLoaded.window ? q : host, @"Cannot play", error);
                             return;
                         }
-                        // No player any more: dir is released with this
-                        // block and removes the copy.
                         if (!q) return;
                         wq_media_keep_copy_dir(q, dir);
-                        [q.player replaceCurrentItemWithPlayerItem:[AVPlayerItem playerItemWithURL:local]];
-                        [q.player play];
+                        [q replaceWithLocalURL:local];
                     };
                     if (presenter.presentedViewController == hud) [presenter dismissViewControllerAnimated:YES completion:finish];
                     else finish();
@@ -763,22 +757,16 @@ static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^st
                     }];
             }
             if (wq_is_convertible_media_path(path)) {
-                player.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
-                    [UIAction actionWithTitle:WQLocalized(@"Convert")
-                                        image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"]
-                                   identifier:nil handler:^(UIAction *__unused a) {
-                    AVPlayerViewController *p = weakPlayer;
-                    if (!p) return;
-                    [p.player pause];
-                    wq_present_media_converter(p, path);
-                }]];
+                player.onConvert = ^{
+                    WQProMediaPlayerViewController *p = weakPlayer;
+                    if (p) wq_present_media_converter(p, path);
+                };
             }
             [nav pushViewController:player animated:YES];
             if (item) {
                 wq_log(@"media: streaming %@ (%@, %@)", path.lastPathComponent,
                        [WQMediaStream contentTypeForFileName:path.lastPathComponent], wq_size_text(size));
-                player.player = [AVPlayer playerWithPlayerItem:item];
-                [player.player play];
+                [player loadPlayerItem:item];
             } else {
                 playCopy(regular ? @"type can't be streamed" : @"not a regular file or not readable");
             }
@@ -1010,7 +998,9 @@ static NSString *wq_temp_work_dir(NSString *prefix)
     NSMutableArray<NSArray<NSString *> *> *_rows;   // @[title, value]
     WQScanCancellation *_cancellation;
     BOOL _sha256Busy, _sha256Ready;
+    BOOL _sha1Busy, _sha1Ready;
     BOOL _md5Busy, _md5Ready;
+    NSString *_symlinkTarget;
 }
 
 - (instancetype)initWithPath:(NSString *)path
@@ -1075,7 +1065,19 @@ static NSString *wq_info_date(struct timespec ts)
         if (S_ISLNK(st.st_mode)) {
             char target[PATH_MAX];
             ssize_t n = readlink(path.fileSystemRepresentation, target, sizeof(target) - 1);
-            if (n >= 0) { target[n] = 0; show(WQLocalized(@"Points to"), WQVerbatim(@(target) ?: @"?")); }
+            if (n >= 0) {
+                target[n] = 0;
+                NSString *targetStr = @(target) ?: @"?";
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    WQInfoViewController *me = weakSelf;
+                    if (!me) return;
+                    me->_symlinkTarget = [targetStr hasPrefix:@"/"]
+                        ? targetStr
+                        : [[path.stringByDeletingLastPathComponent stringByAppendingPathComponent:targetStr] stringByStandardizingPath];
+                });
+                show(WQLocalized(@"Points to"), WQVerbatim(targetStr));
+                show(WQLocalized(@"Jump to Target Folder"), WQLocalized(@"Tap to open target"));
+            }
         }
         if (S_ISDIR(st.st_mode)) {
             WQTreeCount count = wq_tree_count(path, 1000000);
@@ -1091,23 +1093,25 @@ static NSString *wq_info_date(struct timespec ts)
                                                    count.state == WQTreeCountLimited ? @"+" : @""]));
         }
         if (S_ISREG(st.st_mode)) {
-            // On-demand checksums: zero disk reads until the user explicitly taps the row.
-            show(@"SHA-256", WQLocalized(@"Tap to calculate"));
-            show(@"MD5", WQLocalized(@"Tap to calculate"));
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WQInfoViewController *me = weakSelf;
+                if (!me) return;
+                [me computeChecksumKind:0]; // SHA-256
+                [me computeChecksumKind:1]; // SHA-1
+                [me computeChecksumKind:2]; // MD5
+            });
         }
     });
 }
 
-- (void)computeChecksumMD5:(BOOL)isMD5
+// kind: 0 = SHA-256, 1 = SHA-1, 2 = MD5
+- (void)computeChecksumKind:(NSInteger)kind
 {
-    NSString *key = isMD5 ? @"MD5" : @"SHA-256";
-    if (isMD5) {
-        if (_md5Busy) return;
-        _md5Busy = YES;
-    } else {
-        if (_sha256Busy) return;
-        _sha256Busy = YES;
-    }
+    NSString *key = kind == 0 ? @"SHA-256" : kind == 1 ? @"SHA-1" : @"MD5";
+    if (kind == 0) { if (_sha256Busy) return; _sha256Busy = YES; }
+    else if (kind == 1) { if (_sha1Busy) return; _sha1Busy = YES; }
+    else { if (_md5Busy) return; _md5Busy = YES; }
+
     [self setValue:WQLocalized(@"Calculating…") forRow:key];
     NSString *path = _path;
     WQScanCancellation *cancellation = _cancellation;
@@ -1118,7 +1122,9 @@ static NSString *wq_info_date(struct timespec ts)
             dispatch_async(dispatch_get_main_queue(), ^{
                 WQInfoViewController *me = weakSelf;
                 if (!me) return;
-                if (isMD5) me->_md5Busy = NO; else me->_sha256Busy = NO;
+                if (kind == 0) me->_sha256Busy = NO;
+                else if (kind == 1) me->_sha1Busy = NO;
+                else me->_md5Busy = NO;
                 [me setValue:WQLocalized(@"The file could not be read.") forRow:key];
             });
             return;
@@ -1126,7 +1132,7 @@ static NSString *wq_info_date(struct timespec ts)
         uint8_t buffer[256 * 1024];
         BOOL ok = YES;
         NSString *hexOut = nil;
-        if (isMD5) {
+        if (kind == 2) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
             CC_MD5_CTX ctx;
@@ -1145,6 +1151,24 @@ static NSString *wq_info_date(struct timespec ts)
             if (ok) {
                 NSMutableString *hex = [NSMutableString stringWithCapacity:CC_MD5_DIGEST_LENGTH * 2];
                 for (int i = 0; i < CC_MD5_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
+                hexOut = hex;
+            }
+        } else if (kind == 1) {
+            CC_SHA1_CTX ctx;
+            CC_SHA1_Init(&ctx);
+            for (;;) {
+                if (cancellation.isCancelled) { ok = NO; break; }
+                ssize_t n = read(fd, buffer, sizeof(buffer));
+                if (n < 0 && errno == EINTR) continue;
+                if (n < 0) { ok = NO; break; }
+                if (n == 0) break;
+                CC_SHA1_Update(&ctx, buffer, (CC_LONG)n);
+            }
+            unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+            CC_SHA1_Final(digest, &ctx);
+            if (ok) {
+                NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
+                for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x", digest[i]];
                 hexOut = hex;
             }
         } else {
@@ -1171,10 +1195,10 @@ static NSString *wq_info_date(struct timespec ts)
         dispatch_async(dispatch_get_main_queue(), ^{
             WQInfoViewController *me = weakSelf;
             if (!me) return;
-            if (isMD5) { me->_md5Busy = NO; me->_md5Ready = ok && hexOut.length > 0; }
-            else { me->_sha256Busy = NO; me->_sha256Ready = ok && hexOut.length > 0; }
+            if (kind == 0) { me->_sha256Busy = NO; me->_sha256Ready = ok && hexOut.length > 0; }
+            else if (kind == 1) { me->_sha1Busy = NO; me->_sha1Ready = ok && hexOut.length > 0; }
+            else { me->_md5Busy = NO; me->_md5Ready = ok && hexOut.length > 0; }
             [me setValue:(ok && hexOut.length) ? WQVerbatim(hexOut) : WQLocalized(@"The file could not be read.") forRow:key];
-            if (ok && hexOut.length) wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         });
     });
 }
@@ -1185,11 +1209,11 @@ static NSString *wq_info_date(struct timespec ts)
     if (self.isMovingFromParentViewController || !self.navigationController) [_cancellation cancel];
 }
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return (NSInteger)_rows.count; }
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger __unused)section { return (NSInteger)_rows.count; }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+- (NSString *)tableView:(UITableView *__unused)tableView titleForFooterInSection:(NSInteger __unused)section
 {
-    return WQLocalized(@"Tap a row to copy its value. Tap SHA-256 or MD5 to calculate on demand, then tap again to copy.");
+    return WQLocalized(@"Tap a row to copy its value. Checksums are compared automatically against your clipboard.");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -1200,12 +1224,26 @@ static NSString *wq_info_date(struct timespec ts)
     c.prefersSideBySideTextAndSecondaryText = NO;
     NSString *key = _rows[(NSUInteger)indexPath.row][0];
     NSString *val = _rows[(NSUInteger)indexPath.row][1];
-    c.text = key;
+    BOOL isHash = [key isEqualToString:@"SHA-256"] || [key isEqualToString:@"SHA-1"] || [key isEqualToString:@"MD5"];
+    NSString *clip = UIPasteboard.generalPasteboard.hasStrings
+        ? [UIPasteboard.generalPasteboard.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+        : nil;
+    BOOL matchesClip = isHash && clip.length >= 32 && [clip caseInsensitiveCompare:val] == NSOrderedSame;
+
+    c.text = matchesClip ? [NSString stringWithFormat:@"%@ · %@", key, WQLocalized(@"✓ Matches Clipboard Hash")] : key;
     c.secondaryText = val;
     c.secondaryTextProperties.numberOfLines = 0;
     c.secondaryTextProperties.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
-    BOOL tapAction = ([key isEqualToString:@"SHA-256"] && !_sha256Ready) || ([key isEqualToString:@"MD5"] && !_md5Ready);
-    c.secondaryTextProperties.color = tapAction ? wq_theme_accent() : wq_theme_secondary_text();
+    if (matchesClip) {
+        c.textProperties.color = UIColor.systemGreenColor;
+        c.secondaryTextProperties.color = UIColor.systemGreenColor;
+    } else if ([key isEqualToString:WQLocalized(@"Jump to Target Folder")]) {
+        c.textProperties.color = wq_theme_accent();
+        c.secondaryTextProperties.color = wq_theme_secondary_text();
+    } else {
+        c.textProperties.color = wq_theme_primary_text();
+        c.secondaryTextProperties.color = wq_theme_secondary_text();
+    }
     cell.contentConfiguration = c;
     return cell;
 }
@@ -1221,14 +1259,12 @@ static NSString *wq_info_date(struct timespec ts)
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     NSArray<NSString *> *row = _rows[(NSUInteger)indexPath.row];
     NSString *key = row[0];
-    if ([key isEqualToString:@"SHA-256"] && !_sha256Ready) {
-        wq_haptic_impact(UIImpactFeedbackStyleLight);
-        [self computeChecksumMD5:NO];
-        return;
-    }
-    if ([key isEqualToString:@"MD5"] && !_md5Ready) {
-        wq_haptic_impact(UIImpactFeedbackStyleLight);
-        [self computeChecksumMD5:YES];
+    if ([key isEqualToString:WQLocalized(@"Jump to Target Folder")] && _symlinkTarget.length) {
+        struct stat st;
+        BOOL exists = wq_stat(_symlinkTarget, &st);
+        NSString *dest = (exists && S_ISDIR(st.st_mode)) ? _symlinkTarget : _symlinkTarget.stringByDeletingLastPathComponent;
+        WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:dest title:dest.lastPathComponent];
+        [self.navigationController pushViewController:dir animated:YES];
         return;
     }
     UIPasteboard.generalPasteboard.string = row[1];
@@ -1240,6 +1276,17 @@ static NSString *wq_info_date(struct timespec ts)
 
 // MARK: ZIP / IPA Peek Contents (zero-extraction archive browser)
 
+@interface WQZipPeekNode : NSObject
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *fullPath;
+@property (nonatomic) BOOL isDirectory;
+@property (nonatomic) unsigned long long uncompressedSize;
+@property (nonatomic) unsigned long long compressedSize;
+@end
+
+@implementation WQZipPeekNode
+@end
+
 @interface WQZipPeekViewController : UITableViewController <UISearchResultsUpdating>
 - (instancetype)initWithZipPath:(NSString *)zipPath;
 @end
@@ -1247,18 +1294,34 @@ static NSString *wq_info_date(struct timespec ts)
 @implementation WQZipPeekViewController {
     NSString *_zipPath;
     NSArray<WQZipEntryInfo *> *_allEntries;
-    NSArray<WQZipEntryInfo *> *_filtered;
+    NSArray<WQZipPeekNode *> *_nodes;
+    NSString *_currentPrefix;
     NSString *_query;
     NSString *_status;
     unsigned long long _totalUncompressed;
     unsigned long long _totalCompressed;
+    BOOL _selecting;
+    NSMutableSet<NSString *> *_selectedPaths;
+    UIBarButtonItem *_selectBtn;
+    UIBarButtonItem *_extractBtn;
+
+    // IPA Quick Inspector metadata
+    BOOL _isIPA;
+    NSDictionary *_ipaInfoPlist;
+    NSString *_ipaInfoPlistEntry;
+    UIImage *_ipaIcon;
+    NSString *_ipaProvisionSummary;
+    NSArray<NSString *> *_ipaFrameworks;
 }
 
 - (instancetype)initWithZipPath:(NSString *)zipPath
 {
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
         _zipPath = [zipPath copy];
-        self.title = [zipPath.lastPathComponent stringByAppendingString:WQLocalized(@" · Peek")];
+        _currentPrefix = @"";
+        _selectedPaths = [NSMutableSet new];
+        _isIPA = [zipPath.pathExtension.lowercaseString isEqualToString:@"ipa"];
+        self.title = zipPath.lastPathComponent;
     }
     return self;
 }
@@ -1278,10 +1341,22 @@ static NSString *wq_info_date(struct timespec ts)
     self.navigationItem.searchController = search;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
+
+    _selectBtn = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Select")
+                                                  style:UIBarButtonItemStylePlain
+                                                 target:self
+                                                 action:@selector(toggleSelectionMode)];
+    _extractBtn = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Extract Selected…")
+                                                   style:UIBarButtonItemStyleProminent
+                                                  target:self
+                                                  action:@selector(extractSelectedEntries)];
+    [self updateNavButtons];
+
     _status = WQLocalized(@"Reading archive directory…");
     [self.tableView reloadData];
 
     NSString *path = _zipPath;
+    BOOL isIPA = _isIPA;
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         NSString *err = nil;
@@ -1293,6 +1368,60 @@ static NSString *wq_info_date(struct timespec ts)
                 totalC += e.compressedSize;
             }
         }
+        NSDictionary *ipaInfo = nil;
+        NSString *ipaInfoEntry = nil;
+        UIImage *ipaIcon = nil;
+        NSString *provSummary = nil;
+        NSMutableArray<NSString *> *frameworks = [NSMutableArray new];
+
+        if (isIPA && entries.count) {
+            NSString *provEntry = nil;
+            NSMutableArray<NSString *> *iconCandidates = [NSMutableArray new];
+            for (WQZipEntryInfo *e in entries) {
+                NSString *n = e.name ?: @"";
+                if (!ipaInfoEntry && [n hasPrefix:@"Payload/"] && [n hasSuffix:@".app/Info.plist"] &&
+                    [n componentsSeparatedByString:@"/"].count == 3) {
+                    ipaInfoEntry = n;
+                } else if (!provEntry && [n hasPrefix:@"Payload/"] && [n hasSuffix:@".app/embedded.mobileprovision"]) {
+                    provEntry = n;
+                } else if ([n hasPrefix:@"Payload/"] && [n containsString:@".app/Frameworks/"] && [n hasSuffix:@".framework/"]) {
+                    NSString *fw = [n stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]].lastPathComponent;
+                    if (fw.length && ![frameworks containsObject:fw]) [frameworks addObject:fw];
+                } else if ([n hasPrefix:@"Payload/"] && [n containsString:@".app/AppIcon"] && [n hasSuffix:@".png"]) {
+                    [iconCandidates addObject:n];
+                }
+            }
+            if (ipaInfoEntry) {
+                NSData *plistData = wq_zip_read_entry_data(path, ipaInfoEntry, wq_app_archive_io(), 2 * 1024 * 1024, nil);
+                if (plistData.length) {
+                    id obj = [NSPropertyListSerialization propertyListWithData:plistData options:0 format:NULL error:nil];
+                    if ([obj isKindOfClass:NSDictionary.class]) ipaInfo = obj;
+                }
+            }
+            if (iconCandidates.count) {
+                [iconCandidates sortUsingSelector:@selector(localizedStandardCompare:)];
+                NSData *iconData = wq_zip_read_entry_data(path, iconCandidates.lastObject, wq_app_archive_io(), 2 * 1024 * 1024, nil);
+                if (iconData.length) ipaIcon = [UIImage imageWithData:iconData];
+            }
+            if (provEntry) {
+                NSData *provData = wq_zip_read_entry_data(path, provEntry, wq_app_archive_io(), 2 * 1024 * 1024, nil);
+                if (provData.length) {
+                    NSString *raw = [[NSString alloc] initWithData:provData encoding:NSISOLatin1StringEncoding];
+                    NSRange start = [raw rangeOfString:@"<?xml"];
+                    NSRange end = [raw rangeOfString:@"</plist>"];
+                    if (start.location != NSNotFound && end.location != NSNotFound && end.location > start.location) {
+                        NSString *xml = [raw substringWithRange:NSMakeRange(start.location, NSMaxRange(end) - start.location)];
+                        NSDictionary *p = [NSPropertyListSerialization propertyListWithData:[xml dataUsingEncoding:NSUTF8StringEncoding] options:0 format:NULL error:nil];
+                        if ([p isKindOfClass:NSDictionary.class]) {
+                            NSString *team = [p[@"TeamName"] isKindOfClass:NSString.class] ? p[@"TeamName"] : @"Unknown";
+                            NSDictionary *ent = [p[@"Entitlements"] isKindOfClass:NSDictionary.class] ? p[@"Entitlements"] : @{};
+                            provSummary = [NSString stringWithFormat:@"Team: %@ · %lu entitlements", team, (unsigned long)ent.count];
+                        }
+                    }
+                }
+            }
+        }
+
         NSArray<WQZipEntryInfo *> *sorted = [entries sortedArrayUsingComparator:^NSComparisonResult(WQZipEntryInfo *a, WQZipEntryInfo *b) {
             return [a.name localizedStandardCompare:b.name];
         }];
@@ -1306,44 +1435,126 @@ static NSString *wq_info_date(struct timespec ts)
                 me->_allEntries = sorted;
                 me->_totalUncompressed = totalU;
                 me->_totalCompressed = totalC;
+                me->_ipaInfoPlist = ipaInfo;
+                me->_ipaInfoPlistEntry = ipaInfoEntry;
+                me->_ipaIcon = ipaIcon;
+                me->_ipaProvisionSummary = provSummary;
+                me->_ipaFrameworks = [frameworks copy];
                 me->_status = sorted.count ? nil : WQLocalized(@"Archive is empty.");
             }
-            [me applyFilter];
+            [me rebuildNodes];
+            [me updateNavButtons];
             [me.tableView reloadData];
         });
     });
 }
 
-- (void)applyFilter
+- (void)updateNavButtons
 {
-    if (!_query.length) {
-        _filtered = _allEntries ?: @[];
+    if (_selecting) {
+        self.navigationItem.rightBarButtonItems = @[_selectBtn, _extractBtn];
+        _selectBtn.title = WQLocalizedNullable(@"Done");
+        _extractBtn.enabled = _selectedPaths.count > 0;
+    } else {
+        _selectBtn.title = WQLocalizedNullable(@"Select");
+        _selectBtn.enabled = (_allEntries.count > 0);
+        self.navigationItem.rightBarButtonItems = @[_selectBtn];
+    }
+}
+
+- (void)toggleSelectionMode
+{
+    _selecting = !_selecting;
+    if (!_selecting) [_selectedPaths removeAllObjects];
+    [self updateNavButtons];
+    [self.tableView reloadData];
+}
+
+- (void)rebuildNodes
+{
+    if (_query.length) {
+        NSMutableArray<WQZipPeekNode *> *out = [NSMutableArray new];
+        for (WQZipEntryInfo *e in _allEntries) {
+            if ([e.name localizedCaseInsensitiveContainsString:_query]) {
+                WQZipPeekNode *n = [WQZipPeekNode new];
+                n.name = e.name;
+                n.fullPath = e.name;
+                n.isDirectory = e.isDirectory;
+                n.uncompressedSize = e.uncompressedSize;
+                n.compressedSize = e.compressedSize;
+                [out addObject:n];
+            }
+        }
+        _nodes = out;
         return;
     }
-    NSMutableArray<WQZipEntryInfo *> *out = [NSMutableArray new];
+
+    NSMutableDictionary<NSString *, WQZipPeekNode *> *map = [NSMutableDictionary new];
     for (WQZipEntryInfo *e in _allEntries) {
-        if ([e.name localizedCaseInsensitiveContainsString:_query]) [out addObject:e];
+        NSString *rel = wq_zip_safe_entry_path(e.name) ?: e.name;
+        if (!rel.length) continue;
+        if (_currentPrefix.length && ![rel hasPrefix:_currentPrefix]) continue;
+        NSString *tail = _currentPrefix.length ? [rel substringFromIndex:_currentPrefix.length] : rel;
+        if (!tail.length) continue;
+
+        NSRange slash = [tail rangeOfString:@"/"];
+        BOOL childIsDir = (slash.location != NSNotFound) || e.isDirectory;
+        NSString *childName = slash.location != NSNotFound ? [tail substringToIndex:slash.location] : tail;
+        if (!childName.length) continue;
+        NSString *childFull = [_currentPrefix stringByAppendingString:childName];
+        if (childIsDir) childFull = [childFull stringByAppendingString:@"/"];
+
+        WQZipPeekNode *node = map[childName];
+        if (!node) {
+            node = [WQZipPeekNode new];
+            node.name = childName;
+            node.fullPath = childFull;
+            node.isDirectory = childIsDir;
+            map[childName] = node;
+        }
+        if (childIsDir) node.isDirectory = YES;
+        if (!e.isDirectory) {
+            node.uncompressedSize += e.uncompressedSize;
+            node.compressedSize += e.compressedSize;
+        }
     }
-    _filtered = out;
+
+    NSArray<WQZipPeekNode *> *sorted = [map.allValues sortedArrayUsingComparator:^NSComparisonResult(WQZipPeekNode *a, WQZipPeekNode *b) {
+        if (a.isDirectory != b.isDirectory) return a.isDirectory ? NSOrderedAscending : NSOrderedDescending;
+        return [a.name localizedStandardCompare:b.name];
+    }];
+    _nodes = sorted;
 }
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController
 {
     _query = searchController.searchBar.text ?: @"";
-    [self applyFilter];
+    [self rebuildNodes];
     [self.tableView reloadData];
 }
 
-- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger __unused)section
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView
 {
-    return _status ? 1 : (NSInteger)_filtered.count;
+    if (_status) return 1;
+    return (_isIPA && _ipaInfoPlist && !_currentPrefix.length && !_query.length) ? 2 : 1;
 }
 
-- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger __unused)section
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
+{
+    if (_status) return 1;
+    BOOL hasIPACard = (_isIPA && _ipaInfoPlist && !_currentPrefix.length && !_query.length);
+    if (hasIPACard && section == 0) return 3;
+    NSInteger upRow = (_currentPrefix.length && !_query.length) ? 1 : 0;
+    return upRow + (NSInteger)_nodes.count;
+}
+
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
     if (_status || !_allEntries.count) return nil;
-    return WQLocalizedFormat(@"%lu entries · %@ uncompressed (%@ compressed)",
-        (unsigned long)_allEntries.count, wq_size_text(_totalUncompressed), wq_size_text(_totalCompressed));
+    BOOL hasIPACard = (_isIPA && _ipaInfoPlist && !_currentPrefix.length && !_query.length);
+    if (hasIPACard && section == 0) return WQLocalized(@"IPA Quick Inspector");
+    NSString *loc = _currentPrefix.length ? [@"/" stringByAppendingString:_currentPrefix] : @"/";
+    return WQLocalizedFormat(@"%@ · %lu items (%@)", loc, (unsigned long)_nodes.count, wq_size_text(_totalUncompressed));
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -1351,6 +1562,8 @@ static NSString *wq_info_date(struct timespec ts)
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"zip-peek"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"zip-peek"];
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
+    cell.accessoryType = UITableViewCellAccessoryNone;
+
     if (_status) {
         c.text = _status;
         c.textProperties.color = wq_theme_secondary_text();
@@ -1358,20 +1571,72 @@ static NSString *wq_info_date(struct timespec ts)
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         return cell;
     }
-    WQZipEntryInfo *e = _filtered[(NSUInteger)indexPath.row];
-    c.text = e.name;
-    c.textProperties.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightMedium];
+
+    BOOL hasIPACard = (_isIPA && _ipaInfoPlist && !_currentPrefix.length && !_query.length);
+    if (hasIPACard && indexPath.section == 0) {
+        if (indexPath.row == 0) {
+            NSString *appName = _ipaInfoPlist[@"CFBundleDisplayName"] ?: _ipaInfoPlist[@"CFBundleName"] ?: _zipPath.lastPathComponent;
+            NSString *bid = _ipaInfoPlist[@"CFBundleIdentifier"] ?: @"";
+            NSString *ver = _ipaInfoPlist[@"CFBundleShortVersionString"] ?: @"";
+            NSString *minOS = _ipaInfoPlist[@"MinimumOSVersion"] ?: @"";
+            c.text = [NSString stringWithFormat:@"%@ (%@)", appName, ver];
+            c.secondaryText = [NSString stringWithFormat:@"%@ · iOS %@+ · %lu frameworks", bid, minOS, (unsigned long)_ipaFrameworks.count];
+            c.image = _ipaIcon ?: [UIImage systemImageNamed:@"app.gift.fill"];
+            c.imageProperties.maximumSize = CGSizeMake(36, 36);
+            c.imageProperties.cornerRadius = 8;
+        } else if (indexPath.row == 1) {
+            c.text = WQLocalized(@"Inspect Info.plist");
+            c.secondaryText = _ipaProvisionSummary ?: WQLocalized(@"Tap to open Info.plist in Plist Editor");
+            c.image = [UIImage systemImageNamed:@"doc.text.magnifyingglass"];
+            c.imageProperties.tintColor = wq_theme_accent();
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else {
+            c.text = WQLocalized(@"Repack Modified IPA");
+            c.secondaryText = WQLocalized(@"Re-compresses archive as a clean .ipa copy");
+            c.image = [UIImage systemImageNamed:@"shippingbox.fill"];
+            c.imageProperties.tintColor = wq_theme_aurora_teal();
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+        c.textProperties.color = wq_theme_primary_text();
+        c.secondaryTextProperties.color = wq_theme_secondary_text();
+        cell.contentConfiguration = c;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+
+    BOOL hasUp = (_currentPrefix.length && !_query.length);
+    if (hasUp && indexPath.row == 0) {
+        c.text = @"..";
+        c.secondaryText = WQLocalized(@"Parent Folder");
+        c.image = [UIImage systemImageNamed:@"arrow.up.left.square.fill"];
+        c.imageProperties.tintColor = wq_theme_accent();
+        c.textProperties.color = wq_theme_primary_text();
+        c.secondaryTextProperties.color = wq_theme_secondary_text();
+        cell.contentConfiguration = c;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+
+    WQZipPeekNode *n = _nodes[(NSUInteger)(indexPath.row - (hasUp ? 1 : 0))];
+    c.text = n.name;
+    c.textProperties.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightMedium];
     c.textProperties.numberOfLines = 2;
     c.textProperties.color = wq_theme_primary_text();
-    if (e.isDirectory) {
-        c.secondaryText = WQLocalized(@"Folder");
+    if (n.isDirectory) {
+        c.secondaryText = n.uncompressedSize ? WQLocalizedFormat(@"Folder · %@", wq_size_text(n.uncompressedSize)) : WQLocalized(@"Folder");
         c.image = [UIImage systemImageNamed:@"folder.fill"];
         c.imageProperties.tintColor = wq_theme_accent();
+        if (!_selecting) cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
-        c.secondaryText = WQLocalizedFormat(@"%@  (compressed %@)", wq_size_text(e.uncompressedSize), wq_size_text(e.compressedSize));
+        NSUInteger ratio = n.uncompressedSize > 0 ? (NSUInteger)llround(100.0 * (double)n.compressedSize / (double)n.uncompressedSize) : 100;
+        c.secondaryText = WQLocalizedFormat(@"%@ · %lu%% ratio", wq_size_text(n.uncompressedSize), (unsigned long)ratio);
         c.secondaryTextProperties.font = [UIFont monospacedDigitSystemFontOfSize:11.5 weight:UIFontWeightRegular];
         c.image = [UIImage systemImageNamed:@"doc.fill"];
         c.imageProperties.tintColor = wq_theme_secondary_text();
+    }
+    if (_selecting) {
+        BOOL picked = [_selectedPaths containsObject:n.fullPath];
+        cell.accessoryType = picked ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     }
     c.secondaryTextProperties.color = wq_theme_secondary_text();
     cell.contentConfiguration = c;
@@ -1382,10 +1647,123 @@ static NSString *wq_info_date(struct timespec ts)
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (_status || (NSUInteger)indexPath.row >= _filtered.count) return;
-    WQZipEntryInfo *e = _filtered[(NSUInteger)indexPath.row];
-    UIPasteboard.generalPasteboard.string = e.name;
-    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    if (_status) return;
+    BOOL hasIPACard = (_isIPA && _ipaInfoPlist && !_currentPrefix.length && !_query.length);
+    if (hasIPACard && indexPath.section == 0) {
+        if (indexPath.row == 1 && _ipaInfoPlistEntry.length) {
+            [self previewEntryNamed:_ipaInfoPlistEntry];
+        } else if (indexPath.row == 2) {
+            [self repackIPA];
+        }
+        return;
+    }
+
+    BOOL hasUp = (_currentPrefix.length && !_query.length);
+    if (hasUp && indexPath.row == 0) {
+        NSString *trimmed = [_currentPrefix stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"/"]];
+        NSString *parent = trimmed.stringByDeletingLastPathComponent;
+        _currentPrefix = parent.length ? [parent stringByAppendingString:@"/"] : @"";
+        [self rebuildNodes];
+        [self.tableView reloadData];
+        return;
+    }
+
+    WQZipPeekNode *n = _nodes[(NSUInteger)(indexPath.row - (hasUp ? 1 : 0))];
+    if (_selecting) {
+        if ([_selectedPaths containsObject:n.fullPath]) [_selectedPaths removeObject:n.fullPath];
+        else [_selectedPaths addObject:n.fullPath];
+        [self updateNavButtons];
+        [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+        return;
+    }
+
+    if (n.isDirectory && !_query.length) {
+        _currentPrefix = n.fullPath;
+        [self rebuildNodes];
+        [self.tableView reloadData];
+        return;
+    }
+
+    if (!n.isDirectory) {
+        [self previewEntryNamed:n.fullPath];
+    }
+}
+
+- (void)previewEntryNamed:(NSString *)entryName
+{
+    NSString *zipPath = _zipPath;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSString *err = nil;
+        NSData *data = wq_zip_read_entry_data(zipPath, entryName, wq_app_archive_io(), 16 * 1024 * 1024, &err);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQZipPeekViewController *me = weakSelf;
+            if (!me) return;
+            if (!data) {
+                wq_alert(me, WQLocalized(@"Cannot preview entry"), err);
+                return;
+            }
+            NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:entryName.lastPathComponent];
+            [data writeToFile:tmp atomically:YES];
+            wq_open_file(me.navigationController, tmp, YES, WQOpenAuto);
+        });
+    });
+}
+
+- (void)extractSelectedEntries
+{
+    if (!_selectedPaths.count) return;
+    NSSet<NSString *> *targets = [_selectedPaths copy];
+    NSString *zipPath = _zipPath;
+    NSString *outDir = [zipPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:
+                        [zipPath.lastPathComponent.stringByDeletingPathExtension stringByAppendingString:@" (Selected)"]];
+    [NSFileManager.defaultManager createDirectoryAtPath:outDir withIntermediateDirectories:YES attributes:nil error:nil];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(wq_io(), ^{
+        NSUInteger files = 0, skipped = 0;
+        NSString *err = nil;
+        BOOL ok = wq_zip_extract_selected(zipPath, targets, outDir, wq_app_archive_io(),
+                                          256ull * 1024 * 1024, nil, nil, &files, &skipped, &err);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQZipPeekViewController *me = weakSelf;
+            if (!me) return;
+            if (ok) {
+                [me toggleSelectionMode];
+                wq_alert(me, WQLocalized(@"Extracted"), WQLocalizedFormat(@"Extracted %lu file(s) to %@", (unsigned long)files, outDir.lastPathComponent));
+            } else {
+                wq_alert(me, WQLocalizedNullable(@"Cannot extract"), err);
+            }
+        });
+    });
+}
+
+- (void)repackIPA
+{
+    NSString *zipPath = _zipPath;
+    NSString *dest = [zipPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:
+                      [zipPath.lastPathComponent.stringByDeletingPathExtension stringByAppendingString:@"-repacked.ipa"]];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(wq_io(), ^{
+        NSString *work = wq_temp_work_dir(@"wq-repack");
+        NSString *err = nil;
+        NSUInteger files = 0, skipped = 0;
+        BOOL ok = work && wq_zip_extract(zipPath, work, wq_app_archive_io(), 512ull * 1024 * 1024, nil, nil, &files, &skipped, &err);
+        if (ok) {
+            NSArray<NSString *> *top = [NSFileManager.defaultManager contentsOfDirectoryAtPath:work error:nil];
+            NSMutableArray<NSString *> *roots = [NSMutableArray new];
+            for (NSString *name in top) [roots addObject:[work stringByAppendingPathComponent:name]];
+            NSString *localIpa = [work stringByAppendingPathComponent:dest.lastPathComponent];
+            ok = wq_zip_write(roots, localIpa, wq_archive_posix_io(), nil, nil, &skipped, &err);
+            if (ok) ok = wq_create_file_from(dest, localIpa, &err);
+        }
+        if (work) [NSFileManager.defaultManager removeItemAtPath:work error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQZipPeekViewController *me = weakSelf;
+            if (!me) return;
+            if (ok) wq_alert(me, WQLocalized(@"IPA Repacked"), dest.lastPathComponent);
+            else wq_alert(me, WQLocalizedNullable(@"Cannot compress"), err);
+        });
+    });
 }
 
 @end
@@ -1692,6 +2070,354 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
 
 @end
 
+// MARK: Batch Rename Studio & Folder Diff / Compare
+
+typedef NS_ENUM(NSInteger, WQBatchRenameMode) {
+    WQBatchRenameModeFindReplace = 0,
+    WQBatchRenameModePrefixSuffix = 1,
+    WQBatchRenameModeSequential = 2,
+    WQBatchRenameModeCase = 3,
+    WQBatchRenameModeExtSwap = 4,
+};
+
+@interface WQBatchRenameStudioViewController : UITableViewController
+- (instancetype)initWithItems:(NSArray<WQItem *> *)items onApply:(void (^)(NSArray<NSString *> *newNames))onApply;
+@end
+
+@implementation WQBatchRenameStudioViewController {
+    NSArray<WQItem *> *_items;
+    void (^_onApply)(NSArray<NSString *> *);
+    WQBatchRenameMode _mode;
+    NSString *_paramA;
+    NSString *_paramB;
+    NSInteger _caseStyle; // 0=lower, 1=UPPER, 2=Title
+    NSArray<NSString *> *_previewNames;
+    BOOL _hasCollision;
+}
+
+- (instancetype)initWithItems:(NSArray<WQItem *> *)items onApply:(void (^)(NSArray<NSString *> *))onApply
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _items = [items copy];
+        _onApply = [onApply copy];
+        _paramA = @"";
+        _paramB = @"";
+        self.title = WQLocalized(@"Batch Rename Studio");
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    wq_prism_install_background(self);
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
+                                                                                           target:self action:@selector(cancelRename)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Apply")
+                                                                              style:UIBarButtonItemStyleProminent
+                                                                             target:self action:@selector(applyRename)];
+    [self recomputePreview];
+}
+
+- (void)cancelRename { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)applyRename
+{
+    if (_hasCollision || !_previewNames.count) return;
+    void (^cb)(NSArray<NSString *> *) = _onApply;
+    NSArray<NSString *> *names = [_previewNames copy];
+    [self dismissViewControllerAnimated:YES completion:^{
+        if (cb) cb(names);
+    }];
+}
+
+- (void)recomputePreview
+{
+    NSMutableArray<NSString *> *out = [NSMutableArray arrayWithCapacity:_items.count];
+    NSMutableSet<NSString *> *seen = [NSMutableSet new];
+    BOOL collision = NO;
+    for (NSUInteger i = 0; i < _items.count; i++) {
+        WQItem *it = _items[i];
+        NSString *name = it.name;
+        NSString *ext = it.isDir ? @"" : it.name.pathExtension;
+        NSString *base = ext.length ? it.name.stringByDeletingPathExtension : it.name;
+        NSString *res = name;
+        switch (_mode) {
+            case WQBatchRenameModeFindReplace:
+                if (_paramA.length) res = [name stringByReplacingOccurrencesOfString:_paramA withString:_paramB ?: @""];
+                break;
+            case WQBatchRenameModePrefixSuffix: {
+                NSString *newBase = [NSString stringWithFormat:@"%@%@%@", _paramA ?: @"", base, _paramB ?: @""];
+                res = ext.length ? [newBase stringByAppendingPathExtension:ext] : newBase;
+                break;
+            }
+            case WQBatchRenameModeSequential: {
+                NSString *stem = _paramA.length ? _paramA : @"File";
+                NSUInteger start = _paramB.integerValue > 0 ? (NSUInteger)_paramB.integerValue : 1;
+                NSString *num = [NSString stringWithFormat:@"%@_%03lu", stem, (unsigned long)(start + i)];
+                res = ext.length ? [num stringByAppendingPathExtension:ext] : num;
+                break;
+            }
+            case WQBatchRenameModeCase:
+                res = _caseStyle == 0 ? name.lowercaseString : _caseStyle == 1 ? name.uppercaseString : name.capitalizedString;
+                break;
+            case WQBatchRenameModeExtSwap:
+                if (!it.isDir && _paramA.length) {
+                    NSString *cleanExt = [_paramA stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"."]];
+                    res = cleanExt.length ? [base stringByAppendingPathExtension:cleanExt] : base;
+                }
+                break;
+        }
+        if (!res.length || [res containsString:@"/"] || [seen containsObject:res.lowercaseString]) collision = YES;
+        [seen addObject:res.lowercaseString];
+        [out addObject:res];
+    }
+    _previewNames = out;
+    _hasCollision = collision;
+    self.navigationItem.rightBarButtonItem.enabled = !collision;
+    [self.tableView reloadData];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 2; }
+
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
+{
+    if (section == 0) return 6;
+    return (NSInteger)_items.count;
+}
+
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
+{
+    if (section == 0) return WQLocalized(@"Rename Mode & Parameters");
+    return _hasCollision ? WQLocalized(@"Live Preview (Duplicate/Invalid Name)") : WQLocalized(@"Live Preview (Before → After)");
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (indexPath.section == 0) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"br-opt"]
+            ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"br-opt"];
+        UIListContentConfiguration *c = [UIListContentConfiguration valueCellConfiguration];
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        if (indexPath.row < 5) {
+            NSArray<NSString *> *titles = @[@"Find & Replace", @"Prefix & Suffix", @"Sequential Numbering", @"Case Transform", @"Extension Swap"];
+            c.text = WQLocalized(titles[(NSUInteger)indexPath.row]);
+            if (indexPath.row == _mode) cell.accessoryType = UITableViewCellAccessoryCheckmark;
+        } else {
+            c.text = WQLocalized(@"Configure Parameters…");
+            c.textProperties.color = wq_theme_accent();
+            c.secondaryText = [NSString stringWithFormat:@"%@ / %@", _paramA.length ? _paramA : @"-", _paramB.length ? _paramB : @"-"];
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+        cell.contentConfiguration = c;
+        return cell;
+    }
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"br-prev"]
+        ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"br-prev"];
+    UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
+    NSString *before = _items[(NSUInteger)indexPath.row].name;
+    NSString *after = _previewNames[(NSUInteger)indexPath.row];
+    c.text = [NSString stringWithFormat:@"%@ → %@", before, after];
+    c.textProperties.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightMedium];
+    c.textProperties.color = _hasCollision ? UIColor.systemRedColor : wq_theme_primary_text();
+    cell.contentConfiguration = c;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section != 0) return;
+    if (indexPath.row < 5) {
+        _mode = (WQBatchRenameMode)indexPath.row;
+        if (_mode == WQBatchRenameModeCase) {
+            _caseStyle = (_caseStyle + 1) % 3;
+            _paramA = _caseStyle == 0 ? @"lowercase" : _caseStyle == 1 ? @"UPPERCASE" : @"Title Case";
+            _paramB = @"";
+        }
+        [self recomputePreview];
+        return;
+    }
+    UIAlertController *a = wq_alert_controller(WQLocalized(@"Rename Parameters"), nil, UIAlertControllerStyleAlert);
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.text = self->_paramA;
+        f.placeholder = self->_mode == WQBatchRenameModeFindReplace ? WQLocalized(@"Find text")
+                      : self->_mode == WQBatchRenameModePrefixSuffix ? WQLocalized(@"Prefix")
+                      : self->_mode == WQBatchRenameModeSequential ? WQLocalized(@"Base name (e.g. File)")
+                      : WQLocalized(@"New extension (e.g. png)");
+        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    if (_mode == WQBatchRenameModeFindReplace || _mode == WQBatchRenameModePrefixSuffix || _mode == WQBatchRenameModeSequential) {
+        [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+            f.text = self->_paramB;
+            f.placeholder = self->_mode == WQBatchRenameModeFindReplace ? WQLocalized(@"Replace with")
+                          : self->_mode == WQBatchRenameModePrefixSuffix ? WQLocalized(@"Suffix")
+                          : WQLocalized(@"Start index (e.g. 1)");
+            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        }];
+    }
+    [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(@"OK", UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+        self->_paramA = a.textFields[0].text ?: @"";
+        self->_paramB = a.textFields.count > 1 ? (a.textFields[1].text ?: @"") : @"";
+        [self recomputePreview];
+    })];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+@end
+
+@interface WQFolderDiffViewController : UITableViewController
+- (instancetype)initWithLeftPath:(NSString *)leftPath rightPath:(NSString *)rightPath;
+@end
+
+@implementation WQFolderDiffViewController {
+    NSString *_leftPath;
+    NSString *_rightPath;
+    NSArray<NSString *> *_onlyLeft;
+    NSArray<NSString *> *_onlyRight;
+    NSArray<NSString *> *_modified;
+    NSArray<NSString *> *_identical;
+    NSString *_status;
+}
+
+- (instancetype)initWithLeftPath:(NSString *)leftPath rightPath:(NSString *)rightPath
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _leftPath = [leftPath copy];
+        _rightPath = [rightPath copy];
+        self.title = WQLocalized(@"Folder Compare");
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    wq_prism_install_background(self);
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:WQLocalized(@"Sync Missing")
+                                                                              style:UIBarButtonItemStylePlain
+                                                                             target:self action:@selector(syncPrompt)];
+    [self scanDiff];
+}
+
+- (void)scanDiff
+{
+    _status = WQLocalized(@"Comparing folders…");
+    [self.tableView reloadData];
+    NSString *lp = _leftPath, *rp = _rightPath;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(wq_io(), ^{
+        NSArray<NSString *> *ln = wq_list(lp, nil) ?: @[];
+        NSArray<NSString *> *rn = wq_list(rp, nil) ?: @[];
+        NSSet<NSString *> *lSet = [NSSet setWithArray:ln];
+        NSSet<NSString *> *rSet = [NSSet setWithArray:rn];
+        NSMutableArray *ol = [NSMutableArray new], *orArr = [NSMutableArray new], *mod = [NSMutableArray new], *idArr = [NSMutableArray new];
+        for (NSString *n in ln) {
+            if (![rSet containsObject:n]) {
+                [ol addObject:n];
+            } else {
+                struct stat ls, rs;
+                BOOL okL = wq_stat([lp stringByAppendingPathComponent:n], &ls);
+                BOOL okR = wq_stat([rp stringByAppendingPathComponent:n], &rs);
+                if (okL && okR && ls.st_size == rs.st_size && S_ISDIR(ls.st_mode) == S_ISDIR(rs.st_mode)) {
+                    [idArr addObject:n];
+                } else {
+                    [mod addObject:n];
+                }
+            }
+        }
+        for (NSString *n in rn) {
+            if (![lSet containsObject:n]) [orArr addObject:n];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQFolderDiffViewController *me = weakSelf;
+            if (!me) return;
+            me->_onlyLeft = [ol sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+            me->_onlyRight = [orArr sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+            me->_modified = [mod sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+            me->_identical = [idArr sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+            me->_status = nil;
+            [me.tableView reloadData];
+        });
+    });
+}
+
+- (void)syncPrompt
+{
+    UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Sync Missing Items"), nil, UIAlertControllerStyleActionSheet);
+    [sheet addAction:wq_alert_action(WQLocalized(@"Copy Only-in-Left → Right"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self copyItems:self->_onlyLeft from:self->_leftPath to:self->_rightPath];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Copy Only-in-Right → Left"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self copyItems:self->_onlyRight from:self->_rightPath to:self->_leftPath];
+    })];
+    [sheet addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)copyItems:(NSArray<NSString *> *)names from:(NSString *)srcDir to:(NSString *)dstDir
+{
+    if (!names.count) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(wq_io(), ^{
+        NSUInteger copied = 0;
+        for (NSString *n in names) {
+            NSString *s = [srcDir stringByAppendingPathComponent:n];
+            NSString *d = [dstDir stringByAppendingPathComponent:n];
+            struct stat st;
+            if (!wq_stat(s, &st)) continue;
+            BOOL ok = S_ISDIR(st.st_mode) ? wq_copy_tree_new(s, d, nil, nil) : wq_create_file_from(d, s, nil);
+            if (ok) copied++;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQFolderDiffViewController *me = weakSelf;
+            if (!me) return;
+            [me scanDiff];
+            wq_alert(me, WQLocalized(@"Sync Complete"), WQLocalizedFormat(@"Copied %lu item(s).", (unsigned long)copied));
+        });
+    });
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return _status ? 1 : 4; }
+
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
+{
+    if (_status) return 1;
+    return section == 0 ? (NSInteger)_onlyLeft.count
+         : section == 1 ? (NSInteger)_onlyRight.count
+         : section == 2 ? (NSInteger)_modified.count
+         : (NSInteger)_identical.count;
+}
+
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
+{
+    if (_status) return nil;
+    return section == 0 ? WQLocalizedFormat(@"Only in Left (%lu)", (unsigned long)_onlyLeft.count)
+         : section == 1 ? WQLocalizedFormat(@"Only in Right (%lu)", (unsigned long)_onlyRight.count)
+         : section == 2 ? WQLocalizedFormat(@"Modified (%lu)", (unsigned long)_modified.count)
+         : WQLocalizedFormat(@"Identical (%lu)", (unsigned long)_identical.count);
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"fd"] ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"fd"];
+    UIListContentConfiguration *c = [UIListContentConfiguration cellConfiguration];
+    if (_status) {
+        c.text = _status;
+        cell.contentConfiguration = c;
+        return cell;
+    }
+    NSArray<NSString *> *arr = indexPath.section == 0 ? _onlyLeft : indexPath.section == 1 ? _onlyRight : indexPath.section == 2 ? _modified : _identical;
+    c.text = arr[(NSUInteger)indexPath.row];
+    c.textProperties.color = indexPath.section == 0 ? UIColor.systemOrangeColor : indexPath.section == 1 ? wq_theme_accent() : indexPath.section == 2 ? UIColor.systemYellowColor : wq_theme_secondary_text();
+    cell.contentConfiguration = c;
+    return cell;
+}
+
+@end
+
 @interface WQFolderSearchViewController : UITableViewController
 // `query` nil: the largest files under `path` instead of matching names.
 - (instancetype)initWithPath:(NSString *)path query:(nullable NSString *)query readOnly:(BOOL)readOnly;
@@ -1987,6 +2713,8 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
     BOOL _searchPresenting;
     CGFloat _lastScrollY;
     BOOL _didCascade;
+    WQFolderTabStripView *_tabStrip;
+    WQDropShelfPillView *_shelfPill;
 }
 
 - (instancetype)initWithPath:(NSString *)path title:(NSString *)title
@@ -2093,6 +2821,16 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
             WQWorkflowsViewController *wf = [[WQWorkflowsViewController alloc] initWithRootPath:folder->_path title:folder->_baseTitle];
             [folder.navigationController pushViewController:wf animated:YES];
         }]];
+        [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Compare with Folder…") image:[UIImage systemImageNamed:@"rectangle.split.2x1"]
+                                          identifier:nil handler:^(UIAction *__unused action) {
+            [weakSelf promptFolderCompare];
+        }]];
+        if (!self.readOnly && !self->_backupStorage && !wq_safe_read_only_enabled()) {
+            [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Create Symbolic Link…") image:[UIImage systemImageNamed:@"link.badge.plus"]
+                                              identifier:nil handler:^(UIAction *__unused action) {
+                [weakSelf promptCreateSymlink];
+            }]];
+        }
     }
     [menuItems addObject:[UIAction actionWithTitle:WQLocalized(@"Folder Tabs…") image:[UIImage systemImageNamed:@"rectangle.stack.fill"]
                                       identifier:nil handler:^(UIAction *__unused action) {
@@ -2162,6 +2900,7 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                                                            target:self action:@selector(enterFileSelection)];
     }
     [self buildActionDockWithSortElement:sortFilterElement];
+    [self installDropShelfPill];
     [self restoreRightItems];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(updateToolbar)
                                                name:kWQMoveChanged object:nil];
@@ -2302,23 +3041,48 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
         [_headerBox addSubview:_pathCard];
         self.tableView.tableHeaderView = _headerBox;
     }
+    if (!_tabStrip) {
+        _tabStrip = [[WQFolderTabStripView alloc] initWithFrame:CGRectZero];
+        _tabStrip.currentPath = _path;
+        __weak typeof(self) weakSelf = self;
+        _tabStrip.onSelectTab = ^(WQWorkspaceTab *tab) {
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            if ([[tab.path stringByStandardizingPath] isEqualToString:[folder->_path stringByStandardizingPath]]) return;
+            WQDirViewController *next = [[WQDirViewController alloc] initWithPath:tab.path title:tab.title];
+            next.readOnly = tab.readOnly;
+            [folder.navigationController pushViewController:next animated:YES];
+        };
+        _tabStrip.onManageTabs = ^{
+            WQDirViewController *folder = weakSelf;
+            if (!folder) return;
+            wq_present_workspace_tabs(folder, folder->_path, folder->_baseTitle, folder.readOnly, ^(WQWorkspaceTab *tab) {
+                WQDirViewController *next = [[WQDirViewController alloc] initWithPath:tab.path title:tab.title];
+                next.readOnly = tab.readOnly;
+                [folder.navigationController pushViewController:next animated:YES];
+            });
+        };
+        [_headerBox addSubview:_tabStrip];
+    }
     // Zero-width spaces after each slash let lines break between components.
     NSString *breakable = [_path stringByReplacingOccurrencesOfString:@"/" withString:@"/\u200B"];
     _pathLabel.text = _scanStatus ? [NSString stringWithFormat:@"%@\n%@", breakable, _scanStatus] : breakable;
     UIView *pill = _headerBox.subviews.firstObject;
     CGFloat side = 16, padX = 12, padY = 9;
-    CGFloat top = (pill && pill != _pathCard ? CGRectGetMaxY(pill.frame) : kWQDeviceStripHeight) + 6;
+    CGFloat top = (pill && pill != _pathCard && pill != _tabStrip ? CGRectGetMaxY(pill.frame) : kWQDeviceStripHeight) + 6;
     CGFloat cardWidth = MAX(140.0, width - 2 * side);
     CGFloat badgeWidth = 76.0;
     CGFloat labelWidth = MAX(80.0, cardWidth - 2 * padX - badgeWidth - 8.0);
     CGSize fit = [_pathLabel sizeThatFits:CGSizeMake(labelWidth, CGFLOAT_MAX)];
     CGFloat cardHeight = MAX(36.0, ceil(fit.height) + 2 * padY);
-    CGFloat height = top + cardHeight + 10;
+    CGFloat tabStripHeight = 36.0;
+    CGFloat height = top + cardHeight + 6.0 + tabStripHeight + 6.0;
     CGFloat oldHeight = _headerBox.frame.size.height;
     _headerBox.frame = CGRectMake(0, 0, width, height);
     _pathCard.frame = CGRectMake(side, top, cardWidth, cardHeight);
     _pathLabel.frame = CGRectMake(padX, padY, labelWidth, ceil(fit.height));
     _pathCountLabel.frame = CGRectMake(cardWidth - padX - badgeWidth, padY, badgeWidth, 16);
+    _tabStrip.frame = CGRectMake(0, CGRectGetMaxY(_pathCard.frame) + 6.0, width, tabStripHeight);
     _headerWidth = width;
     if (fabs(height - oldHeight) > 0.5) self.tableView.tableHeaderView = _headerBox;
 }
@@ -2822,6 +3586,127 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
     if (!compact) wq_motion_pulse_rim(_actionDock);
 }
 
+- (void)installDropShelfPill
+{
+    if (_shelfPill) return;
+    _shelfPill = [[WQDropShelfPillView alloc] initWithFrame:CGRectZero];
+    __weak typeof(self) weakSelf = self;
+    _shelfPill.onTap = ^{
+        [weakSelf presentDropShelfMenu];
+    };
+    [self.view addSubview:_shelfPill];
+    [NSLayoutConstraint activateConstraints:@[
+        [_shelfPill.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-16],
+        [_shelfPill.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-76],
+    ]];
+}
+
+- (void)stageSelectedFilesToShelf
+{
+    NSArray<NSString *> *paths = [self selectedFilePaths];
+    if (!paths.count) return;
+    wq_drop_shelf_add(paths);
+    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+    [self exitFileSelection];
+}
+
+- (void)presentDropShelfMenu
+{
+    NSArray<NSString *> *items = wq_drop_shelf_items();
+    if (!items.count) return;
+    NSString *title = items.count == 1
+        ? WQLocalized(@"Drop Shelf (1 item)")
+        : WQLocalizedFormat(@"Drop Shelf (%lu items)", (unsigned long)items.count);
+    UIAlertController *sheet = wq_alert_controller(title, nil, UIAlertControllerStyleActionSheet);
+    BOOL editable = [self canEditHere] && !_error;
+    if (editable) {
+        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Copy Here") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+            [self shelfCopyOrMoveHere:YES];
+        }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Move Here") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+            [self shelfCopyOrMoveHere:NO];
+        }]];
+        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Create ZIP Here") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+            [self compressPaths:items];
+            wq_drop_shelf_clear();
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Share via USB / Wi-Fi…") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+        wq_present_windows_transfer(self, self->_path, self->_baseTitle);
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Inspect Shelf Items") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+        NSMutableString *msg = [NSMutableString new];
+        for (NSString *p in items) {
+            [msg appendFormat:@"• %@\n  %@\n", p.lastPathComponent, p];
+        }
+        UIAlertController *list = wq_alert_controller(title, msg, UIAlertControllerStyleAlert);
+        [list addAction:wq_alert_action(@"Clear Shelf", UIAlertActionStyleDestructive, ^(UIAlertAction *__unused act) {
+            wq_drop_shelf_clear();
+        })];
+        [list addAction:wq_alert_action(@"OK", UIAlertActionStyleCancel, nil)];
+        [self presentViewController:list animated:YES completion:nil];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Clear Shelf") style:UIAlertActionStyleDestructive handler:^(UIAction *__unused a) {
+        wq_drop_shelf_clear();
+    }]];
+    [sheet addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    sheet.popoverPresentationController.sourceView = _shelfPill;
+    sheet.popoverPresentationController.sourceRect = _shelfPill.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)shelfCopyOrMoveHere:(BOOL)isCopy
+{
+    NSArray<NSString *> *paths = wq_drop_shelf_items();
+    if (!paths.count || ![self canEditHere] || _error) return;
+    NSString *destDir = [_path copy];
+    NSString *failTitle = isCopy ? WQLocalized(@"Copy from Shelf Failed") : WQLocalized(@"Move from Shelf Failed");
+    [self runIO:^BOOL(NSString **error) {
+        NSUInteger failed = 0;
+        NSString *firstErr = nil;
+        NSMutableSet<NSString *> *used = [NSMutableSet new];
+        for (NSString *src in paths) {
+            struct stat st;
+            if (!wq_stat(src, &st)) {
+                failed++;
+                if (!firstErr) firstErr = WQLocalizedFormat(@"%@ no longer exists", src.lastPathComponent);
+                continue;
+            }
+            BOOL ok = NO;
+            NSString *itemErr = nil;
+            if (isCopy) {
+                NSString *freeName = wq_free_name_in(destDir, src.lastPathComponent, used);
+                if (!freeName) {
+                    failed++;
+                    if (!firstErr) firstErr = WQLocalized(@"No free name in destination folder");
+                    continue;
+                }
+                [used addObject:freeName];
+                NSString *dst = [destDir stringByAppendingPathComponent:freeName];
+                ok = S_ISDIR(st.st_mode) ? wq_copy_tree_new(src, dst, nil, &itemErr)
+                                         : wq_create_file_from(dst, src, &itemErr);
+            } else {
+                NSString *dst = [destDir stringByAppendingPathComponent:src.lastPathComponent];
+                NSString *ident = wq_item_identity(src);
+                ok = ident ? wq_move_expecting(src, dst, ident, &itemErr) : NO;
+                if (!ok && !itemErr) itemErr = WQLocalized(@"Unable to verify source item identity");
+            }
+            if (!ok) {
+                failed++;
+                if (!firstErr) firstErr = itemErr ?: WQLocalized(@"Operation failed");
+            }
+        }
+        if (failed && error) {
+            *error = paths.count == 1 ? firstErr
+                : WQLocalizedFormat(@"%lu of %lu items failed.\n\n%@", (unsigned long)failed, (unsigned long)paths.count, firstErr);
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (failed == 0) wq_drop_shelf_clear();
+        });
+        return failed == 0;
+    } failure:failTitle];
+}
+
 - (void)pasteFromDock
 {
     if (!gWQMovePaths.count) {
@@ -2943,8 +3828,14 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
         NSString *renameTitle = _selectedFiles.count > 1 ? WQLocalizedNullable(@"Batch Rename") : WQLocalizedNullable(@"Rename");
         UIBarButtonItem *rename = [[UIBarButtonItem alloc] initWithTitle:renameTitle style:UIBarButtonItemStylePlain
                                                                   target:self action:@selector(renameSelectedFile)];
-        move.enabled = zip.enabled = del.enabled = rename.enabled = any;
-        self.toolbarItems = wq_deleting_allowed() ? @[move, flex, rename, flex, zip, flex, del] : @[move, flex, rename, flex, zip];
+        UIBarButtonItem *shelf = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"tray.and.arrow.down"]
+                                                                style:UIBarButtonItemStylePlain
+                                                               target:self action:@selector(stageSelectedFilesToShelf)];
+        shelf.accessibilityLabel = WQLocalized(@"Add to Drop Shelf");
+        move.enabled = zip.enabled = del.enabled = rename.enabled = shelf.enabled = any;
+        self.toolbarItems = wq_deleting_allowed()
+            ? @[move, flex, rename, flex, zip, flex, shelf, flex, del]
+            : @[move, flex, rename, flex, zip, flex, shelf];
     } else if (gWQMovePaths.count) {
         UIBarButtonItem *cancel = [[UIBarButtonItem alloc] initWithTitle:WQLocalizedNullable(@"Cancel") style:UIBarButtonItemStylePlain
                                                                   target:self action:@selector(cancelMove)];
@@ -3763,9 +4654,25 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
                      : @"Only regular files can be viewed.");
             return;
         }
-        if ([self canEditHere] && [item.name.pathExtension caseInsensitiveCompare:@"zip"] == NSOrderedSame) {
+        NSString *ext = item.name.pathExtension.lowercaseString;
+        if ([ext isEqualToString:@"zip"] || [ext isEqualToString:@"ipa"]) {
             [self offerZipOpen:item];
             return;
+        }
+        if (wq_is_gallery_image_path(item.path)) {
+            NSMutableArray<NSString *> *galleryPaths = [NSMutableArray new];
+            NSUInteger initialIdx = 0;
+            for (WQItem *cand in _items) {
+                if (!cand.isDir && !cand.isLink && cand.isRegular && wq_is_gallery_image_path(cand.path)) {
+                    if ([cand.path isEqualToString:item.path]) initialIdx = galleryPaths.count;
+                    [galleryPaths addObject:cand.path];
+                }
+            }
+            if (galleryPaths.count) {
+                WQGalleryViewController *gallery = [[WQGalleryViewController alloc] initWithImagePaths:galleryPaths initialIndex:initialIdx];
+                [self.navigationController pushViewController:gallery animated:YES];
+                return;
+            }
         }
         _scanNeedsRefresh = YES;
         wq_open_file(self.navigationController, item.path, self.readOnly, WQOpenAuto);
@@ -4021,6 +4928,14 @@ static NSArray<WQDiffLine *> *wq_compute_line_diff(NSArray<NSString *> *a, NSArr
             }]];
         }
         if (!current.isLink && (current.isRegular || current.isDir) && current.identity) {
+            [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Add to Drop Shelf") image:[UIImage systemImageNamed:@"tray.and.arrow.down"]
+                                              identifier:nil handler:^(UIAction *__unused a) {
+                WQItem *latest = currentItem();
+                if (latest) {
+                    wq_drop_shelf_add(@[latest.path]);
+                    wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+                }
+            }]];
             [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Copy to Folder…") image:[UIImage systemImageNamed:@"doc.on.doc"]
                                               identifier:nil handler:^(UIAction *__unused a) {
                 WQItem *latest = currentItem();
@@ -4278,7 +5193,79 @@ static id wq_plist_safe_object(id obj)
     if (picked.count) [self promptBatchRename:picked];
 }
 
+- (void)promptFolderCompare
+{
+    UIAlertController *a = wq_alert_controller(WQLocalized(@"Compare with Folder"), WQLocalized(@"Enter the second folder path to compare."), UIAlertControllerStyleAlert);
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.placeholder = @"/private/var/...";
+        NSArray<WQWorkspaceTab *> *others = wq_workspace_other_tabs(self->_path);
+        if (others.count) f.text = others.firstObject.path;
+        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(WQLocalized(@"Compare"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+        NSString *other = a.textFields.firstObject.text.stringByStandardizingPath;
+        if (!other.length) return;
+        WQFolderDiffViewController *diff = [[WQFolderDiffViewController alloc] initWithLeftPath:self->_path rightPath:other];
+        [self.navigationController pushViewController:diff animated:YES];
+    })];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)promptCreateSymlink
+{
+    UIAlertController *a = wq_alert_controller(WQLocalized(@"Create Symbolic Link"), nil, UIAlertControllerStyleAlert);
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.placeholder = WQLocalized(@"Target path (e.g. /private/var/...)");
+        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.placeholder = WQLocalized(@"Link name");
+        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    }];
+    [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(WQLocalized(@"Create"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+        NSString *target = a.textFields[0].text;
+        NSString *name = a.textFields[1].text;
+        if (!target.length || !name.length || [name containsString:@"/"]) return;
+        NSString *linkPath = [self->_path stringByAppendingPathComponent:name];
+        if (symlink(target.fileSystemRepresentation, linkPath.fileSystemRepresentation) != 0) {
+            wq_alert(self, WQLocalized(@"Cannot create symbolic link"), @(strerror(errno)));
+            return;
+        }
+        [self reload];
+    })];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 - (void)promptBatchRename:(NSArray<WQItem *> *)items
+{
+    __weak typeof(self) weakSelf = self;
+    WQBatchRenameStudioViewController *studio = [[WQBatchRenameStudioViewController alloc] initWithItems:items onApply:^(NSArray<NSString *> *newNames) {
+        WQDirViewController *me = weakSelf;
+        if (!me) return;
+        [me runIO:^BOOL(NSString **error) {
+            NSUInteger failed = 0;
+            NSString *first = nil;
+            for (NSUInteger i = 0; i < items.count; i++) {
+                NSString *newName = newNames[i];
+                if ([newName isEqualToString:items[i].name]) continue;
+                NSString *err = nil;
+                if (!wq_rename_expecting(items[i].path, newName, items[i].identity, &err)) {
+                    failed++;
+                    if (!first) first = err ?: @"Unknown error";
+                }
+            }
+            if (failed && error) *error = first;
+            return failed == 0;
+        } failure:WQLocalizedNullable(@"Cannot rename")];
+    }];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:studio];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)promptBatchRenameLegacy:(NSArray<WQItem *> *)items
 {
     UIAlertController *sheet = wq_alert_controller(WQLocalizedFormat(@"Batch Rename (%lu items)", (unsigned long)items.count),
                                                    WQLocalized(@"Choose how to rename the selected items."),
@@ -4776,6 +5763,51 @@ static NSString *wq_free_name_in(NSString *dir, NSString *name, NSMutableSet<NSS
             [self presentViewController:alert animated:YES completion:nil];
         });
     });
+}
+
+- (NSArray<UIKeyCommand *> *)keyCommands
+{
+    return @[
+        [UIKeyCommand commandWithTitle:WQLocalized(@"Search Folder") image:nil action:@selector(wq_cmdSearchFolder) input:@"f" modifierFlags:UIKeyModifierCommand propertyList:nil],
+        [UIKeyCommand commandWithTitle:WQLocalized(@"New Folder") image:nil action:@selector(wq_cmdNewFolder) input:@"n" modifierFlags:UIKeyModifierCommand propertyList:nil],
+        [UIKeyCommand commandWithTitle:WQLocalized(@"Close Tab") image:nil action:@selector(wq_cmdCloseTab) input:@"w" modifierFlags:UIKeyModifierCommand propertyList:nil],
+        [UIKeyCommand commandWithTitle:WQLocalized(@"Move to Trash") image:nil action:@selector(wq_cmdDeleteSelected) input:@"\b" modifierFlags:0 propertyList:nil],
+    ];
+}
+
+- (void)wq_cmdSearchFolder
+{
+    [self promptFolderSearch];
+}
+
+- (void)wq_cmdNewFolder
+{
+    if ([self canEditHere]) [self promptNewFolder];
+}
+
+- (void)wq_cmdCloseTab
+{
+    NSArray<WQWorkspaceTab *> *others = wq_workspace_other_tabs(_path);
+    wq_workspace_remove_tab(_path);
+    if (others.count) {
+        WQWorkspaceTab *next = others.firstObject;
+        WQDirViewController *vc = [[WQDirViewController alloc] initWithPath:next.path title:next.title];
+        vc.readOnly = next.readOnly;
+        NSMutableArray *stack = [self.navigationController.viewControllers mutableCopy];
+        if (stack.count) {
+            stack[stack.count - 1] = vc;
+            [self.navigationController setViewControllers:stack animated:YES];
+            return;
+        }
+    }
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+- (void)wq_cmdDeleteSelected
+{
+    if (self.tableView.isEditing && self.tableView.indexPathsForSelectedRows.count && [self canEditHere]) {
+        [self deleteSelectedFiles];
+    }
 }
 
 @end
@@ -6456,6 +7488,7 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
         @{ @"id": @"browser", @"title": WQLocalized(@"IDM Browser & Media Grabber"), @"sub": WQLocalized(@"1DM/IDM ad-blocking browser, HLS Quality Picker & page link grabber"), @"sym": @"safari.fill" },
         @{ @"id": @"downloads", @"title": WQLocalized(@"Download Manager (Multi-Part)"), @"sub": WQLocalized(@"IDM 2–16 part parallel downloads, pause/resume, HLS & format converter"), @"sym": @"tray.and.arrow.down.fill" },
         @{ @"id": @"wintransfer", @"title": WQLocalized(@"LAN Transfer (PC & Android)"), @"sub": WQLocalized(@"Symmetric Wi-Fi transfer with Windows, Android & iPhone (Host + Client)"), @"sym": @"laptopcomputer.and.iphone" },
+        @{ @"id": @"remotedrives", @"title": WQLocalized(@"Remote Drives (WebDAV / FTP)"), @"sub": WQLocalized(@"Browse, stream, upload & download over WebDAV (HTTP/HTTPS) and FTP"), @"sym": @"externaldrive.connected.to.line.below.fill" },
         @{ @"id": @"smap", @"title": WQLocalized(@"Storage Analyzer"), @"sub": WQLocalized(@"DaisyDisk-style visual category breakdown & largest folders"), @"sym": @"chart.pie.fill" },
         @{ @"id": @"crypto", @"title": WQLocalized(@"Portable File Locker (.wqenc)"), @"sub": WQLocalized(@"Password-encrypt & decrypt shareable AES-256 + HMAC files"), @"sym": @"lock.doc.fill" },
         @{ @"id": @"vault", @"title": WQLocalized(@"Private Encrypted Vault"), @"sub": WQLocalized(@"Face ID / Touch ID AES-256-CBC + HMAC protected files & notes"), @"sym": @"lock.shield.fill" },
@@ -6625,6 +7658,10 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     BOOL _homeCascaded;
     NSString *_appGroupName;
     BOOL _checkingAccess;
+    UIButton *_themeSwitcherPill;
+    UIStackView *_recentFilesStack;
+    UILabel *_largestRadarSubtitle;
+    UIStackView *_largestRadarRows;
     NSArray<WQHealthCheck *> *_pendingHealthFailure;
     BOOL _healthRetryScheduled;
     NSDictionary *_reopenFolder;
@@ -6709,6 +7746,9 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     [super viewWillAppear:animated];
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     [self rebuildFavorites];
+    [self rebuildRecentFiles];
+    [self refreshThemeSwitcherPill];
+    [self refreshLargestFilesRadar];
     [self refreshDeviceStorage];
     [self syncSafeModeButton];
     if (!_homeCascaded && _topHeader) {
@@ -6917,13 +7957,21 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     });
     UIView *wrappedTransferPill = insetSection(transferStatusPill);
     [_contentStack addArrangedSubview:wrappedTransferPill];
-    [_contentStack setCustomSpacing:12 afterView:wrappedTransferPill];
+    [_contentStack setCustomSpacing:10 afterView:wrappedTransferPill];
+
+    UIView *wrappedThemePill = insetSection([self buildQuickThemeSwitcherPill]);
+    [_contentStack addArrangedSubview:wrappedThemePill];
+    [_contentStack setCustomSpacing:12 afterView:wrappedThemePill];
 
     [self buildHeroWithWrapper:insetSection];
     [_contentStack setCustomSpacing:14 afterView:_heroView.superview ?: _heroView];
 
     UIView *storageCard = [self buildStorageSnapshotCard];
     [_contentStack addArrangedSubview:insetSection(storageCard)];
+    [_contentStack setCustomSpacing:14 afterView:[_contentStack.arrangedSubviews lastObject]];
+
+    UIView *radarCard = [self buildLargestFilesRadarCard];
+    [_contentStack addArrangedSubview:insetSection(radarCard)];
     [_contentStack setCustomSpacing:18 afterView:[_contentStack.arrangedSubviews lastObject]];
 
     UIView *toolsHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Tools"), @"3×2 Grid"));
@@ -6957,6 +8005,11 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     [_contentStack addArrangedSubview:favoritesHeader];
     [_contentStack setCustomSpacing:10 afterView:favoritesHeader];
     [_contentStack addArrangedSubview:[self buildFavoritesRail]];
+
+    UIView *recentHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Recent Files"), nil));
+    [_contentStack addArrangedSubview:recentHeader];
+    [_contentStack setCustomSpacing:10 afterView:recentHeader];
+    [_contentStack addArrangedSubview:[self buildRecentFilesRail]];
 
     [self buildSystemSectionWithWrapper:insetSection];
     [_contentStack addArrangedSubview:insetSection([self buildFooter])];
@@ -7436,6 +8489,218 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
         [favGroup.heightAnchor constraintEqualToAnchor:rail.frameLayoutGuide.heightAnchor],
     ]];
     return rail;
+}
+
+- (UIView *)buildQuickThemeSwitcherPill
+{
+    _themeSwitcherPill = [UIButton buttonWithType:UIButtonTypeSystem];
+    _themeSwitcherPill.translatesAutoresizingMaskIntoConstraints = NO;
+    _themeSwitcherPill.showsMenuAsPrimaryAction = YES;
+    wq_theme_add_spring_tap(_themeSwitcherPill);
+    [self refreshThemeSwitcherPill];
+    return _themeSwitcherPill;
+}
+
+- (void)refreshThemeSwitcherPill
+{
+    if (!_themeSwitcherPill) return;
+    NSString *currentID = wq_theme_selected_id();
+    WQThemeDescriptor *activeDesc = nil;
+    NSMutableArray<UIMenuElement *> *actions = [NSMutableArray new];
+    __weak typeof(self) weakSelf = self;
+    for (WQThemeDescriptor *desc in wq_theme_all_themes()) {
+        if ([desc.themeID isEqualToString:currentID]) activeDesc = desc;
+        BOOL isDesert = [desc.themeID isEqualToString:kWQThemeIDDesertSand];
+        NSString *sym = isDesert ? @"sun.dust.fill" : @"paintbrush.fill";
+        UIAction *act = [UIAction actionWithTitle:WQLocalized(desc.title)
+                                            image:[UIImage systemImageNamed:sym]
+                                       identifier:nil
+                                          handler:^(UIAction *__unused a) {
+            wq_theme_set_selected_id(desc.themeID);
+            wq_haptic_success();
+            [weakSelf refreshThemeSwitcherPill];
+        }];
+        if ([desc.themeID isEqualToString:currentID]) act.state = UIMenuElementStateOn;
+        [actions addObject:act];
+    }
+    _themeSwitcherPill.menu = [UIMenu menuWithTitle:WQLocalized(@"Theme Studio") children:actions];
+    UIButtonConfiguration *cfg = wq_theme_secondary_button_configuration();
+    cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 14, 8, 14);
+    cfg.imagePadding = 7;
+    cfg.image = [[UIImage systemImageNamed:(wq_theme_is_desert_sand() ? @"sun.dust.fill" : @"paintpalette.fill")]
+        imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    cfg.title = [NSString stringWithFormat:@"%@ · %@",
+        WQLocalized(@"Theme"),
+        activeDesc ? WQLocalized(activeDesc.title) : WQLocalized(@"Sahara Sand")];
+    cfg.subtitle = WQLocalized(@"Tap to switch theme (includes Sahara Sand)");
+    cfg.baseForegroundColor = wq_theme_primary_text();
+    cfg.background.backgroundColor = [wq_theme_glass_tint() colorWithAlphaComponent:0.65];
+    cfg.background.strokeColor = wq_theme_rim();
+    cfg.background.strokeWidth = 0.75;
+    _themeSwitcherPill.configuration = cfg;
+    _themeSwitcherPill.tintColor = wq_theme_accent();
+}
+
+- (UIView *)buildLargestFilesRadarCard
+{
+    WQPrismGlassView *card = [[WQPrismGlassView alloc] initWithRadius:22];
+    UILabel *titleLabel = [UILabel new];
+    titleLabel.text = WQLocalized(@"Largest Files Radar");
+    titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+    titleLabel.textColor = wq_theme_primary_text();
+
+    _largestRadarSubtitle = [UILabel new];
+    _largestRadarSubtitle.text = WQLocalized(@"Scanning user folders…");
+    _largestRadarSubtitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    _largestRadarSubtitle.textColor = wq_theme_secondary_text();
+
+    _largestRadarRows = [UIStackView new];
+    _largestRadarRows.axis = UILayoutConstraintAxisVertical;
+    _largestRadarRows.spacing = 6;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[titleLabel, _largestRadarSubtitle, _largestRadarRows]];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 6;
+    [card.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:14],
+        [stack.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-14],
+        [stack.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:14],
+        [stack.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-14],
+    ]];
+    return card;
+}
+
+- (void)refreshLargestFilesRadar
+{
+    if (!_largestRadarRows) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSMutableArray<NSString *> *roots = [NSMutableArray new];
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        if (docs.length) [roots addObject:docs];
+        NSString *dl = @"/var/mobile/Downloads";
+        if ([NSFileManager.defaultManager fileExistsAtPath:dl]) [roots addObject:dl];
+        NSString *mobileDocs = @"/var/mobile/Documents";
+        if ([NSFileManager.defaultManager fileExistsAtPath:mobileDocs]) [roots addObject:mobileDocs];
+
+        NSMutableArray<NSDictionary *> *found = [NSMutableArray new];
+        NSArray<NSURLResourceKey> *keys = @[NSURLIsRegularFileKey, NSURLFileSizeKey];
+        for (NSString *root in roots) {
+            NSDirectoryEnumerator<NSURL *> *en = [NSFileManager.defaultManager
+                enumeratorAtURL:[NSURL fileURLWithPath:root]
+                includingPropertiesForKeys:keys
+                options:NSDirectoryEnumerationSkipsHiddenFiles
+                errorHandler:nil];
+            NSUInteger budget = 0;
+            for (NSURL *u in en) {
+                if (++budget > 600) break;
+                NSNumber *isReg = nil;
+                NSNumber *sz = nil;
+                [u getResourceValue:&isReg forKey:NSURLIsRegularFileKey error:nil];
+                [u getResourceValue:&sz forKey:NSURLFileSizeKey error:nil];
+                if (isReg.boolValue && sz.unsignedLongLongValue > 0 && u.path.length) {
+                    [found addObject:@{ @"path": u.path, @"size": sz }];
+                }
+            }
+        }
+        [found sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            return [b[@"size"] compare:a[@"size"]];
+        }];
+        NSArray<NSDictionary *> *top = [found subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)3, found.count))];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQPrismHomeViewController *me = weakSelf;
+            if (!me || !me->_largestRadarRows) return;
+            for (UIView *v in me->_largestRadarRows.arrangedSubviews) {
+                [me->_largestRadarRows removeArrangedSubview:v];
+                [v removeFromSuperview];
+            }
+            if (!top.count) {
+                me->_largestRadarSubtitle.text = WQLocalized(@"No large user files found yet.");
+                return;
+            }
+            me->_largestRadarSubtitle.text = WQLocalized(@"Tap any item to jump to its folder");
+            for (NSDictionary *item in top) {
+                NSString *p = item[@"path"];
+                unsigned long long sz = [item[@"size"] unsignedLongLongValue];
+                UIButtonConfiguration *cfg = wq_theme_secondary_button_configuration();
+                cfg.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+                cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 10, 6, 10);
+                cfg.title = [NSString stringWithFormat:@"%@ · %@", p.lastPathComponent ?: p, wq_size_text(sz)];
+                cfg.image = [UIImage systemImageNamed:@"doc.fill"];
+                cfg.imagePadding = 6;
+                cfg.baseForegroundColor = wq_theme_primary_text();
+                UIButton *rowBtn = [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+                    [me openPath:p.stringByDeletingLastPathComponent title:p.stringByDeletingLastPathComponent.lastPathComponent];
+                }]];
+                rowBtn.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
+                rowBtn.tintColor = wq_theme_accent();
+                [me->_largestRadarRows addArrangedSubview:rowBtn];
+            }
+        });
+    });
+}
+
+- (UIView *)buildRecentFilesRail
+{
+    UIScrollView *rail = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    rail.translatesAutoresizingMaskIntoConstraints = NO;
+    rail.showsHorizontalScrollIndicator = NO;
+    rail.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+    wq_motion_attach_horizontal_detents(rail, 96.0);
+    _recentFilesStack = [[UIStackView alloc] initWithFrame:CGRectZero];
+    _recentFilesStack.translatesAutoresizingMaskIntoConstraints = NO;
+    _recentFilesStack.axis = UILayoutConstraintAxisHorizontal;
+    _recentFilesStack.spacing = 6;
+    UIView *group = wq_theme_glass_container(_recentFilesStack, 6);
+    [rail addSubview:group];
+    [NSLayoutConstraint activateConstraints:@[
+        [rail.heightAnchor constraintGreaterThanOrEqualToConstant:44],
+        [group.topAnchor constraintEqualToAnchor:rail.contentLayoutGuide.topAnchor],
+        [group.bottomAnchor constraintEqualToAnchor:rail.contentLayoutGuide.bottomAnchor],
+        [group.leadingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.leadingAnchor],
+        [group.trailingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.trailingAnchor],
+        [group.heightAnchor constraintEqualToAnchor:rail.frameLayoutGuide.heightAnchor],
+    ]];
+    return rail;
+}
+
+- (void)rebuildRecentFiles
+{
+    if (!_recentFilesStack) return;
+    for (UIView *view in _recentFilesStack.arrangedSubviews) {
+        [_recentFilesStack removeArrangedSubview:view];
+        [view removeFromSuperview];
+    }
+    NSArray<NSString *> *recents = wq_recent_files_list();
+    if (!recents.count) {
+        UILabel *empty = [UILabel new];
+        empty.text = WQLocalized(@"Open any file to see it here.");
+        empty.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+        empty.textColor = wq_theme_secondary_text();
+        [_recentFilesStack addArrangedSubview:empty];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    NSUInteger cap = MIN((NSUInteger)10, recents.count);
+    for (NSUInteger i = 0; i < cap; i++) {
+        NSString *path = recents[i];
+        UIButtonConfiguration *cfg = wq_theme_secondary_button_configuration();
+        cfg.title = path.lastPathComponent ?: path;
+        cfg.image = [[UIImage systemImageNamed:@"clock.fill"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        cfg.imagePadding = 5;
+        cfg.contentInsets = NSDirectionalEdgeInsetsMake(7, 12, 7, 12);
+        cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        cfg.buttonSize = UIButtonConfigurationSizeSmall;
+        UIButton *button = [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            [weakSelf openPath:path.stringByDeletingLastPathComponent title:path.stringByDeletingLastPathComponent.lastPathComponent];
+        }]];
+        button.tintColor = wq_theme_accent();
+        wq_theme_add_spring_tap(button);
+        [_recentFilesStack addArrangedSubview:button];
+    }
 }
 
 - (void)buildSystemSectionWithWrapper:(UIView *(^)(UIView *))wrap
@@ -9050,6 +10315,8 @@ static NSString *const kWQTroubleshootingFooter =
             [activeNav pushViewController:[WQDownloadManagerViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"win_transfer"]) {
             [activeNav pushViewController:[[WQWinTransferViewController alloc] initWithInitialRootPath:nil title:nil] animated:YES];
+        } else if ([commandID isEqualToString:@"remote_drives"]) {
+            [activeNav pushViewController:[WQRemoteDrivesViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"floating_hud"]) {
             [activeNav pushViewController:[WQFloatingHUDConfigViewController new] animated:YES];
         } else if ([commandID isEqualToString:@"utility_hub"]) {
@@ -9101,6 +10368,13 @@ static NSString *const kWQTroubleshootingFooter =
         } else if ([commandID isEqualToString:@"jump_path"]) {
             tab.selectedIndex = 0;
             if (h) [h goToPath];
+        } else if ([commandID isEqualToString:@"theme_desert_sand"]) {
+            wq_theme_set_selected_id(kWQThemeIDDesertSand);
+            wq_haptic_success();
+        } else if ([commandID isEqualToString:@"open_settings"]) {
+            tab.selectedIndex = 4;
+        } else if ([commandID isEqualToString:@"open_apps"]) {
+            tab.selectedIndex = 1;
         }
     });
 }
@@ -9161,6 +10435,30 @@ static NSString *const kWQTroubleshootingFooter =
     if (self.viewControllers.count > 2) {
         WQNavigationController *cleanNav = self.viewControllers[2];
         cleanNav.tabBarItem.title = WQLocalizedNullable(@"Clean");
+    }
+}
+
+- (NSArray<UIKeyCommand *> *)keyCommands
+{
+    return @[
+        [UIKeyCommand commandWithTitle:WQLocalized(@"Command Palette") image:nil action:@selector(wq_cmdOpenCommandPalette) input:@"k" modifierFlags:UIKeyModifierCommand propertyList:nil],
+        [UIKeyCommand commandWithTitle:WQLocalized(@"Settings") image:nil action:@selector(wq_cmdOpenSettings) input:@"," modifierFlags:UIKeyModifierCommand propertyList:nil],
+    ];
+}
+
+- (void)wq_cmdOpenCommandPalette
+{
+    UIViewController *host = self.selectedViewController ?: self;
+    if ([host isKindOfClass:UINavigationController.class]) {
+        host = ((UINavigationController *)host).topViewController ?: host;
+    }
+    wq_global_search_present(host, NO);
+}
+
+- (void)wq_cmdOpenSettings
+{
+    if (self.viewControllers.count > 4) {
+        self.selectedIndex = 4;
     }
 }
 
@@ -9601,3 +10899,4 @@ int main(int argc, char *argv[])
         return UIApplicationMain(argc, argv, nil, NSStringFromClass(WQAppDelegate.class));
     }
 }
+

@@ -24,4 +24,7 @@ UIButton *wq_global_search_dock_button(UIViewController *host);
 // "full_scan", "quick_check", "clean_caches", "open_vault", "open_logs", "jump_path".
 void wq_global_search_register_command_handler(void (^handler)(NSString *commandID, UIViewController *host));
 
+void wq_recent_files_record(NSString *path);
+NSArray<NSString *> *wq_recent_files_list(void);
+
 NS_ASSUME_NONNULL_END

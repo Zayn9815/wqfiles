@@ -10,7 +10,11 @@
 #import "WQTheme.h"
 #import "WQUI.h"
 
+NSNotificationName const WQWorkspaceTabsDidChangeNotification = @"WQWorkspaceTabsDidChangeNotification";
+NSNotificationName const WQDropShelfDidChangeNotification = @"WQDropShelfDidChangeNotification";
+
 static NSString *const kWQWorkspaceTabsPref = @"WQWorkspaceTabs";
+static NSString *const kWQDropShelfPref = @"WQDropShelfItems";
 static const NSUInteger kWQWorkspaceMaxTabs = 6;
 
 @implementation WQWorkspaceTab
@@ -33,6 +37,7 @@ static NSMutableArray<NSDictionary<NSString *, id> *> *wq_workspace_raw(void)
 static void wq_workspace_save(NSArray<NSDictionary<NSString *, id> *> *raw)
 {
     [NSUserDefaults.standardUserDefaults setObject:raw forKey:kWQWorkspaceTabsPref];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQWorkspaceTabsDidChangeNotification object:nil];
 }
 
 NSArray<WQWorkspaceTab *> *wq_workspace_tabs(void)
@@ -261,3 +266,286 @@ void wq_present_workspace_tabs(UIViewController *host,
     }
     [host presentViewController:nav animated:YES completion:nil];
 }
+
+#pragma mark - Inline Folder Tab Strip
+
+@implementation WQFolderTabStripView {
+    UIScrollView *_scroll;
+    UIStackView *_stack;
+    UIButton *_addBtn;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.clipsToBounds = YES;
+        _scroll = [UIScrollView new];
+        _scroll.translatesAutoresizingMaskIntoConstraints = NO;
+        _scroll.showsHorizontalScrollIndicator = NO;
+        _scroll.alwaysBounceHorizontal = YES;
+        [self addSubview:_scroll];
+
+        _stack = [UIStackView new];
+        _stack.translatesAutoresizingMaskIntoConstraints = NO;
+        _stack.axis = UILayoutConstraintAxisHorizontal;
+        _stack.alignment = UIStackViewAlignmentCenter;
+        _stack.spacing = 6;
+        [_scroll addSubview:_stack];
+
+        _addBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        _addBtn.translatesAutoresizingMaskIntoConstraints = NO;
+        UIButtonConfiguration *addCfg = [UIButtonConfiguration glassButtonConfiguration];
+        addCfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        addCfg.image = [UIImage systemImageNamed:@"plus"
+                               withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:12 weight:UIImageSymbolWeightBold]];
+        addCfg.contentInsets = NSDirectionalEdgeInsetsMake(5, 9, 5, 9);
+        addCfg.baseForegroundColor = wq_theme_accent();
+        addCfg.baseBackgroundColor = wq_theme_glass_tint();
+        _addBtn.configuration = addCfg;
+        _addBtn.accessibilityLabel = WQLocalized(@"Folder Tabs…");
+        __weak typeof(self) weakSelf = self;
+        [_addBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            if (weakSelf.onManageTabs) weakSelf.onManageTabs();
+        }] forControlEvents:UIControlEventTouchUpInside];
+        wq_theme_add_spring_tap(_addBtn);
+        [self addSubview:_addBtn];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_addBtn.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12],
+            [_addBtn.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+            [_addBtn.heightAnchor constraintEqualToConstant:30],
+            [_scroll.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:12],
+            [_scroll.trailingAnchor constraintEqualToAnchor:_addBtn.leadingAnchor constant:-6],
+            [_scroll.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_scroll.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_stack.leadingAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.leadingAnchor],
+            [_stack.trailingAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.trailingAnchor],
+            [_stack.topAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.topAnchor],
+            [_stack.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor],
+            [_stack.heightAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.heightAnchor],
+        ]];
+
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadTabs) name:WQWorkspaceTabsDidChangeNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(reloadTabs) name:WQThemeDidChangeNotification object:nil];
+        [self reloadTabs];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)setCurrentPath:(NSString *)currentPath
+{
+    _currentPath = [currentPath stringByStandardizingPath] ?: @"";
+    [self reloadTabs];
+}
+
+- (void)reloadTabs
+{
+    for (UIView *v in [_stack.arrangedSubviews copy]) {
+        [_stack removeArrangedSubview:v];
+        [v removeFromSuperview];
+    }
+    UIButtonConfiguration *addCfg = [_addBtn.configuration copy];
+    addCfg.baseForegroundColor = wq_theme_accent();
+    addCfg.baseBackgroundColor = wq_theme_glass_tint();
+    _addBtn.configuration = addCfg;
+
+    NSArray<WQWorkspaceTab *> *tabs = wq_workspace_tabs();
+    NSString *cur = [_currentPath stringByStandardizingPath];
+    __weak typeof(self) weakSelf = self;
+
+    for (WQWorkspaceTab *tab in tabs) {
+        BOOL active = cur.length > 0 && [[tab.path stringByStandardizingPath] isEqualToString:cur];
+        UIVisualEffectView *pill = wq_theme_make_glass_card(14, YES);
+        pill.layer.borderColor = (active ? wq_theme_accent() : wq_theme_rim()).CGColor;
+        pill.layer.borderWidth = active ? 1.2 : 0.7;
+        if (active) {
+            pill.contentView.backgroundColor = [wq_theme_accent() colorWithAlphaComponent:0.16];
+        }
+
+        UIButton *titleBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        titleBtn.translatesAutoresizingMaskIntoConstraints = NO;
+        UIButtonConfiguration *tcfg = [UIButtonConfiguration plainButtonConfiguration];
+        tcfg.title = tab.title;
+        tcfg.image = [UIImage systemImageNamed:active ? @"folder.fill" : @"folder"
+                             withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightSemibold]];
+        tcfg.imagePadding = 4;
+        tcfg.contentInsets = NSDirectionalEdgeInsetsMake(4, 10, 4, 4);
+        tcfg.baseForegroundColor = active ? wq_theme_primary_text() : wq_theme_secondary_text();
+        tcfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *in) {
+            NSMutableDictionary *out = [in mutableCopy] ?: [NSMutableDictionary new];
+            out[NSFontAttributeName] = [UIFont systemFontOfSize:12 weight:active ? UIFontWeightBold : UIFontWeightSemibold];
+            return out;
+        };
+        titleBtn.configuration = tcfg;
+        [titleBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            if (weakSelf.onSelectTab) weakSelf.onSelectTab(tab);
+        }] forControlEvents:UIControlEventTouchUpInside];
+
+        UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+        closeBtn.translatesAutoresizingMaskIntoConstraints = NO;
+        UIButtonConfiguration *ccfg = [UIButtonConfiguration plainButtonConfiguration];
+        ccfg.image = [UIImage systemImageNamed:@"xmark"
+                             withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:9.5 weight:UIImageSymbolWeightBold]];
+        ccfg.contentInsets = NSDirectionalEdgeInsetsMake(4, 2, 4, 8);
+        ccfg.baseForegroundColor = wq_theme_secondary_text();
+        closeBtn.configuration = ccfg;
+        NSString *tabPath = [tab.path copy];
+        [closeBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            wq_workspace_remove_tab(tabPath);
+        }] forControlEvents:UIControlEventTouchUpInside];
+
+        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[titleBtn, closeBtn]];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        row.axis = UILayoutConstraintAxisHorizontal;
+        row.alignment = UIStackViewAlignmentCenter;
+        row.spacing = 0;
+        [pill.contentView addSubview:row];
+        [NSLayoutConstraint activateConstraints:@[
+            [pill.heightAnchor constraintEqualToConstant:30],
+            [titleBtn.widthAnchor constraintLessThanOrEqualToConstant:145],
+            [row.topAnchor constraintEqualToAnchor:pill.contentView.topAnchor],
+            [row.bottomAnchor constraintEqualToAnchor:pill.contentView.bottomAnchor],
+            [row.leadingAnchor constraintEqualToAnchor:pill.contentView.leadingAnchor],
+            [row.trailingAnchor constraintEqualToAnchor:pill.contentView.trailingAnchor],
+        ]];
+        [_stack addArrangedSubview:pill];
+    }
+}
+
+@end
+
+#pragma mark - Persistent Multi-Container Drop Shelf
+
+static NSMutableArray<NSString *> *wq_drop_shelf_raw(void)
+{
+    NSArray *saved = [NSUserDefaults.standardUserDefaults arrayForKey:kWQDropShelfPref];
+    NSMutableArray<NSString *> *out = [NSMutableArray new];
+    if ([saved isKindOfClass:NSArray.class]) {
+        for (id obj in saved) {
+            if ([obj isKindOfClass:NSString.class] && [obj length]) {
+                [out addObject:obj];
+            }
+        }
+    }
+    return out;
+}
+
+NSArray<NSString *> *wq_drop_shelf_items(void)
+{
+    return [wq_drop_shelf_raw() copy];
+}
+
+void wq_drop_shelf_add(NSArray<NSString *> *paths)
+{
+    if (!paths.count) return;
+    NSMutableArray<NSString *> *items = wq_drop_shelf_raw();
+    NSMutableSet<NSString *> *seen = [NSMutableSet setWithArray:items];
+    for (NSString *p in paths) {
+        if (!p.length) continue;
+        NSString *std = [p stringByStandardizingPath];
+        if (![seen containsObject:std]) {
+            [seen addObject:std];
+            [items addObject:std];
+        }
+    }
+    [NSUserDefaults.standardUserDefaults setObject:items forKey:kWQDropShelfPref];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQDropShelfDidChangeNotification object:nil];
+}
+
+void wq_drop_shelf_remove(NSString *path)
+{
+    if (!path.length) return;
+    NSString *std = [path stringByStandardizingPath];
+    NSMutableArray<NSString *> *items = wq_drop_shelf_raw();
+    [items removeObject:std];
+    [NSUserDefaults.standardUserDefaults setObject:items forKey:kWQDropShelfPref];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQDropShelfDidChangeNotification object:nil];
+}
+
+void wq_drop_shelf_clear(void)
+{
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:kWQDropShelfPref];
+    [NSNotificationCenter.defaultCenter postNotificationName:WQDropShelfDidChangeNotification object:nil];
+}
+
+@implementation WQDropShelfPillView {
+    UIVisualEffectView *_card;
+    UIButton *_btn;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        _card = wq_theme_make_glass_card(18, YES);
+        _card.layer.borderColor = wq_theme_aurora_teal().CGColor;
+        _card.layer.borderWidth = 1.0;
+        [self addSubview:_card];
+
+        _btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        _btn.translatesAutoresizingMaskIntoConstraints = NO;
+        __weak typeof(self) weakSelf = self;
+        [_btn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            wq_haptic_selection();
+            if (weakSelf.onTap) weakSelf.onTap();
+        }] forControlEvents:UIControlEventTouchUpInside];
+        wq_theme_add_spring_tap(_btn);
+        [_card.contentView addSubview:_btn];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_card.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_card.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_card.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_card.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_btn.topAnchor constraintEqualToAnchor:_card.contentView.topAnchor],
+            [_btn.bottomAnchor constraintEqualToAnchor:_card.contentView.bottomAnchor],
+            [_btn.leadingAnchor constraintEqualToAnchor:_card.contentView.leadingAnchor],
+            [_btn.trailingAnchor constraintEqualToAnchor:_card.contentView.trailingAnchor],
+            [self.heightAnchor constraintEqualToConstant:36],
+        ]];
+
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:WQDropShelfDidChangeNotification object:nil];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refresh) name:WQThemeDidChangeNotification object:nil];
+        [self refresh];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)refresh
+{
+    NSUInteger count = wq_drop_shelf_items().count;
+    self.hidden = (count == 0);
+    if (count == 0) return;
+
+    _card.layer.borderColor = wq_theme_aurora_teal().CGColor;
+    UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
+    cfg.image = [UIImage systemImageNamed:@"tray.full.fill"
+                        withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:13 weight:UIImageSymbolWeightBold]];
+    cfg.imagePadding = 6;
+    cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 14, 6, 14);
+    cfg.baseForegroundColor = wq_theme_primary_text();
+    cfg.title = count == 1
+        ? WQLocalized(@"Shelf · 1 item")
+        : WQLocalizedFormat(@"Shelf · %lu items", (unsigned long)count);
+    cfg.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *in) {
+        NSMutableDictionary *out = [in mutableCopy] ?: [NSMutableDictionary new];
+        out[NSFontAttributeName] = [UIFont systemFontOfSize:12.5 weight:UIFontWeightBold];
+        return out;
+    };
+    _btn.configuration = cfg;
+}
+
+@end

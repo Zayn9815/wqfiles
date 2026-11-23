@@ -15,6 +15,7 @@
 #import <sys/stat.h>
 
 static NSString *const kWQGlobalSearchRecentsKey = @"WQGlobalSearchRecents";
+static NSString *const kWQRecentFilesKey = @"WQRecentFilesRingBuffer";
 static void (^gWQGlobalSearchCommandHandler)(NSString *commandID, UIViewController *host);
 
 typedef NS_ENUM(NSInteger, WQSearchCategory) {
@@ -128,9 +129,32 @@ static void wq_spotlight_save_recent(NSString *query)
     [NSUserDefaults.standardUserDefaults setObject:list forKey:kWQGlobalSearchRecentsKey];
 }
 
+void wq_recent_files_record(NSString *path)
+{
+    if (!path.length) return;
+    NSArray<NSString *> *existing = [NSUserDefaults.standardUserDefaults arrayForKey:kWQRecentFilesKey];
+    NSMutableArray<NSString *> *list = [existing isKindOfClass:NSArray.class] ? [existing mutableCopy] : [NSMutableArray new];
+    [list removeObject:path];
+    [list insertObject:path atIndex:0];
+    while (list.count > 20) [list removeLastObject];
+    [NSUserDefaults.standardUserDefaults setObject:list forKey:kWQRecentFilesKey];
+}
+
+NSArray<NSString *> *wq_recent_files_list(void)
+{
+    NSArray *existing = [NSUserDefaults.standardUserDefaults arrayForKey:kWQRecentFilesKey];
+    if (![existing isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<NSString *> *out = [NSMutableArray new];
+    for (id item in existing) {
+        if ([item isKindOfClass:NSString.class] && [item length]) [out addObject:item];
+    }
+    return out;
+}
+
 static NSArray<WQSpotlightResult *> *wq_spotlight_quick_commands(void)
 {
     NSArray<NSArray<NSString *> *> *specs = @[
+        @[@"Remote Drives (WebDAV / FTP)", @"Connect to WebDAV or FTP servers & stream media", @"externaldrive.connected.to.line.below.fill", @"remote_drives"],
         @[@"IDM Browser & Media Grabber", @"1DM/IDM ad-blocking browser, HLS Quality Picker & sniffer", @"safari.fill", @"idm_browser"],
         @[@"Download Manager (Multi-Part)", @"IDM 2–16 part parallel downloads, pause/resume, HLS & format converter", @"tray.and.arrow.down.fill", @"download_manager"],
         @[@"LAN Transfer (PC & Android)", @"Symmetric Wi-Fi transfer with Windows, Android & iPhone (Host + Client)", @"laptopcomputer.and.iphone", @"win_transfer"],
@@ -148,6 +172,9 @@ static NSArray<WQSpotlightResult *> *wq_spotlight_quick_commands(void)
         @[@"Utility Workbench", @"QR Studio, Passwords, Scratchpad & Dev Tools", @"wrench.and.screwdriver.fill", @"workbench"],
         @[@"Duplicate File Hunter", @"Find & safely clean duplicate files", @"doc.on.doc.fill", @"find_duplicates"],
         @[@"Private Encrypted Vault", @"Face ID AES-256 encrypted files & notes", @"lock.shield.fill", @"private_vault"],
+        @[@"Apply Sahara Sand Theme", @"Warm desert dunes & terracotta gold frosted glass", @"sun.dust.fill", @"theme_desert_sand"],
+        @[@"Appearance & Themes", @"Switch theme, accent & frosted glass settings", @"paintbrush.fill", @"open_settings"],
+        @[@"Installed Apps", @"Browse installed app containers & preferences", @"square.stack.3d.up.fill", @"open_apps"],
         @[@"Run Full Scan", @"Scan containers & permissions", @"arrow.triangle.2.circlepath", @"full_scan"],
         @[@"Quick Health Check", @"Verify sandbox access status", @"checkmark.shield.fill", @"quick_check"],
         @[@"Clean Selected Caches", @"Open Cache Cleaner to free space", @"sparkles", @"clean_caches"],
@@ -596,6 +623,48 @@ static void wq_spotlight_warm_index_sync(void)
     NSMutableArray<NSString *> *titles = [NSMutableArray new];
     NSMutableArray<NSArray<WQSpotlightResult *> *> *secs = [NSMutableArray new];
 
+    NSArray<NSString *> *recentFiles = wq_recent_files_list();
+    if (recentFiles.count) {
+        NSMutableArray<WQSpotlightResult *> *rows = [NSMutableArray new];
+        NSUInteger cap = MIN((NSUInteger)6, recentFiles.count);
+        for (NSUInteger i = 0; i < cap; i++) {
+            NSString *p = recentFiles[i];
+            WQSpotlightResult *r = [WQSpotlightResult new];
+            r.category = WQSearchCategoryFile;
+            r.title = p.lastPathComponent ?: p;
+            r.subtitle = p.stringByDeletingLastPathComponent;
+            r.path = p;
+            r.symbolName = @"doc.text.fill";
+            r.detailBadge = @"RECENT";
+            [rows addObject:r];
+        }
+        [titles addObject:WQLocalized(@"Recent Files")];
+        [secs addObject:rows];
+    }
+
+    NSArray *favs = [NSUserDefaults.standardUserDefaults arrayForKey:@"WQFavorites"];
+    if ([favs isKindOfClass:NSArray.class] && favs.count) {
+        NSMutableArray<WQSpotlightResult *> *rows = [NSMutableArray new];
+        for (id f in favs) {
+            if (![f isKindOfClass:NSString.class] || ![f length]) continue;
+            NSString *fp = (NSString *)f;
+            WQSpotlightResult *r = [WQSpotlightResult new];
+            r.category = WQSearchCategoryFile;
+            r.title = fp.lastPathComponent ?: fp;
+            r.subtitle = fp;
+            r.path = fp;
+            r.isDirectory = YES;
+            r.symbolName = @"star.fill";
+            r.detailBadge = @"FAV";
+            [rows addObject:r];
+            if (rows.count >= 6) break;
+        }
+        if (rows.count) {
+            [titles addObject:WQLocalized(@"Favorites")];
+            [secs addObject:rows];
+        }
+    }
+
     NSArray<NSString *> *recents = wq_spotlight_recents();
     if (recents.count) {
         NSMutableArray<WQSpotlightResult *> *rows = [NSMutableArray new];
@@ -629,6 +698,23 @@ static void wq_spotlight_warm_index_sync(void)
     }
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         wq_spotlight_warm_index_sync();
+
+        NSMutableArray<WQSpotlightResult *> *directJump = [NSMutableArray new];
+        if ([q hasPrefix:@"/"]) {
+            struct stat st;
+            BOOL exists = (lstat(q.fileSystemRepresentation, &st) == 0);
+            BOOL isDir = !exists || S_ISDIR(st.st_mode);
+            WQSpotlightResult *jump = [WQSpotlightResult new];
+            jump.category = WQSearchCategoryFile;
+            jump.title = [NSString stringWithFormat:@"%@: %@", WQLocalized(@"Jump to Path"), q.lastPathComponent.length ? q.lastPathComponent : q];
+            jump.subtitle = q;
+            jump.path = q;
+            jump.isDirectory = isDir;
+            jump.symbolName = @"arrow.forward.circle.fill";
+            jump.detailBadge = exists ? (isDir ? @"DIR" : wq_size_text((unsigned long long)st.st_size)) : @"PATH";
+            [directJump addObject:jump];
+        }
+
         NSMutableArray<WQSpotlightResult *> *cmds = [NSMutableArray new];
         for (WQSpotlightResult *c in wq_spotlight_quick_commands()) {
             if ([c.title localizedCaseInsensitiveContainsString:q] || [c.subtitle localizedCaseInsensitiveContainsString:q]) {
@@ -652,7 +738,25 @@ static void wq_spotlight_warm_index_sync(void)
             if ([app.title localizedCaseInsensitiveContainsString:q] ||
                 (app.bundleID && [app.bundleID localizedCaseInsensitiveContainsString:q]) ||
                 [app.path.lastPathComponent localizedCaseInsensitiveContainsString:q]) {
-                if (apps.count < 24) [apps addObject:app];
+                if (apps.count < 24) {
+                    [apps addObject:app];
+                    if (app.bundleID.length && app.path.length) {
+                        NSString *prefsPlist = [app.path stringByAppendingPathComponent:[NSString stringWithFormat:@"Library/Preferences/%@.plist", app.bundleID]];
+                        struct stat pst;
+                        if (lstat(prefsPlist.fileSystemRepresentation, &pst) == 0 && apps.count < 24) {
+                            WQSpotlightResult *p = [WQSpotlightResult new];
+                            p.category = WQSearchCategoryFile;
+                            p.title = [NSString stringWithFormat:@"%@ · %@", app.title, WQLocalized(@"Preferences")];
+                            p.subtitle = prefsPlist;
+                            p.path = prefsPlist;
+                            p.bundleID = app.bundleID;
+                            p.symbolName = @"slider.horizontal.3";
+                            p.isDirectory = NO;
+                            p.detailBadge = @"PLIST";
+                            [apps addObject:p];
+                        }
+                    }
+                }
                 if (cachesAndBackups.count < 12 && app.path.length) {
                     NSString *cacheDir = [app.path stringByAppendingPathComponent:@"Library/Caches"];
                     WQSpotlightResult *c = [WQSpotlightResult new];
@@ -678,10 +782,24 @@ static void wq_spotlight_warm_index_sync(void)
             }
         }
 
-        // Instant match against pre-indexed Favorites / Recent files, supplemented
+        // Instant match against Recent Files + pre-indexed Favorites / Recent folder files, supplemented
         // by matching app container roots if needed.
         NSMutableArray<WQSpotlightResult *> *files = [NSMutableArray new];
         NSMutableSet<NSString *> *seen = [NSMutableSet new];
+        for (NSString *rf in wq_recent_files_list()) {
+            if (files.count >= 30) break;
+            if ([rf.lastPathComponent localizedCaseInsensitiveContainsString:q] || [rf localizedCaseInsensitiveContainsString:q]) {
+                [seen addObject:rf];
+                WQSpotlightResult *r = [WQSpotlightResult new];
+                r.category = WQSearchCategoryFile;
+                r.title = rf.lastPathComponent ?: rf;
+                r.subtitle = rf.stringByDeletingLastPathComponent;
+                r.path = rf;
+                r.symbolName = @"clock.fill";
+                r.detailBadge = @"RECENT";
+                [files addObject:r];
+            }
+        }
         for (WQSpotlightResult *f in cachedFiles) {
             if (files.count >= 30) break;
             if ([f.title localizedCaseInsensitiveContainsString:q]) {
@@ -720,6 +838,7 @@ static void wq_spotlight_warm_index_sync(void)
 
         NSMutableArray<NSString *> *titles = [NSMutableArray new];
         NSMutableArray<NSArray<WQSpotlightResult *> *> *secs = [NSMutableArray new];
+        if (directJump.count) { [titles addObject:WQLocalized(@"Jump to Path")]; [secs addObject:directJump]; }
         if (cmds.count) { [titles addObject:WQLocalized(@"Quick Commands")]; [secs addObject:cmds]; }
         if (apps.count) { [titles addObject:WQLocalized(@"Apps & Extensions")]; [secs addObject:apps]; }
         if (files.count) { [titles addObject:WQLocalized(@"Files & Folders")]; [secs addObject:files]; }

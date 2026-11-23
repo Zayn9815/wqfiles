@@ -73,6 +73,8 @@
 	<string>26.0</string>
 	<key>NSCameraUsageDescription</key>
 	<string>WQ Glass uses the camera to scan LAN Transfer QR codes on Windows PC, Android, or another iPhone.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>WQ Glass saves images and converted photos to your Photo Library when requested.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>WQ Glass uses the local Wi-Fi and Hotspot network to discover and transfer files with Windows PC, Android, and other iPhones.</string>
 	<key>NSAppTransportSecurity</key>

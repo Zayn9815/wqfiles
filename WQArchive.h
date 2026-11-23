@@ -83,6 +83,19 @@ BOOL wq_zip_extract(NSString *zipPath, NSString *outDir, WQArchiveIO *io, unsign
 NSArray<WQZipEntryInfo *> *_Nullable wq_zip_list(NSString *zipPath, WQArchiveIO *io,
                                                  NSString *_Nullable *_Nullable errorText);
 
+// Reads a single entry's uncompressed bytes into memory (up to maxBytes) without
+// unpacking the archive to disk.
+NSData *_Nullable wq_zip_read_entry_data(NSString *zipPath, NSString *entryName, WQArchiveIO *io,
+                                         unsigned long long maxBytes, NSString *_Nullable *_Nullable errorText);
+
+// Extracts only entries matching `entryNames` (exact relative path or folder prefix)
+// into `outDir`.
+BOOL wq_zip_extract_selected(NSString *zipPath, NSSet<NSString *> *entryNames, NSString *outDir,
+                             WQArchiveIO *io, unsigned long long maxBytes,
+                             WQArchiveCancelled _Nullable cancelled, WQArchiveProgress _Nullable progress,
+                             NSUInteger *_Nullable files, NSUInteger *_Nullable skipped,
+                             NSString *_Nullable *_Nullable errorText);
+
 // A safe relative path for an entry name ("a/b/c"; backslashes count as
 // separators), or nil for absolute names, "." / ".." components or empty names.
 NSString *_Nullable wq_zip_safe_entry_path(NSString *name);

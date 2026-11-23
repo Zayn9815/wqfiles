@@ -22,6 +22,7 @@ extern NSString *const kWQThemeIDiPhoneDuo;        // @"iphone_duo" (default)
 extern NSString *const kWQThemeIDGlacierGlass;     // @"glacier_glass"
 extern NSString *const kWQThemeIDCrimsonGlass;     // @"crimson_glass"
 extern NSString *const kWQThemeIDAnodizedObsidian; // @"anodized_obsidian"
+extern NSString *const kWQThemeIDDesertSand;       // @"desert_sand"
 extern NSString *const kWQThemeIDClassicNative;    // @"classic_native"
 
 // UI Layout & Chrome Preset identifiers.
@@ -60,6 +61,7 @@ void wq_theme_set_selected_ui_style_id(NSString *styleID);
 BOOL wq_theme_is_compact_pro(void);
 BOOL wq_theme_is_full_liquid_glass(void);
 BOOL wq_theme_is_classic_stock(void);
+BOOL wq_theme_is_desert_sand(void);
 CGFloat wq_theme_card_border_width(void);
 CGFloat wq_theme_card_corner_radius(CGFloat baseRadius);
 

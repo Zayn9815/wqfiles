@@ -17,6 +17,8 @@
 #import "WQCore.h"
 #import "WQAppsSupport.h"
 #import "WQArchive.h"
+#import "WQPlistEditor.h"
+#import "WQWinTransfer.h"
 #import <QuartzCore/QuartzCore.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <errno.h>
@@ -2417,12 +2419,15 @@ NSString *wq_recover_interrupted_restore(void)
     BOOL _metadataExpanded;
     NSString *_versionText;
     NSString *_cacheSizeText;
+    unsigned long long _cacheBytes;
     WQScanCancellation *_metaCancellation;
     UIButton *_collapseBtn;
     UIStackView *_metaBodyStack;
     UILabel *_versionValueLabel;
     UILabel *_cacheValueLabel;
+    UIProgressView *_cacheRatioBar;
     NSArray<NSDictionary<NSString *, id> *> *_actions;
+    NSArray<NSDictionary<NSString *, id> *> *_snapshots;
 }
 
 - (instancetype)initWithApp:(WQAppItem *)app owner:(WQAppsViewController *)owner
@@ -2446,6 +2451,7 @@ NSString *wq_recover_interrupted_restore(void)
         self.tableView.backgroundColor = UIColor.clearColor;
     }
     wq_theme_apply_scroll_insets(self.tableView, 40.0);
+    [self reloadSnapshotsList];
     [self rebuildActions];
     [self installMetadataHeader];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(themeDidChange) name:WQThemeDidChangeNotification object:nil];
@@ -2470,6 +2476,31 @@ NSString *wq_recover_interrupted_restore(void)
     [self.tableView reloadData];
 }
 
+- (NSString *)snapshotsRoot
+{
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject ?: NSTemporaryDirectory();
+    NSString *key = _app.bundleID.length ? _app.bundleID : _app.container.lastPathComponent;
+    return [[docs stringByAppendingPathComponent:@"WQAppSnapshots"] stringByAppendingPathComponent:key];
+}
+
+- (void)reloadSnapshotsList
+{
+    NSString *root = [self snapshotsRoot];
+    NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:root error:nil] ?: @[];
+    NSMutableArray<NSDictionary<NSString *, id> *> *list = [NSMutableArray new];
+    for (NSString *n in names) {
+        NSString *p = [root stringByAppendingPathComponent:n];
+        NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:p error:nil];
+        if (![attrs[NSFileType] isEqualToString:NSFileTypeDirectory]) continue;
+        NSDate *dt = attrs[NSFileModificationDate] ?: NSDate.date;
+        [list addObject:@{ @"name": n, @"path": p, @"date": dt }];
+    }
+    [list sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [b[@"date"] compare:a[@"date"]];
+    }];
+    _snapshots = list;
+}
+
 - (void)rebuildActions
 {
     NSMutableArray<NSDictionary<NSString *, id> *> *list = [NSMutableArray new];
@@ -2480,6 +2511,11 @@ NSString *wq_recover_interrupted_restore(void)
         @"title": starred ? WQLocalized(@"Remove from Starred Batch Profile") : WQLocalized(@"Star App for Batch Backup"),
         @"symbol": starred ? @"star.slash.fill" : @"star.fill",
     }];
+    if (_app.hasAccess) {
+        [list addObject:@{ @"id": @"edit_prefs", @"title": WQLocalized(@"Edit App Preferences"), @"symbol": @"slider.horizontal.3" }];
+        [list addObject:@{ @"id": @"transfer_usb", @"title": WQLocalized(@"Transfer Data (USB / Wi-Fi)"), @"symbol": @"cable.connector" }];
+        [list addObject:@{ @"id": @"save_snapshot", @"title": WQLocalized(@"Save Named Snapshot…"), @"symbol": @"camera.aperture" }];
+    }
     if (fullControl) {
         [list addObject:@{ @"id": @"backup", @"title": WQLocalized(@"Back Up Data"), @"symbol": @"arrow.down.doc.fill" }];
         [list addObject:@{ @"id": @"import", @"title": WQLocalized(@"Import as Backup…"), @"symbol": @"square.and.arrow.down" }];
@@ -2494,7 +2530,9 @@ NSString *wq_recover_interrupted_restore(void)
     }
     if (_app.hasAccess) {
         [list addObject:@{ @"id": @"open_data", @"title": WQLocalized(@"Open Data Folder"), @"symbol": @"folder.fill" }];
-        [list addObject:@{ @"id": @"open_prefs", @"title": WQLocalized(@"Open Library/Preferences"), @"symbol": @"slider.horizontal.3" }];
+        if (wq_deleting_allowed()) {
+            [list addObject:@{ @"id": @"clear_cache", @"title": WQLocalized(@"Clear This App's Cache"), @"symbol": @"sparkles" }];
+        }
     }
     if (_app.bundleID.length) {
         [list addObject:@{ @"id": @"copy_bid", @"title": WQLocalized(@"Copy Bundle ID"), @"symbol": @"doc.on.doc" }];
@@ -2614,12 +2652,21 @@ NSString *wq_recover_interrupted_restore(void)
         ? WQLocalizedFormat(@"%lu (%@)", (unsigned long)_app.backups.count, wq_backup_label(_app.backups.firstObject))
         : WQLocalized(@"None");
 
+    _cacheRatioBar = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    _cacheRatioBar.progressTintColor = wq_theme_aurora_teal();
+    _cacheRatioBar.trackTintColor = [wq_theme_accent() colorWithAlphaComponent:0.25];
+    _cacheRatioBar.progress = (_app.sizeKnown && _app.bytes > 0 && _cacheBytes > 0)
+        ? (float)MIN(1.0, (double)_cacheBytes / (double)_app.bytes)
+        : 0.0f;
+
     NSMutableArray<UIView *> *bodyRows = [NSMutableArray arrayWithArray:@[
         [self metaRowWithLabel:WQLocalized(@"Bundle ID") value:_app.bundleID ?: WQLocalized(@"Unknown") monospaced:YES tapCopy:_app.bundleID.length > 0 outValueLabel:nil],
+        [self metaRowWithLabel:WQLocalized(@"Container UUID") value:_app.container.lastPathComponent ?: @"" monospaced:YES tapCopy:_app.container.length > 0 outValueLabel:nil],
         [self metaRowWithLabel:WQLocalized(@"Version") value:_versionText monospaced:NO tapCopy:NO outValueLabel:&verLbl],
         [self metaRowWithLabel:WQLocalized(@"Container Path") value:_app.container ?: @"" monospaced:YES tapCopy:_app.container.length > 0 outValueLabel:nil],
         [self metaRowWithLabel:WQLocalized(@"Data Size") value:dataText monospaced:NO tapCopy:NO outValueLabel:nil],
         [self metaRowWithLabel:WQLocalized(@"Cache Size") value:_cacheSizeText monospaced:NO tapCopy:NO outValueLabel:&cacheLbl],
+        _cacheRatioBar,
         [self metaRowWithLabel:WQLocalized(@"Backups") value:backupsText monospaced:NO tapCopy:NO outValueLabel:nil],
     ]];
     _versionValueLabel = verLbl;
@@ -2627,9 +2674,16 @@ NSString *wq_recover_interrupted_restore(void)
 
     if (_app.hasAccess) {
         UIButton *prefsBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-        wq_theme_style_secondary_button(prefsBtn, WQLocalized(@"Open Library/Preferences"), @"slider.horizontal.3");
-        [prefsBtn addTarget:self action:@selector(openPreferencesShortcut) forControlEvents:UIControlEventTouchUpInside];
+        wq_theme_style_secondary_button(prefsBtn, WQLocalized(@"Edit App Preferences"), @"slider.horizontal.3");
+        [prefsBtn addTarget:self action:@selector(editAppPreferences) forControlEvents:UIControlEventTouchUpInside];
         [bodyRows addObject:prefsBtn];
+
+        if (wq_deleting_allowed()) {
+            UIButton *clearCacheBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+            wq_theme_style_secondary_button(clearCacheBtn, WQLocalized(@"Clear This App's Cache"), @"sparkles");
+            [clearCacheBtn addTarget:self action:@selector(clearThisAppCache) forControlEvents:UIControlEventTouchUpInside];
+            [bodyRows addObject:clearCacheBtn];
+        }
     }
 
     _metaBodyStack = [[UIStackView alloc] initWithArrangedSubviews:bodyRows];
@@ -2673,13 +2727,122 @@ NSString *wq_recover_interrupted_restore(void)
     [self installMetadataHeader];
 }
 
-- (void)openPreferencesShortcut
+- (void)editAppPreferences
 {
     wq_haptic_selection();
-    NSString *prefsPath = [_app.container stringByAppendingPathComponent:@"Library/Preferences"];
-    WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:prefsPath
+    NSString *prefsDir = [_app.container stringByAppendingPathComponent:@"Library/Preferences"];
+    if (_app.bundleID.length) {
+        NSString *plistPath = [prefsDir stringByAppendingPathComponent:[_app.bundleID stringByAppendingString:@".plist"]];
+        struct stat st;
+        if (wq_stat(plistPath, &st) && S_ISREG(st.st_mode)) {
+            WQPlistEditorViewController *editor = [[WQPlistEditorViewController alloc] initWithPath:plistPath readOnly:NO];
+            [self.navigationController pushViewController:editor animated:YES];
+            return;
+        }
+    }
+    WQDirViewController *dir = [[WQDirViewController alloc] initWithPath:prefsDir
                                                                    title:[_app.name stringByAppendingString:@" · Preferences"]];
     [self.navigationController pushViewController:dir animated:YES];
+}
+
+- (void)clearThisAppCache
+{
+    if (!wq_deleting_allowed()) return;
+    wq_present_glass_confirm(self, WQLocalized(@"Clear This App's Cache"),
+                             WQLocalizedFormat(@"Deletes Library/Caches and tmp inside %@.", _app.name),
+                             WQLocalizedNullable(@"Clear"), YES, ^{
+        WQAppItem *app = self->_app;
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            for (NSString *sub in @[@"Library/Caches", @"tmp"]) {
+                NSString *dir = [app.container stringByAppendingPathComponent:sub];
+                for (NSString *child in (wq_list(dir, nil) ?: @[])) {
+                    wq_delete_tree([dir stringByAppendingPathComponent:child], nil);
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WQAppDetailViewController *me = weakSelf;
+                if (!me) return;
+                wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+                [me loadLazyMetadata];
+            });
+        });
+    });
+}
+
+- (void)saveNamedSnapshot
+{
+    UIAlertController *a = wq_alert_controller(WQLocalized(@"Save Named Snapshot"), nil, UIAlertControllerStyleAlert);
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.placeholder = WQLocalized(@"Snapshot name (e.g. Before Mod v1)");
+    }];
+    [a addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(WQLocalized(@"Save"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+        NSString *rawName = [a.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!rawName.length) rawName = @"Snapshot";
+        NSString *safeName = [[rawName stringByReplacingOccurrencesOfString:@"/" withString:@"-"]
+                              stringByAppendingFormat:@" (%@)", [NSDateFormatter localizedStringFromDate:NSDate.date dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterShortStyle]];
+        safeName = [safeName stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+        NSString *dest = [[self snapshotsRoot] stringByAppendingPathComponent:safeName];
+        [NSFileManager.defaultManager createDirectoryAtPath:dest withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *src = self->_app.container;
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSString *err = nil;
+            BOOL ok = YES;
+            for (NSString *part in @[@"Documents", @"Library"]) {
+                NSString *s = [src stringByAppendingPathComponent:part];
+                struct stat st;
+                if (wq_stat(s, &st) && S_ISDIR(st.st_mode)) {
+                    if (!wq_copy_tree_new(s, [dest stringByAppendingPathComponent:part], nil, &err)) {
+                        ok = NO;
+                        break;
+                    }
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WQAppDetailViewController *me = weakSelf;
+                if (!me) return;
+                [me reloadSnapshotsList];
+                [me.tableView reloadData];
+                wq_alert(me, ok ? WQLocalized(@"Snapshot Saved") : WQLocalized(@"Snapshot Failed"), ok ? rawName : err);
+            });
+        });
+    })];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)restoreSnapshot:(NSDictionary<NSString *, id> *)snap
+{
+    NSString *name = snap[@"name"];
+    NSString *snapPath = snap[@"path"];
+    wq_present_glass_confirm(self, WQLocalized(@"Restore Snapshot?"),
+                             WQLocalizedFormat(@"Restores Documents and Library from “%@”.", name),
+                             WQLocalizedNullable(@"Restore"), YES, ^{
+        NSString *dstContainer = self->_app.container;
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            NSString *err = nil;
+            BOOL ok = YES;
+            for (NSString *part in @[@"Documents", @"Library"]) {
+                NSString *srcPart = [snapPath stringByAppendingPathComponent:part];
+                NSString *dstPart = [dstContainer stringByAppendingPathComponent:part];
+                struct stat st;
+                if (wq_stat(srcPart, &st) && S_ISDIR(st.st_mode)) {
+                    wq_delete_tree(dstPart, nil);
+                    if (!wq_copy_tree_new(srcPart, dstPart, nil, &err)) {
+                        ok = NO;
+                        break;
+                    }
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WQAppDetailViewController *me = weakSelf;
+                if (!me) return;
+                wq_alert(me, ok ? WQLocalized(@"Snapshot Restored") : WQLocalized(@"Restore Failed"), ok ? name : err);
+            });
+        });
+    });
 }
 
 - (void)loadLazyMetadata
@@ -2691,7 +2854,6 @@ NSString *wq_recover_interrupted_restore(void)
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
         if (cancel.isCancelled) return;
-        // 1. Read app version from container metadata or Preferences plist if available.
         NSString *ver = nil;
         if (app.bundleID.length) {
             NSString *prefsPlist = [[app.container stringByAppendingPathComponent:@"Library/Preferences"]
@@ -2710,8 +2872,8 @@ NSString *wq_recover_interrupted_restore(void)
                 : app.installState == WQInstallOffloaded ? WQLocalized(@"Offloaded")
                 : WQLocalized(@"Unknown");
         }
-        // 2. Measure Library/Caches + tmp on efficiency core (cancellable).
         NSString *cacheStr = WQLocalized(@"Unavailable");
+        unsigned long long totalCache = 0;
         if (app.hasAccess && !cancel.isCancelled) {
             unsigned long long cBytes = 0, tBytes = 0;
             BOOL cOk = NO, tOk = NO;
@@ -2720,7 +2882,8 @@ NSString *wq_recover_interrupted_restore(void)
                 wq_dir_size_cancellable([app.container stringByAppendingPathComponent:@"tmp"], cancel, &tBytes, &tOk);
             }
             if (!cancel.isCancelled) {
-                cacheStr = wq_size_text(cBytes + tBytes);
+                totalCache = cBytes + tBytes;
+                cacheStr = wq_size_text(totalCache);
             }
         }
         if (cancel.isCancelled) return;
@@ -2729,26 +2892,56 @@ NSString *wq_recover_interrupted_restore(void)
             if (!me || cancel.isCancelled) return;
             me->_versionText = ver;
             me->_cacheSizeText = cacheStr;
+            me->_cacheBytes = totalCache;
             me->_versionValueLabel.text = ver;
             me->_cacheValueLabel.text = cacheStr;
+            me->_cacheRatioBar.progress = (me->_app.sizeKnown && me->_app.bytes > 0 && totalCache > 0)
+                ? (float)MIN(1.0, (double)totalCache / (double)me->_app.bytes)
+                : 0.0f;
         });
     });
 }
 
-- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 1; }
+- (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 2; }
 
-- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger __unused)section
+- (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return (NSInteger)_actions.count;
+    if (section == 0) return (NSInteger)_actions.count;
+    return MAX(1, (NSInteger)_snapshots.count);
 }
 
-- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger __unused)section
+- (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
-    return WQLocalized(@"Actions");
+    if (section == 0) return WQLocalized(@"Actions");
+    return WQLocalizedFormat(@"Versioned App Data Snapshots (%lu)", (unsigned long)_snapshots.count);
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    if (indexPath.section == 1) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"app-snap"]
+            ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"app-snap"];
+        UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
+        if (!_snapshots.count) {
+            c.text = WQLocalized(@"No Snapshots Yet");
+            c.secondaryText = WQLocalized(@"Tap Save Named Snapshot… above to checkpoint this app's data.");
+            c.textProperties.color = wq_theme_secondary_text();
+            cell.contentConfiguration = c;
+            cell.accessoryType = UITableViewCellAccessoryNone;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            return cell;
+        }
+        NSDictionary *snap = _snapshots[(NSUInteger)indexPath.row];
+        c.text = snap[@"name"];
+        c.secondaryText = [NSDateFormatter localizedStringFromDate:snap[@"date"] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle];
+        c.image = [UIImage systemImageNamed:@"camera.aperture"];
+        c.imageProperties.tintColor = wq_theme_aurora_teal();
+        cell.contentConfiguration = c;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+        return cell;
+    }
+
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"app-act"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"app-act"];
     NSDictionary *act = _actions[(NSUInteger)indexPath.row];
@@ -2763,10 +2956,30 @@ NSString *wq_recover_interrupted_restore(void)
     return cell;
 }
 
+- (UISwipeActionsConfiguration *)tableView:(UITableView *__unused)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (indexPath.section != 1 || !_snapshots.count) return nil;
+    NSDictionary *snap = _snapshots[(NSUInteger)indexPath.row];
+    __weak typeof(self) weakSelf = self;
+    UIContextualAction *del = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
+                                                                      title:WQLocalizedNullable(@"Delete")
+                                                                    handler:^(UIContextualAction *__unused a, UIView *__unused s, void (^done)(BOOL)) {
+        [NSFileManager.defaultManager removeItemAtPath:snap[@"path"] error:nil];
+        [weakSelf reloadSnapshotsList];
+        [weakSelf.tableView reloadData];
+        done(YES);
+    }];
+    return [UISwipeActionsConfiguration configurationWithActions:@[del]];
+}
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     wq_haptic_selection();
+    if (indexPath.section == 1) {
+        if (_snapshots.count) [self restoreSnapshot:_snapshots[(NSUInteger)indexPath.row]];
+        return;
+    }
     NSDictionary *act = _actions[(NSUInteger)indexPath.row];
     NSString *aid = act[@"id"];
     WQAppsViewController *owner = _owner;
@@ -2776,6 +2989,14 @@ NSString *wq_recover_interrupted_restore(void)
         [self rebuildActions];
         [self.tableView reloadData];
         [owner resortApps];
+    } else if ([aid isEqualToString:@"edit_prefs"]) {
+        [self editAppPreferences];
+    } else if ([aid isEqualToString:@"transfer_usb"]) {
+        wq_present_windows_transfer(self, _app.container, _app.name);
+    } else if ([aid isEqualToString:@"save_snapshot"]) {
+        [self saveNamedSnapshot];
+    } else if ([aid isEqualToString:@"clear_cache"]) {
+        [self clearThisAppCache];
     } else if ([aid isEqualToString:@"backup"]) {
         [self.navigationController popViewControllerAnimated:YES];
         [owner backUp:_app then:nil];
@@ -2793,8 +3014,6 @@ NSString *wq_recover_interrupted_restore(void)
         }
     } else if ([aid isEqualToString:@"open_data"]) {
         [self.navigationController pushViewController:[[WQDirViewController alloc] initWithPath:_app.container title:_app.name] animated:YES];
-    } else if ([aid isEqualToString:@"open_prefs"]) {
-        [self openPreferencesShortcut];
     } else if ([aid isEqualToString:@"copy_bid"]) {
         UIPasteboard.generalPasteboard.string = _app.bundleID;
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
