@@ -6362,7 +6362,7 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     _modules = @[
         @{ @"id": @"browser", @"title": WQLocalized(@"IDM Browser & Media Grabber"), @"sub": WQLocalized(@"1DM/IDM ad-blocking browser, HLS Quality Picker & page link grabber"), @"sym": @"safari.fill" },
         @{ @"id": @"downloads", @"title": WQLocalized(@"Download Manager (Multi-Part)"), @"sub": WQLocalized(@"IDM 2–16 part parallel downloads, pause/resume, HLS & format converter"), @"sym": @"tray.and.arrow.down.fill" },
-        @{ @"id": @"wintransfer", @"title": WQLocalized(@"iPhone ↔ Windows Transfer"), @"sub": WQLocalized(@"Auto-discovered Wi-Fi transfer with WQGlass Transfer Windows app & browser"), @"sym": @"laptopcomputer.and.iphone" },
+        @{ @"id": @"wintransfer", @"title": WQLocalized(@"LAN Transfer (PC & Android)"), @"sub": WQLocalized(@"Symmetric Wi-Fi transfer with Windows, Android & iPhone (Host + Client)"), @"sym": @"laptopcomputer.and.iphone" },
         @{ @"id": @"smap", @"title": WQLocalized(@"Storage Analyzer"), @"sub": WQLocalized(@"DaisyDisk-style visual category breakdown & largest folders"), @"sym": @"chart.pie.fill" },
         @{ @"id": @"crypto", @"title": WQLocalized(@"Portable File Locker (.wqenc)"), @"sub": WQLocalized(@"Password-encrypt & decrypt shareable AES-256 + HMAC files"), @"sym": @"lock.doc.fill" },
         @{ @"id": @"vault", @"title": WQLocalized(@"Private Encrypted Vault"), @"sub": WQLocalized(@"Face ID / Touch ID AES-256-CBC + HMAC protected files & notes"), @"sym": @"lock.shield.fill" },

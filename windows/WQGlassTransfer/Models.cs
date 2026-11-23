@@ -11,7 +11,13 @@ public sealed class DiscoveredPhone
     public string Version { get; set; } = "";
 
     [JsonPropertyName("device")]
-    public string Device { get; set; } = "iPhone";
+    public string Device { get; set; } = "Device";
+
+    [JsonPropertyName("platform")]
+    public string Platform { get; set; } = "";
+
+    [JsonPropertyName("osVersion")]
+    public string OsVersion { get; set; } = "";
 
     [JsonPropertyName("ip")]
     public string Ip { get; set; } = "";
@@ -29,13 +35,35 @@ public sealed class DiscoveredPhone
     public string Endpoint => $"{Ip}:{Port}";
 
     [JsonIgnore]
-    public string DisplayName => $"{Device} ({Ip}:{Port}) · {Root}";
+    public string NormalizedPlatform => (Platform ?? "").Trim().ToLowerInvariant() switch
+    {
+        "android" => "android",
+        "windows" => "windows",
+        _ => "ios"
+    };
+
+    [JsonIgnore]
+    public string PlatformBadge => NormalizedPlatform switch
+    {
+        "android" => "🤖 Android",
+        "windows" => "💻 Windows",
+        _ => "🍎 iOS"
+    };
+
+    [JsonIgnore]
+    public string DisplayName => $"{PlatformBadge} · {Device} ({Ip}:{Port}) · {Root}";
 }
 
 public sealed class PhoneInfo
 {
     [JsonPropertyName("device")]
-    public string Device { get; set; } = "iPhone";
+    public string Device { get; set; } = "Device";
+
+    [JsonPropertyName("platform")]
+    public string Platform { get; set; } = "";
+
+    [JsonPropertyName("osVersion")]
+    public string OsVersion { get; set; } = "";
 
     [JsonPropertyName("ios")]
     public string IosVersion { get; set; } = "";
@@ -48,6 +76,38 @@ public sealed class PhoneInfo
 
     [JsonPropertyName("totalBytes")]
     public long TotalBytes { get; set; }
+
+    [JsonIgnore]
+    public string NormalizedPlatform => (Platform ?? "").Trim().ToLowerInvariant() switch
+    {
+        "android" => "android",
+        "windows" => "windows",
+        _ => "ios"
+    };
+
+    [JsonIgnore]
+    public string PlatformLabel => NormalizedPlatform switch
+    {
+        "android" => "Android",
+        "windows" => "Windows",
+        _ => "iOS"
+    };
+
+    [JsonIgnore]
+    public string PlatformIcon => NormalizedPlatform switch
+    {
+        "android" => "🤖",
+        "windows" => "💻",
+        _ => "🍎"
+    };
+
+    [JsonIgnore]
+    public string EffectiveOsVersion => !string.IsNullOrWhiteSpace(OsVersion) ? OsVersion : IosVersion;
+
+    [JsonIgnore]
+    public string OsSummary => string.IsNullOrWhiteSpace(EffectiveOsVersion)
+        ? PlatformLabel
+        : $"{PlatformLabel} {EffectiveOsVersion}";
 }
 
 public sealed class RemoteListResponse
@@ -103,7 +163,7 @@ public sealed class RemoteFileItem
             ".mp4" or ".mov" or ".m4v" or ".mkv" or ".webm" or ".ts" => "🎬",
             ".mp3" or ".m4a" or ".wav" or ".aac" or ".flac" or ".aiff" => "🎵",
             ".jpg" or ".jpeg" or ".png" or ".heic" or ".gif" or ".webp" => "🖼️",
-            ".zip" or ".rar" or ".7z" or ".tar" or ".gz" or ".ipa" => "📦",
+            ".zip" or ".rar" or ".7z" or ".tar" or ".gz" or ".ipa" or ".apk" or ".exe" => "📦",
             ".pdf" or ".doc" or ".docx" or ".txt" or ".md" => "📄",
             _ => "📄"
         };
@@ -125,4 +185,6 @@ public sealed class SavedConnectionSettings
     public string LastEndpoint { get; set; } = "";
     public string LastPin { get; set; } = "";
     public string DownloadDirectory { get; set; } = "";
+    public string HostSharedDirectory { get; set; } = "";
+    public string HostFixedPin { get; set; } = "";
 }

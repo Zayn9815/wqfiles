@@ -40,7 +40,7 @@ public sealed class TransferClient : IDisposable
         using var req = CreateRequest(HttpMethod.Get, "/api/info");
         using var resp = await _http.SendAsync(req, ct);
         if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            throw new InvalidOperationException("Incorrect PIN. Please check the 4-digit PIN on your iPhone.");
+            throw new InvalidOperationException("Incorrect PIN. Please check the PIN shown on the target device.");
         resp.EnsureSuccessStatusCode();
         string json = await resp.Content.ReadAsStringAsync(ct);
         return JsonSerializer.Deserialize<PhoneInfo>(json) ?? new PhoneInfo();

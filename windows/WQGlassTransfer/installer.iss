@@ -1,5 +1,5 @@
 #define MyAppName "WQGlass Transfer"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "WQ Glass"
 #define MyAppExeName "WQGlassTransfer.exe"
 
@@ -12,6 +12,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=dist
 OutputBaseFilename=WQGlassTransfer-Setup
 Compression=lzma2
@@ -34,4 +35,10 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""WQGlass Transfer TCP"" dir=in action=allow protocol=TCP localport=8765-8780 profile=private program=""{app}\{#MyAppExeName}"""; Flags: runhidden; Check: IsAdminInstallMode
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""WQGlass Transfer UDP"" dir=in action=allow protocol=UDP localport=45888 profile=private program=""{app}\{#MyAppExeName}"""; Flags: runhidden; Check: IsAdminInstallMode
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=""WQGlass Transfer TCP"""; Flags: runhidden; RunOnceId: "RemoveFirewallTCP"; Check: IsAdminInstallMode
+Filename: "netsh.exe"; Parameters: "advfirewall firewall delete rule name=""WQGlass Transfer UDP"""; Flags: runhidden; RunOnceId: "RemoveFirewallUDP"; Check: IsAdminInstallMode

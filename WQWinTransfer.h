@@ -2,8 +2,8 @@
 //  WQWinTransfer.h
 //  WQ Glass
 //
-//  Fast, headache-free iPhone <-> Windows Wi-Fi Transfer Server + UDP Auto-Discovery
-//  for the WQGlass Transfer Windows companion software (and any PC web browser).
+//  Symmetric iPhone <-> Windows <-> Android Wi-Fi LAN Transfer (Host + Client)
+//  with UDP Auto-Discovery (port 45888) and browser fallback.
 //
 
 #import <UIKit/UIKit.h>
