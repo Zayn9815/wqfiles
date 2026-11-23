@@ -34,7 +34,9 @@ static char kWQMediaStreamKey;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         exts = [NSSet setWithArray:@[@"mp3", @"m4a", @"m4b", @"aac", @"wav", @"aif", @"aiff", @"caf", @"flac", @"alac",
-                                     @"mp4", @"m4v", @"mov", @"3gp", @"3g2"]];
+                                     @"ogg", @"opus",
+                                     @"mp4", @"m4v", @"mov", @"3gp", @"3g2",
+                                     @"ts", @"m2ts", @"mts", @"mkv", @"webm", @"avi", @"flv", @"mpg", @"mpeg", @"vob", @"ogv"]];
     });
     return [exts containsObject:name.pathExtension.lowercaseString];
 }

@@ -50,6 +50,7 @@
 #import "WQScanTask.h"
 #import "WQSecurity.h"
 #import "WQMediaStream.h"
+#import "WQMediaDemuxer.h"
 #import "WQProMediaPlayer.h"
 #import "WQSystemMonitor.h"
 #import "WQDocStudio.h"
@@ -767,6 +768,10 @@ static void wq_open_media(UINavigationController *nav, NSString *path, BOOL (^st
                 wq_log(@"media: streaming %@ (%@, %@)", path.lastPathComponent,
                        [WQMediaStream contentTypeForFileName:path.lastPathComponent], wq_size_text(size));
                 [player loadPlayerItem:item];
+            } else if ((wq_media_needs_remux_extension(path) || [path.pathExtension.lowercaseString isEqualToString:@"m3u8"]) &&
+                       [NSFileManager.defaultManager isReadableFileAtPath:path]) {
+                wq_log(@"media: opening universal container %@", path.lastPathComponent);
+                [player replaceWithLocalURL:[NSURL fileURLWithPath:path]];
             } else {
                 playCopy(regular ? @"type can't be streamed" : @"not a regular file or not readable");
             }
@@ -4875,7 +4880,10 @@ typedef NS_ENUM(NSInteger, WQBatchRenameMode) {
                 }]];
             }
             NSSet<NSString *> *imgExts = [NSSet setWithArray:@[@"jpg", @"jpeg", @"png", @"heic", @"heif", @"webp", @"tiff", @"tif"]];
-            NSSet<NSString *> *avExts = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"ts", @"m4a", @"mp3", @"wav", @"aac", @"caf", @"aiff", @"aif", @"flac"]];
+            NSSet<NSString *> *avExts = [NSSet setWithArray:@[
+                @"mp4", @"mov", @"m4v", @"ts", @"m2ts", @"mts", @"mkv", @"webm", @"flv", @"avi", @"3gp", @"mpg", @"mpeg", @"vob", @"ogv",
+                @"m4a", @"mp3", @"wav", @"aac", @"caf", @"aiff", @"aif", @"flac", @"alac", @"ogg", @"opus"
+            ]];
             if ([imgExts containsObject:ext]) {
                 [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Inspect & Optimize Image")
                                                        image:[UIImage systemImageNamed:@"camera.filters"]
@@ -4883,8 +4891,18 @@ typedef NS_ENUM(NSInteger, WQBatchRenameMode) {
                     WQItem *latest = currentItem();
                     if (latest && weakSelf) wq_present_media_tools(weakSelf, latest.path);
                 }]];
-            } else if ([avExts containsObject:ext]) {
-                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Convert Format & Encoding…")
+            } else if ([avExts containsObject:ext] || [ext isEqualToString:@"m3u8"]) {
+                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Play in WQ Pro Player")
+                                                       image:[UIImage systemImageNamed:@"play.circle.fill"]
+                                                  identifier:nil handler:^(UIAction *__unused a) {
+                    WQItem *latest = currentItem();
+                    WQDirViewController *dvc = weakSelf;
+                    if (latest && dvc.navigationController) {
+                        wq_open_media(dvc.navigationController, latest.path, ^BOOL { return weakSelf != nil; });
+                    }
+                }]];
+                if ([avExts containsObject:ext]) {
+                [actions addObject:[UIAction actionWithTitle:WQLocalized(@"Convert / Remux Format…")
                                                        image:[UIImage systemImageNamed:@"arrow.triangle.2.circlepath"]
                                                   identifier:nil handler:^(UIAction *__unused a) {
                     WQItem *latest = currentItem();
@@ -4896,6 +4914,7 @@ typedef NS_ENUM(NSInteger, WQBatchRenameMode) {
                     WQItem *latest = currentItem();
                     if (latest && weakSelf) wq_present_media_tools(weakSelf, latest.path);
                 }]];
+                }
             }
             if ([strongSelf canEditHere] && ([ext isEqualToString:@"plist"] || [ext isEqualToString:@"json"])) {
                 BOOL toJSON = [ext isEqualToString:@"plist"];
@@ -7660,6 +7679,7 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     BOOL _checkingAccess;
     UIButton *_themeSwitcherPill;
     UIStackView *_recentFilesStack;
+    UIStackView *_cinemaShelfStack;
     UILabel *_largestRadarSubtitle;
     UIStackView *_largestRadarRows;
     NSArray<WQHealthCheck *> *_pendingHealthFailure;
@@ -7747,6 +7767,7 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     [self.navigationController setNavigationBarHidden:YES animated:animated];
     [self rebuildFavorites];
     [self rebuildRecentFiles];
+    [self rebuildCinemaShelf];
     [self refreshThemeSwitcherPill];
     [self refreshLargestFilesRadar];
     [self refreshDeviceStorage];
@@ -8010,6 +8031,11 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
     [_contentStack addArrangedSubview:recentHeader];
     [_contentStack setCustomSpacing:10 afterView:recentHeader];
     [_contentStack addArrangedSubview:[self buildRecentFilesRail]];
+
+    UIView *cinemaHeader = insetSection(WQPrismSectionHeaderView(WQLocalizedNullable(@"Videos & Cinema"), nil));
+    [_contentStack addArrangedSubview:cinemaHeader];
+    [_contentStack setCustomSpacing:10 afterView:cinemaHeader];
+    [_contentStack addArrangedSubview:[self buildCinemaShelfRail]];
 
     [self buildSystemSectionWithWrapper:insetSection];
     [_contentStack addArrangedSubview:insetSection([self buildFooter])];
@@ -8701,6 +8727,285 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
         wq_theme_add_spring_tap(button);
         [_recentFilesStack addArrangedSubview:button];
     }
+}
+
+static NSCache<NSString *, UIImage *> *wq_home_cinema_thumb_cache(void)
+{
+    static NSCache<NSString *, UIImage *> *cache;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSCache new];
+        cache.countLimit = 48;
+    });
+    return cache;
+}
+
+static NSString *wq_format_short_duration(double secs)
+{
+    if (!isfinite(secs) || secs <= 0.5) return @"";
+    long total = (long)llround(secs);
+    long h = total / 3600;
+    long m = (total % 3600) / 60;
+    long s = total % 60;
+    return h > 0 ? [NSString stringWithFormat:@"%ld:%02ld:%02ld", h, m, s]
+                 : [NSString stringWithFormat:@"%ld:%02ld", m, s];
+}
+
+- (UIView *)buildCinemaShelfRail
+{
+    UIScrollView *rail = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    rail.translatesAutoresizingMaskIntoConstraints = NO;
+    rail.showsHorizontalScrollIndicator = NO;
+    rail.contentInset = UIEdgeInsetsMake(0, 16, 0, 16);
+    wq_motion_attach_horizontal_detents(rail, 178.0);
+
+    _cinemaShelfStack = [[UIStackView alloc] initWithFrame:CGRectZero];
+    _cinemaShelfStack.translatesAutoresizingMaskIntoConstraints = NO;
+    _cinemaShelfStack.axis = UILayoutConstraintAxisHorizontal;
+    _cinemaShelfStack.spacing = 12;
+    [rail addSubview:_cinemaShelfStack];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [rail.heightAnchor constraintEqualToConstant:152],
+        [_cinemaShelfStack.topAnchor constraintEqualToAnchor:rail.contentLayoutGuide.topAnchor],
+        [_cinemaShelfStack.bottomAnchor constraintEqualToAnchor:rail.contentLayoutGuide.bottomAnchor],
+        [_cinemaShelfStack.leadingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.leadingAnchor],
+        [_cinemaShelfStack.trailingAnchor constraintEqualToAnchor:rail.contentLayoutGuide.trailingAnchor],
+        [_cinemaShelfStack.heightAnchor constraintEqualToAnchor:rail.frameLayoutGuide.heightAnchor],
+    ]];
+    return rail;
+}
+
+- (void)rebuildCinemaShelf
+{
+    if (!_cinemaShelfStack) return;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        static NSSet<NSString *> *videoExts;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{
+            videoExts = [NSSet setWithArray:@[
+                @"mp4", @"m4v", @"mov", @"ts", @"m2ts", @"mts", @"mkv", @"webm", @"avi", @"flv", @"mpg", @"mpeg", @"vob", @"ogv"
+            ]];
+        });
+
+        NSMutableArray<NSDictionary *> *candidates = [NSMutableArray new];
+        NSMutableSet<NSString *> *seen = [NSMutableSet new];
+        NSFileManager *fm = NSFileManager.defaultManager;
+
+        void (^considerPath)(NSString *) = ^(NSString *p) {
+            if (!p.length) return;
+            NSString *std = p.stringByStandardizingPath;
+            if ([seen containsObject:std]) return;
+            if (![videoExts containsObject:std.pathExtension.lowercaseString]) return;
+            NSDictionary *attrs = [fm attributesOfItemAtPath:std error:nil];
+            if (![attrs.fileType isEqualToString:NSFileTypeRegular]) return;
+            [seen addObject:std];
+            NSDate *mod = attrs.fileModificationDate ?: NSDate.distantPast;
+            [candidates addObject:@{ @"path": std, @"date": mod }];
+        };
+
+        for (NSString *rp in wq_recent_files_list()) considerPath(rp);
+
+        NSString *dlRoot = wq_downloads_root_dir();
+        NSString *dlVideos = [dlRoot stringByAppendingPathComponent:@"Videos"];
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        for (NSString *dir in @[dlVideos, dlRoot, docs ?: @""]) {
+            if (!dir.length) continue;
+            NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:dir error:nil];
+            for (NSString *n in names) {
+                considerPath([dir stringByAppendingPathComponent:n]);
+            }
+        }
+
+        [candidates sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            return [b[@"date"] compare:a[@"date"]];
+        }];
+        if (candidates.count > 12) {
+            [candidates removeObjectsInRange:NSMakeRange(12, candidates.count - 12)];
+        }
+
+        NSMutableArray<NSDictionary *> *items = [NSMutableArray new];
+        for (NSDictionary *c in candidates) {
+            NSString *path = c[@"path"];
+            WQMediaProbeInfo *probe = wq_media_probe_file(path);
+            double dur = probe ? probe.durationSeconds : 0.0;
+            double frac = wq_playback_progress_for_path(path);
+            [items addObject:@{
+                @"path": path,
+                @"title": path.lastPathComponent ?: path,
+                @"ext": path.pathExtension.uppercaseString ?: @"VIDEO",
+                @"dur": @(dur),
+                @"frac": @(frac),
+            }];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            WQPrismHomeViewController *me = weakSelf;
+            if (!me || !me->_cinemaShelfStack) return;
+            for (UIView *v in me->_cinemaShelfStack.arrangedSubviews) {
+                [me->_cinemaShelfStack removeArrangedSubview:v];
+                [v removeFromSuperview];
+            }
+            if (!items.count) {
+                WQPrismGlassView *emptyCard = [[WQPrismGlassView alloc] initWithRadius:18];
+                emptyCard.translatesAutoresizingMaskIntoConstraints = NO;
+                [emptyCard.widthAnchor constraintEqualToConstant:280].active = YES;
+                UIButtonConfiguration *cfg = [UIButtonConfiguration plainButtonConfiguration];
+                cfg.image = [UIImage systemImageNamed:@"film.stack.fill"];
+                cfg.imagePadding = 10;
+                cfg.title = WQLocalized(@"Videos & Cinema Shelf");
+                cfg.subtitle = WQLocalized(@"Download or open videos to see thumbnails & resume progress here.");
+                cfg.baseForegroundColor = wq_theme_primary_text();
+                UIButton *btn = [UIButton buttonWithConfiguration:cfg primaryAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+                    [me.navigationController pushViewController:[[WQDownloadBrowserViewController alloc] initWithInitialURL:nil] animated:YES];
+                }]];
+                btn.translatesAutoresizingMaskIntoConstraints = NO;
+                btn.tintColor = wq_theme_aurora_teal();
+                [emptyCard.contentView addSubview:btn];
+                [NSLayoutConstraint activateConstraints:@[
+                    [btn.topAnchor constraintEqualToAnchor:emptyCard.contentView.topAnchor constant:8],
+                    [btn.bottomAnchor constraintEqualToAnchor:emptyCard.contentView.bottomAnchor constant:-8],
+                    [btn.leadingAnchor constraintEqualToAnchor:emptyCard.contentView.leadingAnchor constant:12],
+                    [btn.trailingAnchor constraintEqualToAnchor:emptyCard.contentView.trailingAnchor constant:-12],
+                ]];
+                [me->_cinemaShelfStack addArrangedSubview:emptyCard];
+                return;
+            }
+
+            NSCache *thumbCache = wq_home_cinema_thumb_cache();
+            for (NSDictionary *item in items) {
+                NSString *path = item[@"path"];
+                NSString *title = item[@"title"];
+                NSString *ext = item[@"ext"];
+                double dur = [item[@"dur"] doubleValue];
+                double frac = [item[@"frac"] doubleValue];
+
+                WQPrismGlassView *card = [[WQPrismGlassView alloc] initWithRadius:18];
+                card.translatesAutoresizingMaskIntoConstraints = NO;
+                [card.widthAnchor constraintEqualToConstant:172].active = YES;
+
+                UIImageView *thumbView = [UIImageView new];
+                thumbView.translatesAutoresizingMaskIntoConstraints = NO;
+                thumbView.contentMode = UIViewContentModeScaleAspectFill;
+                thumbView.clipsToBounds = YES;
+                thumbView.layer.cornerRadius = 12;
+                thumbView.backgroundColor = [wq_theme_canvas_bottom() colorWithAlphaComponent:0.85];
+                thumbView.image = [thumbCache objectForKey:path] ?: [UIImage systemImageNamed:@"film.fill"];
+                thumbView.tintColor = wq_theme_aurora_teal();
+                if (![thumbCache objectForKey:path]) {
+                    thumbView.contentMode = UIViewContentModeCenter;
+                }
+
+                UILabel *extBadge = [UILabel new];
+                extBadge.translatesAutoresizingMaskIntoConstraints = NO;
+                extBadge.text = [NSString stringWithFormat:@" %@ ", ext];
+                extBadge.font = [UIFont monospacedSystemFontOfSize:9.5 weight:UIFontWeightBold];
+                extBadge.textColor = UIColor.whiteColor;
+                extBadge.backgroundColor = [UIColor colorWithWhite:0 alpha:0.62];
+                extBadge.layer.cornerRadius = 5;
+                extBadge.clipsToBounds = YES;
+
+                UILabel *durBadge = [UILabel new];
+                durBadge.translatesAutoresizingMaskIntoConstraints = NO;
+                NSString *durText = wq_format_short_duration(dur);
+                durBadge.text = durText.length ? [NSString stringWithFormat:@" %@ ", durText] : @"";
+                durBadge.hidden = !durText.length;
+                durBadge.font = [UIFont monospacedDigitSystemFontOfSize:10 weight:UIFontWeightBold];
+                durBadge.textColor = UIColor.whiteColor;
+                durBadge.backgroundColor = [UIColor colorWithWhite:0 alpha:0.68];
+                durBadge.layer.cornerRadius = 5;
+                durBadge.clipsToBounds = YES;
+
+                UIProgressView *prog = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
+                prog.translatesAutoresizingMaskIntoConstraints = NO;
+                prog.progress = (float)MAX(0.0, MIN(1.0, frac));
+                prog.hidden = (frac <= 0.01);
+                prog.progressTintColor = wq_theme_aurora_teal();
+                prog.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.25];
+
+                UILabel *titleLbl = [UILabel new];
+                titleLbl.translatesAutoresizingMaskIntoConstraints = NO;
+                titleLbl.text = title;
+                titleLbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+                titleLbl.textColor = wq_theme_primary_text();
+                titleLbl.lineBreakMode = NSLineBreakByTruncatingMiddle;
+
+                [thumbView addSubview:extBadge];
+                [thumbView addSubview:durBadge];
+                [thumbView addSubview:prog];
+                [card.contentView addSubview:thumbView];
+                [card.contentView addSubview:titleLbl];
+
+                [NSLayoutConstraint activateConstraints:@[
+                    [thumbView.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:8],
+                    [thumbView.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:8],
+                    [thumbView.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-8],
+                    [thumbView.heightAnchor constraintEqualToConstant:102],
+
+                    [extBadge.topAnchor constraintEqualToAnchor:thumbView.topAnchor constant:6],
+                    [extBadge.leadingAnchor constraintEqualToAnchor:thumbView.leadingAnchor constant:6],
+
+                    [durBadge.bottomAnchor constraintEqualToAnchor:thumbView.bottomAnchor constant:-7],
+                    [durBadge.trailingAnchor constraintEqualToAnchor:thumbView.trailingAnchor constant:-6],
+
+                    [prog.leadingAnchor constraintEqualToAnchor:thumbView.leadingAnchor],
+                    [prog.trailingAnchor constraintEqualToAnchor:thumbView.trailingAnchor],
+                    [prog.bottomAnchor constraintEqualToAnchor:thumbView.bottomAnchor],
+                    [prog.heightAnchor constraintEqualToConstant:3],
+
+                    [titleLbl.topAnchor constraintEqualToAnchor:thumbView.bottomAnchor constant:7],
+                    [titleLbl.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:10],
+                    [titleLbl.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-10],
+                    [titleLbl.bottomAnchor constraintLessThanOrEqualToAnchor:card.contentView.bottomAnchor constant:-8],
+                ]];
+
+                UIButton *hitBtn = [UIButton buttonWithType:UIButtonTypeCustom];
+                hitBtn.translatesAutoresizingMaskIntoConstraints = NO;
+                [hitBtn addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+                    wq_haptic_selection();
+                    [WQProMediaPlayerViewController presentPlayerFrom:me title:title localPath:path];
+                }] forControlEvents:UIControlEventTouchUpInside];
+                [card.contentView addSubview:hitBtn];
+                [NSLayoutConstraint activateConstraints:@[
+                    [hitBtn.topAnchor constraintEqualToAnchor:card.contentView.topAnchor],
+                    [hitBtn.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor],
+                    [hitBtn.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor],
+                    [hitBtn.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor],
+                ]];
+                wq_theme_add_spring_tap(card);
+                [me->_cinemaShelfStack addArrangedSubview:card];
+
+                if (![thumbCache objectForKey:path]) {
+                    NSString *thumbPath = path;
+                    if (wq_media_needs_remux_extension(path)) {
+                        NSString *cachedMP4 = wq_media_remux_cache_path_for(path, @"mp4");
+                        thumbPath = [NSFileManager.defaultManager fileExistsAtPath:cachedMP4] ? cachedMP4 : nil;
+                    }
+                    if (thumbPath.length) {
+                        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:thumbPath] options:nil];
+                        AVAssetImageGenerator *gen = [[AVAssetImageGenerator alloc] initWithAsset:asset];
+                        gen.appliesPreferredTrackTransform = YES;
+                        gen.maximumSize = CGSizeMake(340, 210);
+                        CMTime sampleTime = CMTimeMakeWithSeconds(MIN(3.0, MAX(0.5, dur * 0.15)), 600);
+                        __weak UIImageView *weakThumb = thumbView;
+                        [gen generateCGImagesAsynchronouslyForTimes:@[[NSValue valueWithCMTime:sampleTime]]
+                                                  completionHandler:^(CMTime __unused rt, CGImageRef cg, CMTime __unused at, AVAssetImageGeneratorResult res, NSError *__unused err) {
+                            if (res != AVAssetImageGeneratorSucceeded || !cg) return;
+                            UIImage *uiImg = [UIImage imageWithCGImage:cg];
+                            [thumbCache setObject:uiImg forKey:path];
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                UIImageView *tv = weakThumb;
+                                if (!tv) return;
+                                tv.contentMode = UIViewContentModeScaleAspectFill;
+                                tv.image = uiImg;
+                            });
+                        }];
+                    }
+                }
+            }
+        });
+    });
 }
 
 - (void)buildSystemSectionWithWrapper:(UIView *(^)(UIView *))wrap

@@ -161,27 +161,6 @@ static const WQThemeSpec kSpecDesertSandDark = {
     .plainCell     = 0x2B1D12, .plainCellAlpha = 0.50,
 };
 
-static const WQThemeSpec kSpecDesertSandLight = {
-    .canvasTop     = 0xFAF3E7,
-    .canvasMid     = 0xF2E4CE,
-    .canvasCyan    = 0xE8D4B7,
-    .canvasEdge    = 0xEFE0C8,
-    .glassTint     = 0xFBF5EA, .glassAlpha = 0.72,
-    .rim           = 0xB87424, .rimAlpha = 0.26,
-    .rimTeal       = 0xC2592B, .rimTealAlpha = 0.24,
-    .primaryText   = 0x24170D,
-    .secondaryText = 0x6E513A,
-    .detailText    = 0x4A3423,
-    .hairline      = 0x8F6844, .hairlineAlpha = 0.20,
-    .ctaText       = 0xFFF9F0,
-    .activePill    = 0xB87424,
-    .accent        = 0xB87424,
-    .auroraTeal    = 0xC2592B,
-    .solidSurface  = 0xF4E8D6,
-    .sheen         = 0xFFFFFF, .sheenAlpha = 0.28,
-    .plainCell     = 0xF8EFE1, .plainCellAlpha = 0.68,
-};
-
 static const WQThemeSpec kSpecClassicNative = {
     .canvasTop     = 0x000000,
     .canvasMid     = 0x0E0E10,
@@ -269,29 +248,21 @@ NSString *wq_theme_selected_ui_style_id(void)
     return gCachedUIStyleID;
 }
 
-static const WQThemeSpec *wq_active_spec_for_style(UIUserInterfaceStyle style)
+static const WQThemeSpec *wq_active_spec_for_style(UIUserInterfaceStyle __unused style)
 {
     NSString *tid = wq_theme_selected_id();
     if ([tid isEqualToString:kWQThemeIDGlacierGlass]) return &kSpecGlacierGlass;
     if ([tid isEqualToString:kWQThemeIDCrimsonGlass]) return &kSpecCrimsonGlass;
     if ([tid isEqualToString:kWQThemeIDAnodizedObsidian]) return &kSpecAnodizedObsidian;
-    if ([tid isEqualToString:kWQThemeIDDesertSand]) {
-        return style == UIUserInterfaceStyleLight ? &kSpecDesertSandLight : &kSpecDesertSandDark;
-    }
+    if ([tid isEqualToString:kWQThemeIDDesertSand]) return &kSpecDesertSandDark;
     if ([tid isEqualToString:kWQThemeIDClassicNative]) return &kSpecClassicNative;
     return &kSpeciPhoneDuo;
 }
 
 static UIColor *wq_dynamic_color(uint32_t (^rgbBlock)(const WQThemeSpec *s), CGFloat (^alphaBlock)(const WQThemeSpec *s))
 {
-    if (!wq_theme_is_desert_sand()) {
-        const WQThemeSpec *s = wq_active_spec_for_style(UIUserInterfaceStyleDark);
-        return wq_rgb(rgbBlock(s), alphaBlock ? alphaBlock(s) : 1.0);
-    }
-    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *tc) {
-        const WQThemeSpec *s = wq_active_spec_for_style(tc.userInterfaceStyle);
-        return wq_rgb(rgbBlock(s), alphaBlock ? alphaBlock(s) : 1.0);
-    }];
+    const WQThemeSpec *s = wq_active_spec_for_style(UIUserInterfaceStyleDark);
+    return wq_rgb(rgbBlock(s), alphaBlock ? alphaBlock(s) : 1.0);
 }
 
 NSArray<WQThemeDescriptor *> *wq_theme_all_themes(void)
@@ -318,7 +289,7 @@ NSArray<WQThemeDescriptor *> *wq_theme_all_themes(void)
                                              spec:kSpecAnodizedObsidian],
             [[WQThemeDescriptor alloc] initWithID:kWQThemeIDDesertSand
                                             title:@"Sahara Sand"
-                                         subtitle:@"Warm desert dunes, terracotta gold accents & sunlit frosted glass"
+                                         subtitle:@"Desert dusk dunes · Terracotta Gold frosted glass"
                                              spec:kSpecDesertSandDark],
             [[WQThemeDescriptor alloc] initWithID:kWQThemeIDClassicNative
                                             title:@"Classic Stock"
@@ -399,9 +370,7 @@ static UIColor *wq_theme_plain_cell(void)  { return wq_dynamic_color(^uint32_t(c
 
 static void wq_theme_configure_nav_appearances(UINavigationBarAppearance **stdOut, UINavigationBarAppearance **edgeOut)
 {
-    UIBlurEffectStyle blurStyle = wq_theme_is_desert_sand()
-        ? UIBlurEffectStyleSystemChromeMaterial
-        : UIBlurEffectStyleSystemChromeMaterialDark;
+    UIBlurEffectStyle blurStyle = UIBlurEffectStyleSystemChromeMaterialDark;
 
     UINavigationBarAppearance *navStandard = [UINavigationBarAppearance new];
     [navStandard configureWithOpaqueBackground];
@@ -472,7 +441,7 @@ void wq_theme_apply_live_appearance(void)
     [UINavigationBar appearance].tintColor = wq_theme_primary_text();
 
     if (!NSThread.isMainThread) return;
-    UIUserInterfaceStyle targetStyle = wq_theme_is_desert_sand() ? UIUserInterfaceStyleUnspecified : UIUserInterfaceStyleDark;
+    UIUserInterfaceStyle targetStyle = UIUserInterfaceStyleDark;
     for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
         if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
@@ -945,7 +914,7 @@ void wq_theme_install(void)
 
 void wq_theme_prepare_window(UIWindow *window)
 {
-    window.overrideUserInterfaceStyle = wq_theme_is_desert_sand() ? UIUserInterfaceStyleUnspecified : UIUserInterfaceStyleDark;
+    window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     window.tintColor = wq_theme_accent();
     window.backgroundColor = wq_theme_canvas_edge();
 }

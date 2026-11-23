@@ -1,6 +1,6 @@
 //
 //  WQDownloadManager.h
-//  WQ Glass IDM / 1DM Style Multi-Part Accelerated Download Engine & HLS Quality Picker
+//  WQ Glass IDM / 1DM Style Multi-Part Accelerated Download Engine & Glass Card Dashboard
 //  GPL-3.0-or-later.
 //
 
@@ -17,6 +17,7 @@ typedef NS_ENUM(NSInteger, WQDownloadState) {
     WQDownloadStatePaused,
     WQDownloadStateCompleted,
     WQDownloadStateFailed,
+    WQDownloadStateRemuxing,
 };
 
 @interface WQDownloadPart : NSObject
@@ -39,8 +40,11 @@ typedef NS_ENUM(NSInteger, WQDownloadState) {
 @property (nonatomic, copy) NSDictionary<NSString *, NSString *> *headers;
 @property (nonatomic) WQDownloadState state;
 @property (nonatomic) int64_t totalBytes;
+@property (nonatomic) int64_t estimatedTotalBytes;
 @property (nonatomic) int64_t downloadedBytes;
 @property (nonatomic) double bytesPerSec;
+@property (nonatomic) double etaSeconds;
+@property (nonatomic) double avgSecPerSegment;
 @property (nonatomic) NSInteger partCount;
 @property (nonatomic) BOOL supportsRanges;
 @property (nonatomic) BOOL isHLS;
@@ -50,7 +54,9 @@ typedef NS_ENUM(NSInteger, WQDownloadState) {
 @property (nonatomic, copy, nullable) NSString *errorMessage;
 @property (nonatomic) NSTimeInterval createdAt;
 @property (nonatomic, copy) NSArray<WQDownloadPart *> *parts;
+@property (nonatomic, copy) NSArray<NSNumber *> *recentSpeedSamples;
 - (double)progress;
+- (NSString *)formattedETA;
 @end
 
 @interface WQHLSVariant : NSObject
@@ -93,11 +99,14 @@ void wq_present_add_download_sheet(UIViewController *host,
 
 @property (nonatomic, readonly) NSArray<WQDownloadItem *> *items;
 @property (nonatomic, readonly) NSUInteger activeCount;
+@property (nonatomic, readonly) double aggregateSpeedBps;
+@property (nonatomic, readonly) double aggregateETASeconds;
 
 @property (nonatomic) NSInteger defaultPartCount;        // 2, 4, 8, or 16
 @property (nonatomic) NSInteger maxConcurrentDownloads;  // 1, 2, or 3
 @property (nonatomic) NSInteger speedLimitKBps;          // 0 = unlimited, 1024, 2048, 5120
 @property (nonatomic) BOOL wifiOnly;
+@property (nonatomic) BOOL autoRemuxHLS;                 // default YES (.ts -> .mp4 on complete)
 
 - (WQDownloadItem *)enqueueURLString:(NSString *)urlString
                    suggestedFilename:(NSString *_Nullable)filename
@@ -117,6 +126,7 @@ void wq_present_add_download_sheet(UIViewController *host,
 - (void)deleteItem:(WQDownloadItem *)item removeFile:(BOOL)removeFile;
 - (void)pauseAll;
 - (void)resumeAll;
+- (void)retryAllFailed;
 - (void)clearCompleted;
 @end
 

@@ -8,11 +8,12 @@
 
 #import "WQMediaConverter.h"
 #import "WQLocalization.h"
-#import "WQTheme.h"
+#import "WQMediaDemuxer.h"
 #import "WQMotion.h"
+#import "WQProMediaPlayer.h"
+#import "WQTheme.h"
 #import "WQUI.h"
 #import <AVFoundation/AVFoundation.h>
-#import <AVKit/AVKit.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <CoreMedia/CoreMedia.h>
 #import <stdatomic.h>
@@ -83,8 +84,8 @@ BOOL wq_is_convertible_media_path(NSString *path)
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         sMediaExts = [NSSet setWithArray:@[
-            @"mp4", @"mov", @"m4v", @"ts", @"3gp",
-            @"mp3", @"m4a", @"aac", @"wav", @"aiff", @"aif", @"caf", @"flac"
+            @"mp4", @"mov", @"m4v", @"ts", @"m2ts", @"mts", @"mkv", @"webm", @"flv", @"avi", @"3gp", @"mpg", @"mpeg", @"ogv",
+            @"mp3", @"m4a", @"aac", @"wav", @"aiff", @"aif", @"caf", @"flac", @"ogg", @"opus"
         ]];
     });
     return [sMediaExts containsObject:ext];
@@ -93,6 +94,7 @@ BOOL wq_is_convertible_media_path(NSString *path)
 typedef NS_ENUM(NSInteger, WQConvMode) {
     WQConvModeVideo = 0,
     WQConvModeAudio = 1,
+    WQConvModeRemux = 2,
 };
 
 typedef NS_ENUM(NSInteger, WQConvVideoContainer) {
@@ -132,8 +134,10 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
     NSString *_filePath;
     BOOL _sourceHasVideo;
     BOOL _sourceHasAudio;
+    BOOL _needsDemux;
     CGSize _sourceVideoSize;
     double _sourceDuration;
+    NSTimeInterval _convertStartTime;
     NSString *_sourceSummary;
 
     WQConvMode _mode;
@@ -162,7 +166,8 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
 {
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
         _filePath = [filePath copy];
-        _mode = WQConvModeVideo;
+        _needsDemux = wq_media_needs_remux_extension(filePath);
+        _mode = _needsDemux ? WQConvModeRemux : WQConvModeVideo;
         _videoContainer = WQConvVideoContainerMP4;
         _videoCodec = WQConvVideoCodecH264;
         _videoRes = WQConvVideoResOriginal;
@@ -272,7 +277,12 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
         double durSec = CMTIME_IS_NUMERIC(dur) ? CMTimeGetSeconds(dur) : 0.0;
         CGSize vSize = CGSizeZero;
         NSString *vCodec = nil;
-        if (vTracks.count > 0) {
+        NSString *aCodec = nil;
+        BOOL hasV = (vTracks.count > 0);
+        BOOL hasA = (aTracks.count > 0);
+        BOOL needsDemux = wq_media_needs_remux_extension(path) || (!hasV && !hasA);
+
+        if (hasV) {
             AVAssetTrack *vt = vTracks.firstObject;
             CGSize nat = vt.naturalSize;
             CGAffineTransform tx = vt.preferredTransform;
@@ -283,16 +293,28 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
                 vCodec = wq_conv_fourcc_string(CMFormatDescriptionGetMediaSubType(fd));
             }
         }
-        NSString *aCodec = nil;
-        if (aTracks.count > 0) {
+        if (hasA) {
             AVAssetTrack *at = aTracks.firstObject;
             if (at.formatDescriptions.count > 0) {
                 CMFormatDescriptionRef fd = (__bridge CMFormatDescriptionRef)at.formatDescriptions.firstObject;
                 aCodec = wq_conv_fourcc_string(CMFormatDescriptionGetMediaSubType(fd));
             }
         }
+
+        WQMediaProbeInfo *probe = (needsDemux || (!hasV && !hasA)) ? wq_media_probe_file(path) : nil;
+        if (probe) {
+            if (!hasV && probe.hasVideo) hasV = YES;
+            if (!hasA && probe.hasAudio) hasA = YES;
+            if (probe.durationSeconds > 0.0 && durSec <= 0.0) durSec = probe.durationSeconds;
+            if (vSize.width <= 0 && probe.width > 0 && probe.height > 0) vSize = CGSizeMake((CGFloat)probe.width, (CGFloat)probe.height);
+            if (!vCodec.length && probe.videoCodec.length) vCodec = probe.videoCodec;
+            if (!aCodec.length && probe.audioCodec.length) aCodec = probe.audioCodec;
+            if (probe.needsRemuxForAVFoundation) needsDemux = YES;
+        }
+
         unsigned long long sz = wq_conv_file_size(path);
         NSMutableArray<NSString *> *parts = [NSMutableArray new];
+        if (probe.containerFormat.length && needsDemux) [parts addObject:probe.containerFormat];
         [parts addObject:wq_size_text(sz)];
         if (durSec > 0) [parts addObject:wq_conv_duration_text(durSec)];
         if (vSize.width > 0 && vSize.height > 0) {
@@ -305,13 +327,16 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) me = weakSelf;
             if (!me) return;
-            me->_sourceHasVideo = (vTracks.count > 0);
-            me->_sourceHasAudio = (aTracks.count > 0);
+            me->_sourceHasVideo = hasV;
+            me->_sourceHasAudio = hasA;
+            me->_needsDemux = needsDemux;
             me->_sourceVideoSize = vSize;
             me->_sourceDuration = durSec;
             me->_sourceSummary = summary;
             if (!me->_sourceHasVideo) {
                 me->_mode = WQConvModeAudio;
+            } else if (needsDemux && me->_mode == WQConvModeVideo) {
+                me->_mode = WQConvModeRemux;
             }
             [me.tableView reloadData];
         });
@@ -514,8 +539,31 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
     };
 }
 
+- (NSString *)progressStatusWithAction:(NSString *)action fraction:(float)pct
+{
+    double elapsed = CFAbsoluteTimeGetCurrent() - _convertStartTime;
+    int intPct = (int)lroundf(MIN(99.0f, MAX(0.0f, pct * 100.0f)));
+    if (elapsed > 0.6 && pct > 0.03f) {
+        double totalEst = elapsed / (double)pct;
+        double rem = MAX(0.0, totalEst - elapsed);
+        NSString *eta = (rem >= 60.0)
+            ? [NSString stringWithFormat:@"%ldm %lds", (long)floor(rem / 60.0), (long)lround(fmod(rem, 60.0))]
+            : [NSString stringWithFormat:@"%lds", (long)llround(rem)];
+        if (_sourceDuration > 0.0 && pct > 0.05f) {
+            double speed = (_sourceDuration * (double)pct) / elapsed;
+            return [NSString stringWithFormat:@"%@ %d%% · %.1f× · ~%@ %@", action, intPct, speed, eta, WQLocalized(@"left")];
+        }
+        return [NSString stringWithFormat:@"%@ %d%% · ~%@ %@", action, intPct, eta, WQLocalized(@"left")];
+    }
+    return [NSString stringWithFormat:@"%@ %d%%", action, intPct];
+}
+
 - (void)startConversion
 {
+    if ((_mode == WQConvModeVideo || _mode == WQConvModeRemux) && !_sourceHasVideo && !_sourceHasAudio) {
+        wq_alert(self, WQLocalized(@"Unsupported Source"), WQLocalized(@"No readable video or audio tracks were detected."));
+        return;
+    }
     if (_mode == WQConvModeVideo && !_sourceHasVideo) {
         wq_alert(self, WQLocalized(@"No Video Track"), WQLocalized(@"This file is audio-only. Switch to Audio mode to convert it."));
         return;
@@ -526,9 +574,10 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
     }
 
     _converting = YES;
+    _convertStartTime = CFAbsoluteTimeGetCurrent();
     atomic_store(&_cancelFlag, false);
     _progressView.progress = 0.0f;
-    _progressLabel.text = WQLocalized(@"Preparing encoder…");
+    _progressLabel.text = WQLocalized(@"Preparing converter…");
     _actionButton.backgroundColor = UIColor.systemRedColor;
     [_actionButton setTitle:WQLocalized(@"Cancel Conversion") forState:UIControlStateNormal];
 
@@ -539,14 +588,19 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
         srcDir = [[docs stringByAppendingPathComponent:@"Downloads"] stringByAppendingPathComponent:@"Converted"];
     }
     NSString *stem = srcPath.lastPathComponent.stringByDeletingPathExtension;
-    NSString *suffix = (_mode == WQConvModeVideo)
-        ? [NSString stringWithFormat:@"_%@", (_videoCodec == WQConvVideoCodecHEVC ? @"hevc" : @"h264")]
-        : [NSString stringWithFormat:@"_%ldk", (long)_audioBitrateKbps];
-    NSString *ext = (_mode == WQConvModeVideo) ? [self videoContainerExtension] : [self audioExtension];
+    NSString *suffix = (_mode == WQConvModeRemux)
+        ? @"_remux"
+        : ((_mode == WQConvModeVideo)
+            ? [NSString stringWithFormat:@"_%@", (_videoCodec == WQConvVideoCodecHEVC ? @"hevc" : @"h264")]
+            : [NSString stringWithFormat:@"_%ldk", (long)_audioBitrateKbps]);
+    NSString *ext = (_mode == WQConvModeRemux || _mode == WQConvModeVideo) ? [self videoContainerExtension] : [self audioExtension];
     NSString *outPath = wq_conv_unique_path(srcDir, [NSString stringWithFormat:@"%@%@.%@", stem, suffix, ext]);
 
     WQConvMode mode = _mode;
-    AVFileType fileType = (mode == WQConvModeVideo) ? [self videoFileType] : [self audioFileType];
+    AVFileType fileType = (mode == WQConvModeVideo || mode == WQConvModeRemux) ? [self videoFileType] : [self audioFileType];
+    if (mode == WQConvModeRemux && ([fileType isEqualToString:AVFileTypeAppleM4V])) {
+        fileType = AVFileTypeMPEG4;
+    }
     AVVideoCodecType vCodecType = (_videoCodec == WQConvVideoCodecHEVC) ? AVVideoCodecTypeHEVC : AVVideoCodecTypeH264;
     NSDictionary<NSString *, id> *audioSettings = (mode == WQConvModeVideo)
         ? @{
@@ -563,7 +617,30 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
         __strong typeof(weakSelf) me = weakSelf;
         if (!me) return;
 
-        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:srcPath] options:nil];
+        if (mode == WQConvModeRemux) {
+            NSString *remuxErr = nil;
+            BOOL ok = wq_media_remux_file(srcPath, outPath, fileType, ^BOOL{
+                return atomic_load(&me->_cancelFlag);
+            }, ^(float frac) {
+                [me updateProgressUI:frac text:[me progressStatusWithAction:WQLocalized(@"Remuxing…") fraction:frac]];
+            }, &remuxErr);
+            if (atomic_load(&me->_cancelFlag)) {
+                [NSFileManager.defaultManager removeItemAtPath:outPath error:nil];
+                [me finishConversionWithPath:nil errorText:WQLocalized(@"Conversion cancelled.")];
+            } else if (ok) {
+                if (deleteOrig && ![outPath isEqualToString:srcPath]) {
+                    [NSFileManager.defaultManager removeItemAtPath:srcPath error:nil];
+                }
+                [me finishConversionWithPath:outPath errorText:nil];
+            } else {
+                [me finishConversionWithPath:nil errorText:remuxErr ?: WQLocalized(@"Lossless remux failed.")];
+            }
+            return;
+        }
+
+        NSString *workingPath = srcPath;
+        NSString *tempRemuxPath = nil;
+        AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:workingPath] options:nil];
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
         NSArray<AVAssetTrack *> *vTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
@@ -571,14 +648,50 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
         double totalSec = CMTIME_IS_NUMERIC(asset.duration) ? CMTimeGetSeconds(asset.duration) : 0.0;
 #pragma clang diagnostic pop
 
+        if (wq_media_needs_remux_extension(srcPath) || (!vTracks.count && !aTracks.count)) {
+            tempRemuxPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@"wq_remux_%@.mp4", NSUUID.UUID.UUIDString]];
+            NSString *remuxErr = nil;
+            [me updateProgressUI:0.02f text:WQLocalized(@"Preparing container stream…")];
+            BOOL remuxOK = wq_media_remux_file(srcPath, tempRemuxPath, AVFileTypeMPEG4, ^BOOL{
+                return atomic_load(&me->_cancelFlag);
+            }, ^(float frac) {
+                float p = frac * 0.25f;
+                [me updateProgressUI:p text:[me progressStatusWithAction:WQLocalized(@"Demuxing…") fraction:p]];
+            }, &remuxErr);
+            if (atomic_load(&me->_cancelFlag)) {
+                [NSFileManager.defaultManager removeItemAtPath:tempRemuxPath error:nil];
+                [me finishConversionWithPath:nil errorText:WQLocalized(@"Conversion cancelled.")];
+                return;
+            }
+            if (!remuxOK) {
+                [NSFileManager.defaultManager removeItemAtPath:tempRemuxPath error:nil];
+                [me finishConversionWithPath:nil errorText:remuxErr ?: WQLocalized(@"Could not demux source container.")];
+                return;
+            }
+            workingPath = tempRemuxPath;
+            asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:workingPath] options:nil];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            vTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+            aTracks = [asset tracksWithMediaType:AVMediaTypeAudio];
+            totalSec = CMTIME_IS_NUMERIC(asset.duration) ? CMTimeGetSeconds(asset.duration) : me->_sourceDuration;
+#pragma clang diagnostic pop
+        }
+
+        void (^cleanupTemp)(void) = ^{
+            if (tempRemuxPath.length) [NSFileManager.defaultManager removeItemAtPath:tempRemuxPath error:nil];
+        };
+
         NSError *err = nil;
         AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&err];
         if (!reader || err) {
+            cleanupTemp();
             [me finishConversionWithPath:nil errorText:err.localizedDescription ?: WQLocalized(@"Could not open source media.")];
             return;
         }
         AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:[NSURL fileURLWithPath:outPath] fileType:fileType error:&err];
         if (!writer || err) {
+            cleanupTemp();
             [me finishConversionWithPath:nil errorText:err.localizedDescription ?: WQLocalized(@"Could not initialize output writer.")];
             return;
         }
@@ -635,10 +748,12 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
         }
 
         if (![reader startReading]) {
+            cleanupTemp();
             [me finishConversionWithPath:nil errorText:reader.error.localizedDescription ?: WQLocalized(@"Failed to start media reader.")];
             return;
         }
         if (![writer startWriting]) {
+            cleanupTemp();
             [me finishConversionWithPath:nil errorText:writer.error.localizedDescription ?: WQLocalized(@"Failed to start media writer.")];
             return;
         }
@@ -646,6 +761,8 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
 
         dispatch_group_t grp = dispatch_group_create();
         __block double lastReport = 0;
+        float progressBase = tempRemuxPath.length ? 0.25f : 0.0f;
+        float progressSpan = 1.0f - progressBase;
 
         if (videoOut && videoIn) {
             dispatch_group_enter(grp);
@@ -662,10 +779,11 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
                         CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
                         if (totalSec > 0 && CMTIME_IS_NUMERIC(pts)) {
                             double now = CFAbsoluteTimeGetCurrent();
-                            if (now - lastReport >= 0.12) {
+                            if (now - lastReport >= 0.14) {
                                 lastReport = now;
-                                float pct = (float)MIN(0.99, MAX(0.0, CMTimeGetSeconds(pts) / totalSec));
-                                [me updateProgressUI:pct text:WQLocalizedFormat(@"Converting Video… %d%%", (int)lroundf(pct * 100.0f))];
+                                float raw = (float)MIN(0.99, MAX(0.0, CMTimeGetSeconds(pts) / totalSec));
+                                float pct = progressBase + raw * progressSpan;
+                                [me updateProgressUI:pct text:[me progressStatusWithAction:WQLocalized(@"Converting Video…") fraction:pct]];
                             }
                         }
                         if (![videoIn appendSampleBuffer:sb]) {
@@ -700,10 +818,11 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
                             CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
                             if (CMTIME_IS_NUMERIC(pts)) {
                                 double now = CFAbsoluteTimeGetCurrent();
-                                if (now - lastReport >= 0.12) {
+                                if (now - lastReport >= 0.14) {
                                     lastReport = now;
-                                    float pct = (float)MIN(0.99, MAX(0.0, CMTimeGetSeconds(pts) / totalSec));
-                                    [me updateProgressUI:pct text:WQLocalizedFormat(@"Converting Audio… %d%%", (int)lroundf(pct * 100.0f))];
+                                    float raw = (float)MIN(0.99, MAX(0.0, CMTimeGetSeconds(pts) / totalSec));
+                                    float pct = progressBase + raw * progressSpan;
+                                    [me updateProgressUI:pct text:[me progressStatusWithAction:WQLocalized(@"Converting Audio…") fraction:pct]];
                                 }
                             }
                         }
@@ -729,6 +848,7 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
             [reader cancelReading];
             [writer cancelWriting];
             [NSFileManager.defaultManager removeItemAtPath:outPath error:nil];
+            cleanupTemp();
             [me finishConversionWithPath:nil errorText:WQLocalized(@"Conversion cancelled.")];
             return;
         }
@@ -738,6 +858,7 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
             dispatch_semaphore_signal(doneSem);
         }];
         dispatch_semaphore_wait(doneSem, DISPATCH_TIME_FOREVER);
+        cleanupTemp();
 
         if (writer.status == AVAssetWriterStatusCompleted && reader.status != AVAssetReaderStatusFailed) {
             if (deleteOrig && ![outPath isEqualToString:srcPath]) {
@@ -775,10 +896,13 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
 
             UIAlertController *done = wq_alert_controller(WQLocalized(@"Conversion Complete"), WQVerbatim(msg), UIAlertControllerStyleAlert);
             [done addAction:wq_alert_action(WQLocalized(@"Play Converted File"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-                [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayback error:nil];
-                AVPlayerViewController *p = [AVPlayerViewController new];
-                p.player = [AVPlayer playerWithURL:[NSURL fileURLWithPath:outPath]];
-                [self presentViewController:p animated:YES completion:^{ [p.player play]; }];
+                WQProMediaPlayerViewController *player = [[WQProMediaPlayerViewController alloc] initWithTitle:outPath.lastPathComponent sourcePath:outPath];
+                [player replaceWithLocalURL:[NSURL fileURLWithPath:outPath]];
+                if (self.navigationController) {
+                    [self.navigationController pushViewController:player animated:YES];
+                } else {
+                    [self presentViewController:player animated:YES completion:nil];
+                }
             })];
             [done addAction:wq_alert_action(WQLocalized(@"Share File"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
                 UIActivityViewController *sh = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:outPath]] applicationActivities:nil];
@@ -807,6 +931,7 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
 {
     if (section == 0) return 2; // Source info + Mode switch
     if (section == 1) {
+        if (_mode == WQConvModeRemux) return 1; // Target container (MP4 / MOV)
         if (_mode == WQConvModeVideo) return 5; // Container, Codec, Res, Quality, Audio Bitrate
         return [self audioFormatUsesBitrate] ? 2 : 1; // Audio Format (+ Bitrate)
     }
@@ -816,7 +941,10 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
     if (section == 0) return WQLocalized(@"Source Media");
-    if (section == 1) return (_mode == WQConvModeVideo) ? WQLocalized(@"Video Format & Encoding") : WQLocalized(@"Audio Format & Encoding");
+    if (section == 1) {
+        if (_mode == WQConvModeRemux) return WQLocalized(@"Fast Lossless Remux (No Re-Encoding)");
+        return (_mode == WQConvModeVideo) ? WQLocalized(@"Video Format & Encoding") : WQLocalized(@"Audio Format & Encoding");
+    }
     return WQLocalized(@"Output Options");
 }
 
@@ -847,12 +975,17 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else {
             c.text = WQLocalized(@"Convert Mode");
-            c.secondaryText = (_mode == WQConvModeVideo) ? WQLocalized(@"Video (Format + Codec)") : WQLocalized(@"Audio Only (Extract / Convert)");
+            if (_mode == WQConvModeRemux) c.secondaryText = WQLocalized(@"Fast Lossless Remux (Instant)");
+            else if (_mode == WQConvModeVideo) c.secondaryText = WQLocalized(@"Video (Format + Codec)");
+            else c.secondaryText = WQLocalized(@"Audio Only (Extract / Convert)");
             c.image = [UIImage systemImageNamed:@"arrow.triangle.2.circlepath"];
             c.imageProperties.tintColor = wq_theme_accent();
         }
     } else if (indexPath.section == 1) {
-        if (_mode == WQConvModeVideo) {
+        if (_mode == WQConvModeRemux) {
+            c.text = WQLocalized(@"Container Format");
+            c.secondaryText = (_videoContainer == WQConvVideoContainerMOV) ? @"MOV (.mov) — QuickTime" : @"MP4 (.mp4) — Universal";
+        } else if (_mode == WQConvModeVideo) {
             if (indexPath.row == 0) {
                 c.text = WQLocalized(@"Container Format");
                 c.secondaryText = [self videoContainerLabel];
@@ -906,19 +1039,40 @@ typedef NS_ENUM(NSInteger, WQConvAudioFormat) {
     wq_haptic_selection();
 
     if (indexPath.section == 0 && indexPath.row == 1) {
-        if (_sourceHasVideo) {
-            _mode = (_mode == WQConvModeVideo) ? WQConvModeAudio : WQConvModeVideo;
-            [tableView reloadData];
-        } else {
+        if (!_sourceHasVideo) {
             wq_alert(self, WQLocalized(@"Audio Source"), WQLocalized(@"This file only contains audio tracks."));
+            return;
         }
+        UIAlertController *ms = wq_alert_controller(WQLocalized(@"Convert Mode"), nil, UIAlertControllerStyleActionSheet);
+        if (_needsDemux || wq_media_needs_remux_extension(_filePath)) {
+            [ms addAction:wq_alert_action(WQLocalized(@"Fast Lossless Remux (Instant)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+                self->_mode = WQConvModeRemux;
+                [tableView reloadData];
+            })];
+        }
+        [ms addAction:wq_alert_action(WQLocalized(@"Video (Format + Codec)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            self->_mode = WQConvModeVideo;
+            [tableView reloadData];
+        })];
+        [ms addAction:wq_alert_action(WQLocalized(@"Audio Only (Extract / Convert)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            self->_mode = WQConvModeAudio;
+            [tableView reloadData];
+        })];
+        [ms addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        ms.popoverPresentationController.sourceView = cell ?: self.view;
+        ms.popoverPresentationController.sourceRect = cell ? cell.bounds : CGRectMake(self.view.bounds.size.width * 0.5, self.view.bounds.size.height * 0.5, 1, 1);
+        [self presentViewController:ms animated:YES completion:nil];
         return;
     }
 
     if (indexPath.section != 1) return;
 
     UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Select Option"), nil, UIAlertControllerStyleActionSheet);
-    if (_mode == WQConvModeVideo) {
+    if (_mode == WQConvModeRemux) {
+        [sheet addAction:wq_alert_action(@"MP4 (.mp4) — Universal", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) { self->_videoContainer = WQConvVideoContainerMP4; [tableView reloadData]; })];
+        [sheet addAction:wq_alert_action(@"MOV (.mov) — QuickTime", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) { self->_videoContainer = WQConvVideoContainerMOV; [tableView reloadData]; })];
+    } else if (_mode == WQConvModeVideo) {
         if (indexPath.row == 0) {
             [sheet addAction:wq_alert_action(@"MP4 (.mp4) — Universal", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) { self->_videoContainer = WQConvVideoContainerMP4; [tableView reloadData]; })];
             [sheet addAction:wq_alert_action(@"MOV (.mov) — QuickTime", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) { self->_videoContainer = WQConvVideoContainerMOV; [tableView reloadData]; })];
