@@ -89,6 +89,7 @@ public partial class MainWindow : Window
                 while (_hostLogs.Count > 120) _hostLogs.RemoveAt(_hostLogs.Count - 1);
             });
         };
+        _server.PeerActivityChanged += () => Dispatcher.BeginInvoke(UpdateGlobalTopStatusBar);
         _server.TextReceived += text =>
         {
             AppLogger.Info("HostServer", $"Received text/link ({text.Length} chars)");
@@ -101,10 +102,15 @@ public partial class MainWindow : Window
 
         RefreshUsbDevicesList();
         _usbPollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
-        _usbPollTimer.Tick += (_, _) => RefreshUsbDevicesList();
+        _usbPollTimer.Tick += async (_, _) =>
+        {
+            RefreshUsbDevicesList();
+            await CheckActiveConnectionHeartbeatAsync();
+        };
         _usbPollTimer.Start();
 
         RefreshHostUI();
+        UpdateGlobalTopStatusBar();
 
         Closed += (_, _) =>
         {
@@ -404,28 +410,47 @@ public partial class MainWindow : Window
             SaveSettings();
 
             ConnectBtn.Content = "Disconnect";
-            bool isUsbTunnel = ep.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase);
-            string transportTag = isUsbTunnel ? "🔌 USB Cable" : "📡 Wi-Fi";
+            bool isUsbTunnel = client.IsUsbTunnel;
+            string transportTag = isUsbTunnel ? "⚡ USB Cable" : "📶 Wi-Fi";
             StatusBadgeText.Text = $"● {transportTag} · {info.PlatformIcon} {info.Device} [{info.OsSummary}] · /{info.Root}";
             StatusBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(74, 222, 128));
             StorageLabel.Text = $"{RemoteFileItem.FormatBytes(info.FreeBytes)} free / {RemoteFileItem.FormatBytes(info.TotalBytes)}";
             StorageUsedBar.Value = info.UsedPercent;
             StorageMeterPanel.Visibility = info.TotalBytes > 0 ? Visibility.Visible : Visibility.Collapsed;
             IphoneRootsBar.Visibility = info.NormalizedPlatform == "ios" ? Visibility.Visible : Visibility.Collapsed;
+            HighlightActiveIphoneRootChip(info.Root);
             AppLogger.Info("Client", $"Connected to {info.Device} ({info.NormalizedPlatform} {info.OsSummary}) at {ep} · root=/{info.Root}");
             SetWifiConnectedUI(true);
+            UpdateGlobalTopStatusBar();
             await RefreshDirectoryAsync();
         }
         catch (Exception ex)
         {
             AppLogger.Error("Client", $"Failed connecting to {ep}", ex);
             StatusBadgeText.Text = "Connection failed";
+            UpdateGlobalTopStatusBar();
             MessageBox.Show(this, ex.Message, "Could Not Connect", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {
             ConnectBtn.IsEnabled = true;
         }
+    }
+
+    private void HighlightActiveIphoneRootChip(string? rootName)
+    {
+        Style inactive = (Style)FindResource("FilterChipBtn");
+        Style active = (Style)FindResource("FilterChipActiveBtn");
+        string r = (rootName ?? "").Trim();
+        bool isAppData = r.Contains("App Data", StringComparison.OrdinalIgnoreCase) || r.Contains("Container", StringComparison.OrdinalIgnoreCase);
+        bool isDownloads = string.Equals(r, "Downloads", StringComparison.OrdinalIgnoreCase);
+        bool isDocs = string.Equals(r, "Documents", StringComparison.OrdinalIgnoreCase);
+        bool isSelected = r.Contains("Selected", StringComparison.OrdinalIgnoreCase) || r.Contains("Shared", StringComparison.OrdinalIgnoreCase);
+
+        RootBtnAppData.Style = isAppData ? active : inactive;
+        RootBtnDownloads.Style = isDownloads ? active : inactive;
+        RootBtnDocuments.Style = isDocs ? active : inactive;
+        RootBtnSelected.Style = isSelected ? active : inactive;
     }
 
     private async void IphoneRootSwitch_Click(object sender, RoutedEventArgs e)
@@ -436,9 +461,10 @@ public partial class MainWindow : Window
             await _client.SwitchRemoteRootAsync(rootId);
             _phoneInfo = await _client.GetInfoAsync();
             _currentPath = "";
-            string ep = EndpointBox.Text.Trim();
-            string transportTag = ep.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase) ? "🔌 USB Cable" : "📡 Wi-Fi";
+            string transportTag = _client.IsUsbTunnel ? "⚡ USB Cable" : "📶 Wi-Fi";
             StatusBadgeText.Text = $"● {transportTag} · {_phoneInfo.PlatformIcon} {_phoneInfo.Device} [{_phoneInfo.OsSummary}] · /{_phoneInfo.Root}";
+            HighlightActiveIphoneRootChip(_phoneInfo.Root);
+            UpdateGlobalTopStatusBar();
             AppLogger.Info("Client", $"Switched iPhone shared folder to /{_phoneInfo.Root} (id={rootId})");
             await RefreshDirectoryAsync();
         }
@@ -447,6 +473,130 @@ public partial class MainWindow : Window
             AppLogger.Error("Client", $"Failed switching iPhone folder (id={rootId})", ex);
             MessageBox.Show(this, $"Could not switch iPhone folder: {ex.Message}", "Switch Folder", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private void SwitchToIphoneDcimUsb_Click(object sender, RoutedEventArgs e)
+    {
+        SwitchNav(1);
+        var appleWpd = _usbDevices.FirstOrDefault(d => d.IsApple);
+        if (appleWpd is not null)
+        {
+            UsbDevicesBox.SelectedItem = appleWpd;
+            if (!_usb.IsConnected)
+            {
+                UsbConnectBtn_Click(sender, e);
+            }
+        }
+    }
+
+    private void TopQuickDisconnectBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_client is not null)
+        {
+            Disconnect();
+        }
+        else if (_usb.IsConnected)
+        {
+            UsbConnectBtn_Click(sender, e);
+        }
+        UpdateGlobalTopStatusBar();
+    }
+
+    private async Task CheckActiveConnectionHeartbeatAsync()
+    {
+        if (_client is not null && _transferCts is null)
+        {
+            bool alive = await _client.PingAsync();
+            if (!alive)
+            {
+                AppLogger.Warn("Client", "Heartbeat ping to connected device failed — device was unplugged or went offline.");
+                Disconnect();
+            }
+        }
+        UpdateGlobalTopStatusBar();
+    }
+
+    private void UpdateGlobalTopStatusBar()
+    {
+        if (_client is not null && _phoneInfo is not null)
+        {
+            bool isUsb = _client.IsUsbTunnel;
+            if (isUsb)
+            {
+                GlobalTopStatusBar.Background = new SolidColorBrush(Color.FromRgb(10, 38, 43));
+                GlobalTopStatusBar.BorderBrush = new SolidColorBrush(Color.FromRgb(20, 184, 166));
+                TopConnDot.Fill = new SolidColorBrush(Color.FromRgb(45, 212, 191));
+                TopConnTitleText.Text = $"⚡ Connected via USB Cable · {_phoneInfo.PlatformIcon} {_phoneInfo.Device}";
+                TopConnSubtitleText.Text = $"{_phoneInfo.OsSummary} · Browsing /{_phoneInfo.Root} · Direct USB Wire Speed (No Wi-Fi needed)";
+                TopConnModeBadge.Background = new SolidColorBrush(Color.FromRgb(15, 61, 62));
+                TopConnModeBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(20, 184, 166));
+                TopConnModeBadgeText.Text = "⚡ USB CABLE LIVE";
+                TopConnModeBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(94, 234, 212));
+            }
+            else
+            {
+                GlobalTopStatusBar.Background = new SolidColorBrush(Color.FromRgb(10, 36, 28));
+                GlobalTopStatusBar.BorderBrush = new SolidColorBrush(Color.FromRgb(16, 185, 129));
+                TopConnDot.Fill = new SolidColorBrush(Color.FromRgb(74, 222, 128));
+                TopConnTitleText.Text = $"📶 Connected via Wi-Fi · {_phoneInfo.PlatformIcon} {_phoneInfo.Device}";
+                TopConnSubtitleText.Text = $"{_phoneInfo.OsSummary} · {_client.Endpoint} · Browsing /{_phoneInfo.Root}";
+                TopConnModeBadge.Background = new SolidColorBrush(Color.FromRgb(6, 78, 59));
+                TopConnModeBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(16, 185, 129));
+                TopConnModeBadgeText.Text = "📶 WI-FI LIVE";
+                TopConnModeBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(110, 231, 183));
+            }
+            TopQuickDisconnectBtn.Visibility = Visibility.Visible;
+            return;
+        }
+
+        if (_usb.IsConnected && _usb.ConnectedSummary is not null)
+        {
+            var dev = _usb.ConnectedSummary;
+            GlobalTopStatusBar.Background = new SolidColorBrush(Color.FromRgb(10, 38, 43));
+            GlobalTopStatusBar.BorderBrush = new SolidColorBrush(Color.FromRgb(20, 184, 166));
+            TopConnDot.Fill = new SolidColorBrush(Color.FromRgb(45, 212, 191));
+            TopConnTitleText.Text = $"🔌 Connected via USB Cable · {dev.DisplayName}";
+            TopConnSubtitleText.Text = dev.IsApple
+                ? "Camera Roll (DCIM) mode · Click '🍎 iPhone App Containers (USB)' for App Data, Documents & Downloads"
+                : "Native USB MTP Storage · Full folder & file import/export ready";
+            TopConnModeBadge.Background = new SolidColorBrush(Color.FromRgb(15, 61, 62));
+            TopConnModeBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(20, 184, 166));
+            TopConnModeBadgeText.Text = "🔌 USB STORAGE";
+            TopConnModeBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(94, 234, 212));
+            TopQuickDisconnectBtn.Visibility = Visibility.Visible;
+            return;
+        }
+
+        if (_server.IsRunning && _server.ActivePeerTransport != "none" &&
+            (DateTime.UtcNow - _server.LastPeerSeenUtc).TotalSeconds < 20)
+        {
+            bool peerUsb = string.Equals(_server.ActivePeerTransport, "usb", StringComparison.OrdinalIgnoreCase);
+            GlobalTopStatusBar.Background = new SolidColorBrush(Color.FromRgb(10, 36, 28));
+            GlobalTopStatusBar.BorderBrush = new SolidColorBrush(Color.FromRgb(16, 185, 129));
+            TopConnDot.Fill = new SolidColorBrush(Color.FromRgb(74, 222, 128));
+            TopConnTitleText.Text = peerUsb
+                ? $"⚡ Phone Connected to This PC via USB · {_server.ActivePeerName}"
+                : $"📶 Phone Connected to This PC via Wi-Fi · {_server.ActivePeerName}";
+            TopConnSubtitleText.Text = $"Sharing PC Folder /{_server.RootLabel} on port {_server.Port}";
+            TopConnModeBadge.Background = new SolidColorBrush(Color.FromRgb(6, 78, 59));
+            TopConnModeBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(16, 185, 129));
+            TopConnModeBadgeText.Text = peerUsb ? "⚡ USB HOST" : "📶 WI-FI HOST";
+            TopConnModeBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(110, 231, 183));
+            TopQuickDisconnectBtn.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        // Idle / Not connected
+        GlobalTopStatusBar.Background = new SolidColorBrush(Color.FromRgb(12, 23, 44));
+        GlobalTopStatusBar.BorderBrush = new SolidColorBrush(Color.FromRgb(30, 58, 95));
+        TopConnDot.Fill = new SolidColorBrush(Color.FromRgb(251, 191, 36));
+        TopConnTitleText.Text = "○ Not Connected — Plug in iPhone/Android via USB Cable or Connect on Wi-Fi";
+        TopConnSubtitleText.Text = "For iPhone App Data Containers (like 3uTools/iTunes), click '🍎 iPhone App Containers (USB)' in 1 click";
+        TopConnModeBadge.Background = new SolidColorBrush(Color.FromRgb(21, 34, 56));
+        TopConnModeBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(42, 67, 101));
+        TopConnModeBadgeText.Text = "NOT CONNECTED";
+        TopConnModeBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184));
+        TopQuickDisconnectBtn.Visibility = Visibility.Collapsed;
     }
 
     private async void WifiOpenFolderBtn_Click(object sender, RoutedEventArgs e)
@@ -470,16 +620,18 @@ public partial class MainWindow : Window
         _visibleItems.Clear();
         _currentPath = "";
         ConnectBtn.Content = "Connect";
-        StatusBadgeText.Text = _phones.Count > 0 ? $"Found {_phones.Count} device(s) on Wi-Fi" : "Disconnected";
+        StatusBadgeText.Text = _phones.Count > 0 ? $"Found {_phones.Count} device(s) on Wi-Fi" : "Ready — Connect via USB or Wi-Fi";
         StatusBadgeText.Foreground = (Brush)FindResource("AccentCyan");
         StorageMeterPanel.Visibility = Visibility.Collapsed;
         IphoneRootsBar.Visibility = Visibility.Collapsed;
-        PathLabel.Text = "Not connected — Pick a Wi-Fi device above, Scan QR, or switch to 🔌 USB Cable";
+        PathLabel.Text = "Not connected — Click '🍎 iPhone App Containers (USB)', Scan QR, or pick a Wi-Fi device above";
         SetWifiConnectedUI(false);
+        UpdateGlobalTopStatusBar();
     }
 
     private void SetWifiConnectedUI(bool connected)
     {
+        OnboardingGuideOverlay.Visibility = connected ? Visibility.Collapsed : Visibility.Visible;
         SendFilesBtn.IsEnabled = connected;
         SendFolderBtn.IsEnabled = connected;
         NewFolderBtn.IsEnabled = connected;
@@ -933,26 +1085,28 @@ public partial class MainWindow : Window
     {
         UsbIphoneAppBtn.IsEnabled = false;
         UsbStatusBadge.Text = "Searching for iPhone via Apple USB cable (usbmuxd)…";
+        StatusBadgeText.Text = "Connecting to iPhone over USB cable…";
         try
         {
             var devices = await Task.Run(() => _appleMux.ListUsbDevices());
             if (devices.Count == 0)
             {
                 UsbStatusBadge.Text = "No iPhone detected on Apple USB service.";
+                StatusBadgeText.Text = "No iPhone USB detected";
                 MessageBox.Show(this,
                     "No iPhone was detected on Apple's USB service (usbmuxd).\n\n" +
-                    "To connect iPhone App Documents & Downloads over Lightning/USB-C (like iTunes / 3uTools):\n" +
-                    "1. Plug your iPhone into this PC with a USB cable and tap 'Trust This Computer'.\n" +
-                    "2. Make sure Apple Devices or iTunes (or 3uTools driver) is installed on Windows so Apple Mobile Device Service is running.\n" +
-                    "3. Open WQ Glass on your iPhone → LAN Transfer (Share iPhone) — works even with Wi-Fi OFF!",
-                    "iPhone USB App Documents",
+                    "To browse iPhone App Data Containers, Documents & Downloads over USB Cable (like iTunes / 3uTools):\n" +
+                    "1. Plug your iPhone into this PC with a USB cable, unlock your iPhone, and tap 'Trust This Computer'.\n" +
+                    "2. Make sure Apple Devices or iTunes (or 3uTools Apple driver) is installed on Windows so Apple Mobile Device Service is running.\n" +
+                    "3. Open WQ Glass on your iPhone (works even with Wi-Fi completely OFF!).",
+                    "iPhone USB App Data Containers",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 return;
             }
 
             AppleUsbDeviceInfo target = devices[0];
-            UsbStatusBadge.Text = $"Opening direct USB cable tunnel to iPhone WQ Glass…";
+            UsbStatusBadge.Text = "Opening direct USB cable tunnel to iPhone WQ Glass…";
 
             (bool ok, string localEndpoint, string? err) = await Task.Run(() =>
             {
@@ -970,33 +1124,100 @@ public partial class MainWindow : Window
             {
                 AppLogger.Error("AppleUsbMux", "Could not start USB tunnel to iPhone WQ Glass", err);
                 UsbStatusBadge.Text = "iPhone WQ Glass server not reachable over USB.";
+                StatusBadgeText.Text = "Open WQ Glass on iPhone first";
                 MessageBox.Show(this,
                     (err ?? "Could not reach WQ Glass on iPhone over USB.") +
-                    "\n\nOpen WQ Glass on your iPhone → Utility Hub → LAN Transfer (Share iPhone) and keep that screen open, then try again.",
-                    "iPhone USB App Documents",
+                    "\n\nSimply open the WQ Glass app on your iPhone (the USB transfer server starts automatically as soon as WQ Glass is open), then click '🍎 iPhone App Containers (USB)' again.",
+                    "Open WQ Glass on iPhone",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
                 return;
             }
 
             AppLogger.Info("AppleUsbMux", $"Started iPhone USB tunnel at {localEndpoint} (DeviceID={target.DeviceId})");
-            string defaultPin = PinBox.Text.Trim();
-            string? pin = PromptInput(
-                "iPhone USB Cable Ready (App Documents & Downloads)",
-                "Connected directly to iPhone over USB cable!\nEnter the 4–8 digit PIN shown on your iPhone WQ Glass screen:",
-                defaultPin);
 
-            if (string.IsNullOrWhiteSpace(pin))
+            // Try 1-click zero-PIN USB connection first (WQWinTransferServer auto-trusts physical USB 127.0.0.1 connections)
+            string candidatePin = string.IsNullOrWhiteSpace(PinBox.Text) || PinBox.Text.Trim().Length < 4
+                ? "USB"
+                : PinBox.Text.Trim();
+
+            TransferClient? usbClient = null;
+            PhoneInfo? info = null;
+            try
             {
-                UsbStatusBadge.Text = $"🍎 iPhone USB tunnel ready at {localEndpoint} — enter PIN in Wi-Fi / USB Explorer to connect.";
-                return;
+                var tryClient = new TransferClient(localEndpoint, candidatePin, "usb");
+                info = await tryClient.GetInfoAsync();
+                usbClient = tryClient;
+            }
+            catch
+            {
+                // Fallback: try "USB" token explicitly, then prompt user if older iOS build requires manual PIN
+                try
+                {
+                    var tryUsbToken = new TransferClient(localEndpoint, "USB", "usb");
+                    info = await tryUsbToken.GetInfoAsync();
+                    usbClient = tryUsbToken;
+                    candidatePin = "USB";
+                }
+                catch
+                {
+                    string? manualPin = PromptInput(
+                        "iPhone USB Cable Pairing PIN",
+                        "Connected to iPhone over USB cable!\nEnter the 4–8 digit PIN shown on your iPhone WQ Glass screen:",
+                        PinBox.Text.Trim());
+                    if (string.IsNullOrWhiteSpace(manualPin))
+                    {
+                        UsbStatusBadge.Text = $"🍎 iPhone USB tunnel ready at {localEndpoint}.";
+                        return;
+                    }
+                    candidatePin = manualPin.Trim();
+                    var manualClient = new TransferClient(localEndpoint, candidatePin, "usb");
+                    info = await manualClient.GetInfoAsync();
+                    usbClient = manualClient;
+                }
             }
 
-            if (_client is not null) Disconnect();
+            if (_client is not null)
+            {
+                _transferCts?.Cancel();
+                _client.Dispose();
+                _client = null;
+            }
+
+            _client = usbClient;
+            // Automatically switch iPhone root to App Data Containers ("appdata") over USB like 3uTools / iTunes
+            try
+            {
+                await _client.SwitchRemoteRootAsync("appdata");
+                info = await _client.GetInfoAsync();
+            }
+            catch (Exception rootEx)
+            {
+                AppLogger.Warn("AppleUsbMux", "Could not auto-switch iPhone root to appdata, keeping current root", rootEx.Message);
+            }
+
+            _phoneInfo = info;
+            _currentPath = "";
             SwitchNav(0);
             EndpointBox.Text = localEndpoint;
-            PinBox.Text = pin.Trim();
-            ConnectBtn_Click(sender, e);
+            if (candidatePin != "USB") PinBox.Text = candidatePin;
+
+            ConnectBtn.Content = "Disconnect";
+            StatusBadgeText.Text = $"● ⚡ USB Cable · {info.PlatformIcon} {info.Device} [{info.OsSummary}] · /{info.Root}";
+            StatusBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(74, 222, 128));
+            StorageLabel.Text = $"{RemoteFileItem.FormatBytes(info.FreeBytes)} free / {RemoteFileItem.FormatBytes(info.TotalBytes)}";
+            StorageUsedBar.Value = info.UsedPercent;
+            StorageMeterPanel.Visibility = info.TotalBytes > 0 ? Visibility.Visible : Visibility.Collapsed;
+            IphoneRootsBar.Visibility = Visibility.Visible;
+            HighlightActiveIphoneRootChip(info.Root);
+            SetWifiConnectedUI(true);
+            UpdateGlobalTopStatusBar();
+            await RefreshDirectoryAsync();
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("AppleUsbMux", "Failed connecting to iPhone over USB", ex);
+            MessageBox.Show(this, ex.Message, "iPhone USB Connection Error", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {
@@ -1017,6 +1238,7 @@ public partial class MainWindow : Window
             UsbStatusBadge.Text = "USB device disconnected.";
             UsbPathLabel.Text = "No USB device opened — Select a device above and click Open USB Device";
             SetUsbConnectedUI(false);
+            UpdateGlobalTopStatusBar();
             return;
         }
 
@@ -1035,6 +1257,7 @@ public partial class MainWindow : Window
             {
                 AppLogger.Error("USB-MTP", $"Failed opening USB device '{summary.DisplayName}'", err);
                 UsbStatusBadge.Text = "USB open failed";
+                UpdateGlobalTopStatusBar();
                 MessageBox.Show(this, err ?? "Could not open USB device.", "USB Cable Transfer", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
@@ -1046,6 +1269,7 @@ public partial class MainWindow : Window
                 ? $"● USB Connected: {summary.DisplayName} (Camera Roll · For App Documents click 🍎 iPhone App Docs)"
                 : $"● USB Cable Connected: {summary.DisplayName}";
             SetUsbConnectedUI(true);
+            UpdateGlobalTopStatusBar();
             await RefreshUsbDirectoryAsync();
 
             // Auto-enter single storage volume (e.g. Android "Internal shared storage" or iPhone "Internal Storage")

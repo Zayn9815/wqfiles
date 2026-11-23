@@ -206,6 +206,18 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
     var hubSubScreen by remember { mutableStateOf("") }
 
     val hostState by TransferForegroundService.server.state.collectAsState()
+    var clientActivePeer by remember { mutableStateOf<String?>(null) }
+    var clientActiveTransport by remember { mutableStateOf("none") }
+    var clientActiveEndpoint by remember { mutableStateOf("") }
+    var clientActiveRoot by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(3000)
+            TransferForegroundService.server.pruneStalePeerState()
+        }
+    }
+
     val idmTasks by WqIdmDownloadEngine.tasks.collectAsState()
     val activeDownloads = remember(idmTasks) { idmTasks.count { it.status == DownloadStatus.DOWNLOADING } }
     val logEntries by AppLogger.entries.collectAsState()
@@ -223,8 +235,95 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
         if (history.size > 120) history.removeAt(history.lastIndex)
     }
 
+    // Unified connection status computation
+    val isUsbConnected = hostState.activeTransport == "usb" || clientActiveTransport == "usb"
+    val isWifiConnected = hostState.activeTransport == "wifi" || clientActiveTransport == "wifi"
+    val statusColor = when {
+        isUsbConnected -> AccentCyan
+        isWifiConnected -> SuccessGreen
+        hostState.isRunning -> activeTheme.accent
+        else -> WarnAmber
+    }
+    val statusTitle = when {
+        hostState.activeTransport == "usb" -> "⚡ Connected via USB · ${hostState.activePeerName.ifBlank { "Windows PC" }}"
+        clientActiveTransport == "usb" -> "⚡ Connected via USB · ${clientActivePeer ?: "USB Device"}"
+        hostState.activeTransport == "wifi" -> "📶 Connected via Wi-Fi · ${hostState.activePeerName.ifBlank { "Remote Peer" }}"
+        clientActiveTransport == "wifi" -> "📶 Connected via Wi-Fi · ${clientActivePeer ?: "Remote Device"}"
+        hostState.isRunning -> "● Ready · Wi-Fi & USB (${hostState.ipAddress}:${hostState.port} · PIN ${hostState.pin})"
+        else -> "○ Not Connected · Tap for USB / Wi-Fi Transfer"
+    }
+    val statusSubtitle = when {
+        hostState.activeTransport != "none" -> "Sharing /${hostState.rootLabel} · PIN ${hostState.pin}"
+        clientActiveTransport != "none" -> "$clientActiveEndpoint · /$clientActiveRoot"
+        hostState.isRunning -> "Sharing /${hostState.rootLabel} · Visible to PC, iPhone & Android"
+        else -> "Tap to Share This Phone or Connect to PC / iPhone"
+    }
+    val statusBadge = when {
+        isUsbConnected -> "USB LIVE"
+        isWifiConnected -> "Wi-Fi LIVE"
+        hostState.isRunning -> "READY"
+        else -> "Connect"
+    }
+
     Scaffold(
         containerColor = activeTheme.canvasTop,
+        topBar = {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .clickable {
+                        selectedTab = 2
+                    },
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = activeTheme.cardBg),
+                border = BorderStroke(1.dp, statusColor.copy(alpha = 0.45f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isUsbConnected) Icons.Default.SwapHoriz else Icons.Default.Wifi,
+                        contentDescription = null,
+                        tint = statusColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = statusTitle,
+                            color = activeTheme.textPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = statusSubtitle,
+                            color = activeTheme.textSecondary,
+                            fontSize = 10.5.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Surface(
+                        color = statusColor.copy(alpha = 0.16f),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = statusBadge,
+                            color = statusColor,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        },
         bottomBar = {
             NavigationBar(containerColor = activeTheme.cardBg) {
                 NavigationBarItem(
@@ -243,7 +342,7 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
                     icon = { Icon(Icons.Default.SwapHoriz, contentDescription = null) },
-                    label = { Text(if (hostState.isRunning) "Transfer ●" else "Transfer", fontSize = 11.sp) }
+                    label = { Text(if (hostState.isRunning || clientActiveTransport != "none") "Transfer ●" else "Transfer", fontSize = 11.sp) }
                 )
                 NavigationBarItem(
                     selected = selectedTab == 3,
@@ -303,7 +402,13 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
                             0 -> ClientScreen(
                                 discovery = discovery,
                                 prefs = prefs,
-                                onRecordHistory = ::recordHistory
+                                onRecordHistory = ::recordHistory,
+                                onClientConnectionChanged = { trans, peer, ep, root ->
+                                    clientActiveTransport = trans
+                                    clientActivePeer = peer
+                                    clientActiveEndpoint = ep
+                                    clientActiveRoot = root
+                                }
                             )
                             1 -> HostScreen(
                                 prefs = prefs,
@@ -344,7 +449,8 @@ private fun WQGlassTransferApp(discovery: DiscoveryService) {
 private fun ClientScreen(
     discovery: DiscoveryService,
     prefs: android.content.SharedPreferences,
-    onRecordHistory: (String, String, Long, Double, String) -> Unit
+    onRecordHistory: (String, String, Long, Double, String) -> Unit,
+    onClientConnectionChanged: (String, String?, String, String) -> Unit = { _, _, _, _ -> }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -425,6 +531,8 @@ private fun ClientScreen(
                 currentPath = ""
                 activeCategory = "All"
                 searchQuery = ""
+                val isUsb = c.resolvedEndpoint.startsWith("127.0.0.1")
+                onClientConnectionChanged(if (isUsb) "usb" else "wifi", info.device, c.resolvedEndpoint, info.root)
                 AppLogger.info("Client", "Connected to ${info.device} (${info.osSummary}) at ${c.resolvedEndpoint} · /${info.root}")
                 refreshList(c, "")
             } catch (e: Exception) {
@@ -645,6 +753,7 @@ private fun ClientScreen(
                                 selectedPaths = emptySet()
                                 currentPath = ""
                                 progress = null
+                                onClientConnectionChanged("none", null, "", "")
                                 statusText = "Disconnected."
                             },
                             border = BorderStroke(1.dp, DangerRed)

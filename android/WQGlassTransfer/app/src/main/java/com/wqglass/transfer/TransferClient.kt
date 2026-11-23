@@ -53,6 +53,9 @@ class TransferClient(endpoint: String, pin: String) {
         conn.readTimeout = 60000
         conn.useCaches = false
         conn.setRequestProperty("X-WQ-PIN", cleanPin)
+        val isUsb = base.contains("127.0.0.1")
+        conn.setRequestProperty("X-WQ-TRANSPORT", if (isUsb) "usb" else "wifi")
+        conn.setRequestProperty("X-WQ-CLIENT", "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim().ifBlank { "Android" })
         return conn
     }
 

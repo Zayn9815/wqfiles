@@ -27,9 +27,13 @@ public sealed class TransferServer : IDisposable
     public string Pin { get; set; } = GenerateRandomPin();
     public string RootPath { get; set; }
     public string RootLabel { get; set; }
+    public string ActivePeerTransport { get; private set; } = "none";
+    public string ActivePeerName { get; private set; } = "";
+    public DateTime LastPeerSeenUtc { get; private set; } = DateTime.MinValue;
 
     public event Action<string>? ActivityLogged;
     public event Action<string>? TextReceived;
+    public event Action? PeerActivityChanged;
 
     public TransferServer()
     {
@@ -321,6 +325,25 @@ public sealed class TransferServer : IDisposable
                     return;
                 }
 
+                string remoteIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "Peer";
+                headers.TryGetValue("X-WQ-TRANSPORT", out string? transHeader);
+                bool isUsb = remoteIp == "127.0.0.1" || string.Equals(transHeader, "usb", StringComparison.OrdinalIgnoreCase);
+                string activeTrans = isUsb ? "usb" : "wifi";
+                headers.TryGetValue("X-WQ-CLIENT", out string? clientHeader);
+                string peerName = !string.IsNullOrWhiteSpace(clientHeader) ? clientHeader.Trim() : remoteIp;
+
+                bool changed = ActivePeerTransport != activeTrans || ActivePeerName != peerName;
+                ActivePeerTransport = activeTrans;
+                ActivePeerName = peerName;
+                LastPeerSeenUtc = DateTime.UtcNow;
+                if (changed) PeerActivityChanged?.Invoke();
+
+                if (route == "/api/ping" && method == "GET")
+                {
+                    await SendJsonAsync(net, 200, new { ok = true, transport = activeTrans, root = RootLabel }, ct);
+                    return;
+                }
+
                 string root = RootPath;
 
                 if (route == "/api/info" && method == "GET")
@@ -341,18 +364,18 @@ public sealed class TransferServer : IDisposable
                     await SendJsonAsync(net, 200, new
                     {
                         app = "WQGlass",
-                        version = "1.1",
+                        version = "3.0",
                         device = Environment.MachineName,
                         platform = "windows",
                         osVersion = GetOsVersionLabel(),
                         ios = GetOsVersionLabel(),
                         root = RootLabel,
+                        transport = activeTrans,
                         freeBytes,
                         totalBytes
                     }, ct);
 
-                    string remoteIp = (client.Client.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "Peer";
-                    EmitActivity($"Connected: {remoteIp} verified PIN");
+                    EmitActivity($"Connected ({(isUsb ? "USB" : "Wi-Fi")}): {peerName} verified PIN");
                     return;
                 }
 

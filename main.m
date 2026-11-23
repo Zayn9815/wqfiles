@@ -6912,6 +6912,15 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
         return wrap;
     };
 
+    __weak typeof(self) weakHomeSelf = self;
+    UIView *transferStatusPill = wq_lan_transfer_make_global_status_pill(^{
+        WQPrismHomeViewController *me = weakHomeSelf;
+        if (me) wq_present_windows_transfer(me, nil, nil);
+    });
+    UIView *wrappedTransferPill = insetSection(transferStatusPill);
+    [_contentStack addArrangedSubview:wrappedTransferPill];
+    [_contentStack setCustomSpacing:12 afterView:wrappedTransferPill];
+
     [self buildHeroWithWrapper:insetSection];
     [_contentStack setCustomSpacing:14 afterView:_heroView.superview ?: _heroView];
 

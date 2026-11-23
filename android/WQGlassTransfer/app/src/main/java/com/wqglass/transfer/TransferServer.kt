@@ -36,6 +36,10 @@ data class HostServerState(
     val pin: String = "",
     val rootPath: String = "",
     val rootLabel: String = "Downloads",
+    val activeTransport: String = "none", // "none", "usb", "wifi"
+    val activePeerName: String = "",
+    val lastPeerSeenMs: Long = 0L,
+    val activeBytesPerSec: Double = 0.0,
     val error: String? = null
 )
 
@@ -69,6 +73,22 @@ class TransferServer {
 
     fun clearReceivedText() {
         _receivedText.value = null
+    }
+
+    private fun recordPeerActivity(transport: String, peerName: String, bps: Double = _state.value.activeBytesPerSec) {
+        _state.value = _state.value.copy(
+            activeTransport = transport,
+            activePeerName = peerName,
+            lastPeerSeenMs = System.currentTimeMillis(),
+            activeBytesPerSec = bps
+        )
+    }
+
+    fun pruneStalePeerState() {
+        val st = _state.value
+        if (st.activeTransport != "none" && System.currentTimeMillis() - st.lastPeerSeenMs > 15_000L) {
+            _state.value = st.copy(activeTransport = "none", activePeerName = "", activeBytesPerSec = 0.0)
+        }
     }
 
     fun start(sharedDir: File, label: String, desiredPin: String): Boolean {
@@ -324,14 +344,28 @@ class TransferServer {
                 }
 
                 val suppliedPin = (headers["x-wq-pin"] ?: query["pin"] ?: "").trim()
-                if (suppliedPin != pin) {
+                val peerIp = sock.inetAddress?.hostAddress ?: ""
+                val hdrTransport = (headers["x-wq-transport"] ?: query["transport"] ?: "").trim().lowercase(Locale.ROOT)
+                val isUsb = peerIp == "127.0.0.1" || hdrTransport == "usb"
+                val activeTransport = if (isUsb) "usb" else "wifi"
+                val peerName = headers["x-wq-client"]?.takeIf { it.isNotBlank() }
+                    ?: if (isUsb) "Windows PC (USB)" else peerIp.ifBlank { "Remote Peer" }
+
+                val pinValid = suppliedPin == pin || (isUsb && (suppliedPin.equals("USB", ignoreCase = true) || suppliedPin == "0000"))
+                if (!pinValid) {
                     sendJson(out, 401, JSONObject().put("error", "Invalid PIN"))
                     return
                 }
 
+                recordPeerActivity(activeTransport, peerName)
+
                 val root = rootDir
 
                 when {
+                    route == "/api/ping" && method == "GET" -> {
+                        sendJson(out, 200, JSONObject().put("ok", true).put("transport", activeTransport).put("root", rootLabel))
+                    }
+
                     route == "/api/info" && method == "GET" -> {
                         var freeBytes = 0L
                         var totalBytes = 0L
@@ -342,17 +376,18 @@ class TransferServer {
                         } catch (_: Exception) {}
                         val info = JSONObject().apply {
                             put("app", "WQGlass")
-                            put("version", "2.0")
+                            put("version", "3.0")
                             put("device", deviceName())
                             put("platform", "android")
                             put("osVersion", Build.VERSION.RELEASE ?: "")
                             put("ios", Build.VERSION.RELEASE ?: "")
                             put("root", rootLabel)
+                            put("transport", activeTransport)
                             put("freeBytes", freeBytes)
                             put("totalBytes", totalBytes)
                         }
                         sendJson(out, 200, info)
-                        log("Connected: ${sock.inetAddress?.hostAddress ?: "Peer"} verified PIN")
+                        log("Connected (${if (isUsb) "USB Cable" else "Wi-Fi"}): $peerName verified PIN")
                     }
 
                     route == "/api/list" && method == "GET" -> {

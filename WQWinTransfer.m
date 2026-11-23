@@ -8,6 +8,7 @@
 
 #import "WQWinTransfer.h"
 #import "WQAccess.h"
+#import "WQLaunchServices.h"
 #import "WQLocalization.h"
 #import "WQTheme.h"
 #import "WQMotion.h"
@@ -30,6 +31,8 @@
 #import <sys/statvfs.h>
 #import <unistd.h>
 
+NSNotificationName const WQLanTransferStatusDidChangeNotification = @"WQLanTransferStatusDidChangeNotification";
+
 static NSString *const kWQWinFixedPinPref = @"WQWinTransferFixedPIN";
 static NSString *const kWQWinLastEndpointPref = @"WQWinTransferLastEndpoint";
 static NSString *const kWQWinLastPinPref = @"WQWinTransferLastPIN";
@@ -38,6 +41,104 @@ static const uint16_t kWQWinBasePort = 8765;
 static const size_t kWQWinChunkBytes = 1024 * 1024;
 static const int kWQWinSocketBufBytes = 4 * 1024 * 1024;
 static const NSUInteger kWQWinMaxHeaderBytes = 16384;
+
+@implementation WQLanTransferConnectionSnapshot
+
+- (NSString *)statusTitle
+{
+    switch (self.mode) {
+        case WQLanConnectionModeConnectedUSB:
+            return [NSString stringWithFormat:@"⚡ Connected via USB · %@", self.peerName.length ? self.peerName : @"Windows PC"];
+        case WQLanConnectionModeConnectedWiFi:
+            return [NSString stringWithFormat:@"📶 Connected via Wi-Fi · %@", self.peerName.length ? self.peerName : @"Remote Device"];
+        case WQLanConnectionModeWaitingReady:
+            return [NSString stringWithFormat:@"● Ready · Wi-Fi & USB Cable (PIN %@)", self.pinText.length ? self.pinText : @"----"];
+        default:
+            return @"○ Not Connected · Tap for USB / Wi-Fi Transfer";
+    }
+}
+
+- (NSString *)statusSubtitle
+{
+    if (self.activeBytesPerSec > 100.0) {
+        double mbps = self.activeBytesPerSec / 1048576.0;
+        NSString *spd = (mbps >= 1.0)
+            ? [NSString stringWithFormat:@"%.1f MB/s", mbps]
+            : [NSString stringWithFormat:@"%.0f KB/s", self.activeBytesPerSec / 1024.0];
+        return [NSString stringWithFormat:@"Transferring at %@ · /%@", spd, self.rootLabel.length ? self.rootLabel : @"Downloads"];
+    }
+    switch (self.mode) {
+        case WQLanConnectionModeConnectedUSB:
+            return [NSString stringWithFormat:@"Direct Lightning/USB-C Tunnel · Sharing /%@", self.rootLabel.length ? self.rootLabel : @"App Data"];
+        case WQLanConnectionModeConnectedWiFi:
+            return [NSString stringWithFormat:@"%@ · /%@", self.endpointText.length ? self.endpointText : @"LAN", self.rootLabel.length ? self.rootLabel : @"Downloads"];
+        case WQLanConnectionModeWaitingReady:
+            return [NSString stringWithFormat:@"%@ · Sharing /%@", self.endpointText.length ? self.endpointText : @"USB Ready", self.rootLabel.length ? self.rootLabel : @"Downloads"];
+        default:
+            return @"Connect to Windows PC (USB / Wi-Fi) or Android";
+    }
+}
+
+@end
+
+static NSLock *gWQTransferStateLock(void)
+{
+    static NSLock *lock = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        lock = [NSLock new];
+    });
+    return lock;
+}
+
+static NSString *gHostActiveTransport = @"none"; // @"none", @"usb", @"wifi"
+static NSString *gHostActivePeerName = @"";
+static CFAbsoluteTime gHostLastPeerSeen = 0;
+static double gActiveTransferBps = 0;
+static CFAbsoluteTime gActiveTransferBpsTime = 0;
+
+static NSString *gClientActiveTransport = @"none"; // @"none", @"usb", @"wifi"
+static NSString *gClientActivePeerName = @"";
+static NSString *gClientActiveEndpoint = @"";
+static NSString *gClientActiveRoot = @"";
+
+static void wq_lan_notify_status_changed(void)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:WQLanTransferStatusDidChangeNotification object:nil];
+    });
+}
+
+static void wq_lan_record_host_peer(NSString *transport, NSString *peerName)
+{
+    [gWQTransferStateLock() lock];
+    BOOL changed = ![gHostActiveTransport isEqualToString:transport] || ![gHostActivePeerName isEqualToString:peerName];
+    gHostActiveTransport = [transport copy];
+    gHostActivePeerName = [peerName copy];
+    gHostLastPeerSeen = CFAbsoluteTimeGetCurrent();
+    [gWQTransferStateLock() unlock];
+    if (changed) wq_lan_notify_status_changed();
+}
+
+static void wq_lan_record_transfer_speed(double bps)
+{
+    [gWQTransferStateLock() lock];
+    gActiveTransferBps = bps;
+    gActiveTransferBpsTime = CFAbsoluteTimeGetCurrent();
+    [gWQTransferStateLock() unlock];
+    wq_lan_notify_status_changed();
+}
+
+static void wq_lan_record_client_connected(NSString *transport, NSString *peerName, NSString *endpoint, NSString *root)
+{
+    [gWQTransferStateLock() lock];
+    gClientActiveTransport = [transport ?: @"wifi" copy];
+    gClientActivePeerName = [peerName ?: @"" copy];
+    gClientActiveEndpoint = [endpoint ?: @"" copy];
+    gClientActiveRoot = [root ?: @"Downloads" copy];
+    [gWQTransferStateLock() unlock];
+    wq_lan_notify_status_changed();
+}
 
 static NSString *wq_win_downloads_dir(void)
 {
@@ -58,6 +159,19 @@ static NSString *wq_win_selected_outbox_dir(void)
     NSString *outbox = [docs stringByAppendingPathComponent:@"WQGlass_SharedOutbox"];
     [NSFileManager.defaultManager createDirectoryAtPath:outbox withIntermediateDirectories:YES attributes:nil error:nil];
     return outbox;
+}
+
+static BOOL wq_win_looks_like_uuid(NSString *name)
+{
+    return name.length == 36 && [[NSUUID alloc] initWithUUIDString:name] != nil;
+}
+
+static BOOL wq_win_is_outside_sandbox(NSString *path)
+{
+    if (!path.length) return NO;
+    NSString *docs = wq_win_documents_dir().stringByStandardizingPath;
+    NSString *std = path.stringByStandardizingPath;
+    return ![std isEqualToString:docs] && ![std hasPrefix:[docs stringByAppendingString:@"/"]];
 }
 
 static BOOL wq_win_is_private_ipv4(NSString *ip)
@@ -510,6 +624,7 @@ static NSString *wq_win_web_ui_html(void)
     }
     [self emitActivity:[NSString stringWithFormat:@"iOS Host ready at http://%@:%u · PIN %@ · Sharing /%@ (ifaces: %@)",
                         _ipAddress, (unsigned)_port, _pin, _rootLabel ?: @"Downloads", wq_win_all_network_interfaces_summary()]];
+    wq_lan_notify_status_changed();
     return YES;
 }
 
@@ -536,6 +651,7 @@ static NSString *wq_win_web_ui_html(void)
         close(_listenFD);
         _listenFD = -1;
     }
+    wq_lan_notify_status_changed();
 }
 
 #pragma mark HTTP Request Handling
@@ -543,7 +659,7 @@ static NSString *wq_win_web_ui_html(void)
 - (void)sendStatus:(int)code text:(NSString *)statusText contentType:(NSString *)ctype body:(NSData *)body toFD:(int)fd
 {
     NSString *hdr = [NSString stringWithFormat:
-        @"HTTP/1.1 %d %@\r\nContent-Type: %@\r\nContent-Length: %lu\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: X-WQ-PIN, Content-Type\r\nConnection: close\r\n\r\n",
+        @"HTTP/1.1 %d %@\r\nContent-Type: %@\r\nContent-Length: %lu\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: X-WQ-PIN, X-WQ-TRANSPORT, X-WQ-CLIENT, Content-Type\r\nConnection: close\r\n\r\n",
         code, statusText, ctype, (unsigned long)body.length];
     NSData *hData = [hdr dataUsingEncoding:NSUTF8StringEncoding];
     if (!wq_win_send_all(fd, hData.bytes, hData.length)) return;
@@ -563,6 +679,16 @@ static NSString *wq_win_web_ui_html(void)
     int sbuf = kWQWinSocketBufBytes;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sbuf, sizeof(sbuf));
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sbuf, sizeof(sbuf));
+
+    NSString *peerIP = @"";
+    struct sockaddr_in peerAddr;
+    socklen_t peerLen = sizeof(peerAddr);
+    if (getpeername(fd, (struct sockaddr *)&peerAddr, &peerLen) == 0 && peerAddr.sin_family == AF_INET) {
+        char ipBuf[INET_ADDRSTRLEN];
+        if (inet_ntop(AF_INET, &peerAddr.sin_addr, ipBuf, sizeof(ipBuf))) {
+            peerIP = [NSString stringWithUTF8String:ipBuf] ?: @"";
+        }
+    }
 
     NSMutableData *buf = [NSMutableData dataWithCapacity:4096];
     uint8_t tmp[4096];
@@ -623,9 +749,29 @@ static NSString *wq_win_web_ui_html(void)
         return;
     }
 
+    // Detect USB Cable tunnel (127.0.0.1 over usbmuxd or X-WQ-TRANSPORT: usb)
+    NSString *hdrTransport = (headers[@"x-wq-transport"] ?: query[@"transport"] ?: @"").lowercaseString;
+    BOOL isUsbConnection = [peerIP isEqualToString:@"127.0.0.1"] || [hdrTransport isEqualToString:@"usb"];
+    NSString *activeTransport = isUsbConnection ? @"usb" : @"wifi";
+    NSString *clientName = headers[@"x-wq-client"] ?: (isUsbConnection ? @"Windows PC (USB)" : (peerIP.length ? peerIP : @"Remote Peer"));
+
     NSString *suppliedPin = headers[@"x-wq-pin"] ?: query[@"pin"] ?: @"";
-    if (![suppliedPin isEqualToString:self.pin]) {
+    // Over direct physical USB cable tunnel (127.0.0.1 via usbmuxd), allow either matching PIN or auto-trusted USB keyword ("USB" / empty) so the user doesn't get stuck typing PINs when connecting via cable!
+    BOOL pinValid = [suppliedPin isEqualToString:self.pin] ||
+                    (isUsbConnection && ([suppliedPin.uppercaseString isEqualToString:@"USB"] || [suppliedPin isEqualToString:@"0000"]));
+    if (!pinValid) {
         [self sendJSON:@{ @"error": @"Invalid PIN" } status:401 toFD:fd];
+        return;
+    }
+
+    wq_lan_record_host_peer(activeTransport, clientName);
+
+    if ([route isEqualToString:@"/api/ping"] && [method isEqualToString:@"GET"]) {
+        [self sendJSON:@{
+            @"ok": @YES,
+            @"transport": activeTransport,
+            @"root": self.rootLabel ?: @"Downloads",
+        } status:200 toFD:fd];
         return;
     }
 
@@ -634,22 +780,27 @@ static NSString *wq_win_web_ui_html(void)
     if ([route isEqualToString:@"/api/info"] && [method isEqualToString:@"GET"]) {
         struct statvfs stv;
         unsigned long long freeB = 0, totalB = 0;
-        if (statvfs(root.fileSystemRepresentation, &stv) == 0) {
+        NSString *statTarget = wq_win_downloads_dir();
+        if (statvfs(statTarget.fileSystemRepresentation, &stv) == 0) {
             freeB = (unsigned long long)stv.f_bavail * (unsigned long long)stv.f_frsize;
             totalB = (unsigned long long)stv.f_blocks * (unsigned long long)stv.f_frsize;
         }
         [self sendJSON:@{
             @"app": @"WQGlass",
-            @"version": @"1.1",
+            @"version": @"4.0",
             @"device": UIDevice.currentDevice.name ?: @"iPhone",
             @"platform": @"ios",
             @"osVersion": UIDevice.currentDevice.systemVersion ?: @"",
             @"ios": UIDevice.currentDevice.systemVersion ?: @"",
             @"root": self.rootLabel ?: @"Downloads",
+            @"transport": activeTransport,
             @"freeBytes": @(freeB),
             @"totalBytes": @(totalB),
         } status:200 toFD:fd];
-        [self emitActivity:WQLocalized(@"Connected: Peer verified PIN")];
+        [self emitActivity:[NSString stringWithFormat:@"%@ Connected: %@ · Sharing /%@",
+                            isUsbConnection ? @"⚡ USB Cable" : @"📶 Wi-Fi",
+                            clientName,
+                            self.rootLabel ?: @"Downloads"]];
         return;
     }
 
@@ -660,23 +811,103 @@ static NSString *wq_win_web_ui_html(void)
             [self sendJSON:@{ @"error": @"Invalid path" } status:400 toFD:fd];
             return;
         }
-        NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:target error:nil] ?: @[];
-        NSMutableArray<NSDictionary *> *items = [NSMutableArray arrayWithCapacity:names.count];
-        for (NSString *name in names) {
-            if ([name hasPrefix:@".wq"]) continue;
-            NSString *full = [target stringByAppendingPathComponent:name];
-            struct stat st;
-            if (lstat(full.fileSystemRepresentation, &st) != 0) continue;
-            BOOL isDir = S_ISDIR(st.st_mode);
-            NSString *itemRel = rel.length ? [rel stringByAppendingPathComponent:name] : name;
-            [items addObject:@{
-                @"name": name,
-                @"path": itemRel,
-                @"isDir": @(isDir),
-                @"size": @(isDir ? 0ULL : (unsigned long long)st.st_size),
-                @"mtime": @((long long)st.st_mtime),
-            }];
+        BOOL outsideSandbox = wq_win_is_outside_sandbox(target);
+        BOOL isAppContainerParent = [target.stringByStandardizingPath isEqualToString:@"/private/var/mobile/Containers/Data/Application"] ||
+                                    [target.stringByStandardizingPath isEqualToString:@"/var/mobile/Containers/Data/Application"];
+
+        NSMutableArray<NSDictionary *> *items = [NSMutableArray new];
+
+        if (isAppContainerParent && !rel.length) {
+            // Enumerate all installed App Data Containers using WQAccess + LaunchServices (like 3uTools / iTunes File Sharing!)
+            if (!wq_display_names_loaded()) {
+                wq_load_display_names();
+            }
+            NSArray<NSString *> *containerPaths = wq_ls_container_paths(nil);
+            if (!containerPaths.count) {
+                containerPaths = wq_enumerate(@"/private/var/mobile/Containers/Data/Application", 0, nil, nil);
+            }
+            NSMutableSet<NSString *> *seenUUIDs = [NSMutableSet new];
+            for (NSString *full in containerPaths) {
+                NSString *uuid = full.lastPathComponent;
+                if (!uuid.length || [seenUUIDs containsObject:uuid]) continue;
+                [seenUUIDs addObject:uuid];
+                (void)wq_grant(full);
+                struct stat st;
+                long long mtime = 0;
+                if (wq_stat(full, &st)) {
+                    mtime = (long long)st.st_mtime;
+                }
+                NSString *bid = wq_bundle_id_for_container(full) ?: wq_container_label(full);
+                NSString *appName = bid.length ? wq_display_name(bid) : nil;
+                NSString *displayName = nil;
+                if (appName.length && bid.length && ![appName isEqualToString:bid]) {
+                    displayName = [NSString stringWithFormat:@"%@ (%@)", appName, bid];
+                } else if (bid.length) {
+                    displayName = [NSString stringWithFormat:@"%@ [%@]", bid, [uuid substringToIndex:MIN((NSUInteger)8, uuid.length)]];
+                } else {
+                    displayName = [NSString stringWithFormat:@"App Container (%@)", [uuid substringToIndex:MIN((NSUInteger)8, uuid.length)]];
+                }
+                [items addObject:@{
+                    @"name": displayName,
+                    @"path": uuid,
+                    @"isDir": @YES,
+                    @"size": @(0ULL),
+                    @"mtime": @(mtime),
+                }];
+            }
+            // Fallback: also check wq_list if containerPaths was empty
+            if (!items.count) {
+                NSString *listErr = nil;
+                NSArray<NSString *> *names = wq_list(target, &listErr) ?: @[];
+                for (NSString *uuid in names) {
+                    if ([uuid hasPrefix:@"."]) continue;
+                    NSString *full = [target stringByAppendingPathComponent:uuid];
+                    (void)wq_grant(full);
+                    NSString *bid = wq_bundle_id_for_container(full) ?: wq_container_label(full);
+                    NSString *appName = bid.length ? wq_display_name(bid) : nil;
+                    NSString *displayName = (appName.length && bid.length) ? [NSString stringWithFormat:@"%@ (%@)", appName, bid] : (bid ?: uuid);
+                    [items addObject:@{
+                        @"name": displayName,
+                        @"path": uuid,
+                        @"isDir": @YES,
+                        @"size": @(0ULL),
+                        @"mtime": @(0LL),
+                    }];
+                }
+            }
+        } else {
+            if (outsideSandbox) {
+                // Ensure container root and target directory hold sandbox extension tokens
+                NSArray<NSString *> *relParts = [rel componentsSeparatedByString:@"/"];
+                if (relParts.count > 0 && wq_win_looks_like_uuid(relParts.firstObject)) {
+                    NSString *containerRoot = [root stringByAppendingPathComponent:relParts.firstObject];
+                    (void)wq_grant(containerRoot);
+                }
+                (void)wq_grant(target);
+            }
+            NSString *listErr = nil;
+            NSArray<NSString *> *names = outsideSandbox
+                ? (wq_list(target, &listErr) ?: [NSFileManager.defaultManager contentsOfDirectoryAtPath:target error:nil] ?: @[])
+                : ([NSFileManager.defaultManager contentsOfDirectoryAtPath:target error:nil] ?: wq_list(target, &listErr) ?: @[]);
+
+            for (NSString *name in names) {
+                if ([name hasPrefix:@".wq"] || [name isEqualToString:@".com.apple.mobile_container_manager.metadata.plist"]) continue;
+                NSString *full = [target stringByAppendingPathComponent:name];
+                struct stat st;
+                BOOL statOk = outsideSandbox ? wq_stat(full, &st) : (lstat(full.fileSystemRepresentation, &st) == 0);
+                if (!statOk) continue;
+                BOOL isDir = S_ISDIR(st.st_mode);
+                NSString *itemRel = rel.length ? [rel stringByAppendingPathComponent:name] : name;
+                [items addObject:@{
+                    @"name": name,
+                    @"path": itemRel,
+                    @"isDir": @(isDir),
+                    @"size": @(isDir ? 0ULL : (unsigned long long)st.st_size),
+                    @"mtime": @((long long)st.st_mtime),
+                }];
+            }
         }
+
         [items sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
             BOOL da = [a[@"isDir"] boolValue];
             BOOL db = [b[@"isDir"] boolValue];
@@ -690,9 +921,22 @@ static NSString *wq_win_web_ui_html(void)
     if ([route isEqualToString:@"/api/download"] && ([method isEqualToString:@"GET"] || [method isEqualToString:@"HEAD"])) {
         NSString *rel = query[@"path"] ?: @"";
         NSString *target = wq_win_safe_resolve(root, rel);
+        if (!target) {
+            [self sendJSON:@{ @"error": @"Invalid path" } status:400 toFD:fd];
+            return;
+        }
+        BOOL outsideSandbox = wq_win_is_outside_sandbox(target);
+        if (outsideSandbox) {
+            (void)wq_grant(target.stringByDeletingLastPathComponent);
+        }
+        int ffd = outsideSandbox ? wq_open_for_reading(target) : open(target.fileSystemRepresentation, O_RDONLY);
+        if (ffd < 0 && !outsideSandbox) {
+            ffd = wq_open_for_reading(target);
+        }
         struct stat st;
-        if (!target || lstat(target.fileSystemRepresentation, &st) != 0 || !S_ISREG(st.st_mode)) {
-            [self sendJSON:@{ @"error": @"File not found" } status:404 toFD:fd];
+        if (ffd < 0 || fstat(ffd, &st) != 0 || !S_ISREG(st.st_mode)) {
+            if (ffd >= 0) close(ffd);
+            [self sendJSON:@{ @"error": @"File not found or unreadable" } status:404 toFD:fd];
             return;
         }
         int64_t fileSize = (int64_t)st.st_size;
@@ -724,25 +968,35 @@ static NSString *wq_win_web_ui_html(void)
                 safeName, sendLen];
         }
         NSData *hData = [respHdr dataUsingEncoding:NSUTF8StringEncoding];
-        if (!wq_win_send_all(fd, hData.bytes, hData.length) || [method isEqualToString:@"HEAD"]) return;
+        if (!wq_win_send_all(fd, hData.bytes, hData.length) || [method isEqualToString:@"HEAD"]) {
+            close(ffd);
+            return;
+        }
 
-        int ffd = open(target.fileSystemRepresentation, O_RDONLY);
-        if (ffd < 0) return;
         if (start > 0) lseek(ffd, (off_t)start, SEEK_SET);
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
         uint8_t *chunk = (uint8_t *)malloc(kWQWinChunkBytes);
         if (chunk) {
             int64_t rem = sendLen;
+            int64_t sentSoFar = 0;
             while (rem > 0 && !atomic_load(&_stopped)) {
                 size_t toRead = (size_t)MIN((int64_t)kWQWinChunkBytes, rem);
                 ssize_t nr = read(ffd, chunk, toRead);
                 if (nr <= 0) break;
                 if (!wq_win_send_all(fd, chunk, (size_t)nr)) break;
                 rem -= (int64_t)nr;
+                sentSoFar += (int64_t)nr;
+                double dt = MAX(0.02, CFAbsoluteTimeGetCurrent() - t0);
+                wq_lan_record_transfer_speed((double)sentSoFar / dt);
             }
             free(chunk);
         }
         close(ffd);
-        [self emitActivity:[NSString stringWithFormat:@"→ Sent to PC: %@ (%@)", target.lastPathComponent, wq_size_text((unsigned long long)fileSize)]];
+        wq_lan_record_transfer_speed(0);
+        [self emitActivity:[NSString stringWithFormat:@"→ Sent (%@): %@ (%@)",
+                            isUsbConnection ? @"USB" : @"Wi-Fi",
+                            target.lastPathComponent,
+                            wq_size_text((unsigned long long)fileSize)]];
         return;
     }
 
@@ -754,7 +1008,17 @@ static NSString *wq_win_web_ui_html(void)
             [self sendJSON:@{ @"error": @"Invalid destination path" } status:400 toFD:fd];
             return;
         }
-        [NSFileManager.defaultManager createDirectoryAtPath:dirPath withIntermediateDirectories:YES attributes:nil error:nil];
+        BOOL outsideSandbox = wq_win_is_outside_sandbox(dirPath);
+        if (outsideSandbox) {
+            (void)wq_grant(dirPath);
+            if (![NSFileManager.defaultManager fileExistsAtPath:dirPath]) {
+                NSString *mkErr = nil;
+                wq_create_dir(dirPath, &mkErr);
+                (void)wq_grant(dirPath);
+            }
+        } else {
+            [NSFileManager.defaultManager createDirectoryAtPath:dirPath withIntermediateDirectories:YES attributes:nil error:nil];
+        }
         NSString *clStr = headers[@"content-length"];
         if (!clStr.length) {
             [self sendJSON:@{ @"error": @"Missing Content-Length" } status:411 toFD:fd];
@@ -765,13 +1029,15 @@ static NSString *wq_win_web_ui_html(void)
             [self sendJSON:@{ @"error": @"Invalid Content-Length" } status:400 toFD:fd];
             return;
         }
-        NSString *finalPath = wq_win_unique_upload_path(dirPath, fileName);
-        NSString *tmpPath = [dirPath stringByAppendingPathComponent:[NSString stringWithFormat:@".wq-win-%@", NSUUID.UUID.UUIDString]];
+
+        // Always stream incoming bytes to a sandbox temp file first, then move/install via WQAccess if outside sandbox
+        NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@".wq-win-%@", NSUUID.UUID.UUIDString]];
         int outFD = open(tmpPath.fileSystemRepresentation, O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (outFD < 0) {
-            [self sendJSON:@{ @"error": @"Cannot write to folder" } status:500 toFD:fd];
+            [self sendJSON:@{ @"error": @"Cannot write temporary upload file" } status:500 toFD:fd];
             return;
         }
+        CFAbsoluteTime t0 = CFAbsoluteTimeGetCurrent();
         int64_t written = 0;
         BOOL ok = YES;
         if (initialBody.length) {
@@ -790,23 +1056,48 @@ static NSString *wq_win_web_ui_html(void)
             if (nr <= 0) { ok = NO; break; }
             if (!wq_win_write_all(outFD, chunk, (size_t)nr)) { ok = NO; break; }
             written += (int64_t)nr;
+            double dt = MAX(0.02, CFAbsoluteTimeGetCurrent() - t0);
+            wq_lan_record_transfer_speed((double)written / dt);
         }
         if (chunk) free(chunk);
         fsync(outFD);
         close(outFD);
+        wq_lan_record_transfer_speed(0);
 
         if (!ok || written != expected) {
             unlink(tmpPath.fileSystemRepresentation);
             [self sendJSON:@{ @"error": @"Incomplete upload" } status:500 toFD:fd];
             return;
         }
-        if (rename(tmpPath.fileSystemRepresentation, finalPath.fileSystemRepresentation) != 0) {
+
+        NSString *finalPath = wq_win_unique_upload_path(dirPath, fileName);
+        BOOL installed = NO;
+        if (outsideSandbox) {
+            (void)wq_grant(dirPath);
+            NSString *cErr = nil;
+            installed = wq_create_file_from(finalPath, tmpPath, &cErr);
+            if (!installed) {
+                installed = wq_write_from_file(finalPath, tmpPath, &cErr);
+            }
             unlink(tmpPath.fileSystemRepresentation);
-            [self sendJSON:@{ @"error": @"Could not finalize upload" } status:500 toFD:fd];
+        } else {
+            if (rename(tmpPath.fileSystemRepresentation, finalPath.fileSystemRepresentation) == 0) {
+                installed = YES;
+            } else {
+                installed = [NSFileManager.defaultManager moveItemAtPath:tmpPath toPath:finalPath error:nil];
+                unlink(tmpPath.fileSystemRepresentation);
+            }
+        }
+
+        if (!installed) {
+            [self sendJSON:@{ @"error": @"Could not finalize upload into destination folder" } status:500 toFD:fd];
             return;
         }
         [self sendJSON:@{ @"ok": @YES, @"name": finalPath.lastPathComponent, @"bytes": @(written) } status:200 toFD:fd];
-        [self emitActivity:[NSString stringWithFormat:@"← Received from PC: %@ (%@)", finalPath.lastPathComponent, wq_size_text((unsigned long long)written)]];
+        [self emitActivity:[NSString stringWithFormat:@"← Received (%@): %@ (%@)",
+                            isUsbConnection ? @"USB" : @"Wi-Fi",
+                            finalPath.lastPathComponent,
+                            wq_size_text((unsigned long long)written)]];
         return;
     }
 
@@ -817,13 +1108,22 @@ static NSString *wq_win_web_ui_html(void)
             [self sendJSON:@{ @"error": @"Invalid folder path" } status:400 toFD:fd];
             return;
         }
-        NSError *err = nil;
-        BOOL ok = [NSFileManager.defaultManager createDirectoryAtPath:target withIntermediateDirectories:YES attributes:nil error:&err];
+        BOOL outsideSandbox = wq_win_is_outside_sandbox(target);
+        BOOL ok = NO;
+        NSString *errMsg = nil;
+        if (outsideSandbox) {
+            (void)wq_grant(target.stringByDeletingLastPathComponent);
+            ok = wq_create_dir(target, &errMsg);
+        } else {
+            NSError *err = nil;
+            ok = [NSFileManager.defaultManager createDirectoryAtPath:target withIntermediateDirectories:YES attributes:nil error:&err];
+            errMsg = err.localizedDescription;
+        }
         if (ok) {
             [self sendJSON:@{ @"ok": @YES } status:200 toFD:fd];
             [self emitActivity:[NSString stringWithFormat:@"+ Created folder: %@", target.lastPathComponent]];
         } else {
-            [self sendJSON:@{ @"error": err.localizedDescription ?: @"Could not create folder" } status:500 toFD:fd];
+            [self sendJSON:@{ @"error": errMsg ?: @"Could not create folder" } status:500 toFD:fd];
         }
         return;
     }
@@ -835,13 +1135,25 @@ static NSString *wq_win_web_ui_html(void)
             [self sendJSON:@{ @"error": @"Invalid path" } status:400 toFD:fd];
             return;
         }
-        NSError *err = nil;
-        BOOL ok = [NSFileManager.defaultManager removeItemAtPath:target error:&err];
+        BOOL outsideSandbox = wq_win_is_outside_sandbox(target);
+        BOOL ok = NO;
+        NSString *errMsg = nil;
+        if (outsideSandbox) {
+            (void)wq_grant(target.stringByDeletingLastPathComponent);
+            ok = wq_delete(target, &errMsg);
+            if (!ok) {
+                ok = wq_delete_tree(target, nil, nil, NULL, NULL, &errMsg);
+            }
+        } else {
+            NSError *err = nil;
+            ok = [NSFileManager.defaultManager removeItemAtPath:target error:&err];
+            errMsg = err.localizedDescription;
+        }
         if (ok) {
             [self sendJSON:@{ @"ok": @YES } status:200 toFD:fd];
             [self emitActivity:[NSString stringWithFormat:@"× Deleted: %@", target.lastPathComponent]];
         } else {
-            [self sendJSON:@{ @"error": err.localizedDescription ?: @"Delete failed" } status:500 toFD:fd];
+            [self sendJSON:@{ @"error": errMsg ?: @"Delete failed" } status:500 toFD:fd];
         }
         return;
     }
@@ -854,14 +1166,23 @@ static NSString *wq_win_web_ui_html(void)
             [self sendJSON:@{ @"error": @"Invalid rename parameters" } status:400 toFD:fd];
             return;
         }
-        NSString *dst = [src.stringByDeletingLastPathComponent stringByAppendingPathComponent:newName];
-        NSError *err = nil;
-        BOOL ok = [NSFileManager.defaultManager moveItemAtPath:src toPath:dst error:&err];
+        BOOL outsideSandbox = wq_win_is_outside_sandbox(src);
+        BOOL ok = NO;
+        NSString *errMsg = nil;
+        if (outsideSandbox) {
+            (void)wq_grant(src.stringByDeletingLastPathComponent);
+            ok = wq_rename(src, newName, &errMsg);
+        } else {
+            NSString *dst = [src.stringByDeletingLastPathComponent stringByAppendingPathComponent:newName];
+            NSError *err = nil;
+            ok = [NSFileManager.defaultManager moveItemAtPath:src toPath:dst error:&err];
+            errMsg = err.localizedDescription;
+        }
         if (ok) {
             [self sendJSON:@{ @"ok": @YES } status:200 toFD:fd];
             [self emitActivity:[NSString stringWithFormat:@"✎ Renamed to: %@", newName]];
         } else {
-            [self sendJSON:@{ @"error": err.localizedDescription ?: @"Rename failed" } status:500 toFD:fd];
+            [self sendJSON:@{ @"error": errMsg ?: @"Rename failed" } status:500 toFD:fd];
         }
         return;
     }
@@ -914,7 +1235,10 @@ static NSString *wq_win_web_ui_html(void)
             return;
         }
         [self sendJSON:@{ @"ok": @YES, @"root": self.rootLabel ?: @"Downloads" } status:200 toFD:fd];
-        [self emitActivity:[NSString stringWithFormat:@"📂 PC switched shared folder → %@", self.rootLabel]];
+        [self emitActivity:[NSString stringWithFormat:@"📂 %@ switched shared folder → %@",
+                            isUsbConnection ? @"PC (USB)" : @"PC (Wi-Fi)",
+                            self.rootLabel]];
+        wq_lan_notify_status_changed();
         void (^rcb)(void) = self.onRootChanged;
         if (rcb) dispatch_async(dispatch_get_main_queue(), rcb);
         return;
@@ -1663,6 +1987,8 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
         [_activeTask cancel];
         [_session invalidateAndCancel];
         _session = nil;
+        wq_lan_record_transfer_speed(0);
+        wq_lan_record_client_connected(@"none", @"", @"", @"");
     }
 }
 
@@ -1734,6 +2060,7 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
 
 - (void)hideProgress
 {
+    wq_lan_record_transfer_speed(0);
     if (self.tableView.tableHeaderView == _progressHeader) {
         self.tableView.tableHeaderView = nil;
     }
@@ -1745,6 +2072,9 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = method;
     [req setValue:_pin forHTTPHeaderField:@"X-WQ-PIN"];
+    BOOL isUsb = [_baseURL containsString:@"127.0.0.1"];
+    [req setValue:(isUsb ? @"usb" : @"wifi") forHTTPHeaderField:@"X-WQ-TRANSPORT"];
+    [req setValue:(UIDevice.currentDevice.name ?: @"iPhone") forHTTPHeaderField:@"X-WQ-CLIENT"];
     return req;
 }
 
@@ -2267,6 +2597,245 @@ didCompleteWithError:(NSError *)error
 
 @end
 
+#pragma mark - Global Connection Status Snapshot & Reusable Top Pill
+
+static WQWinTransferServer *wq_shared_transfer_server(void)
+{
+    static WQWinTransferServer *shared = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        shared = [WQWinTransferServer new];
+    });
+    return shared;
+}
+
+void wq_lan_transfer_ensure_background_server(void)
+{
+    WQWinTransferServer *srv = wq_shared_transfer_server();
+    if (!srv.isRunning) {
+        [srv startWithError:nil];
+    }
+}
+
+WQLanTransferConnectionSnapshot *wq_lan_transfer_current_status(void)
+{
+    WQWinTransferServer *srv = wq_shared_transfer_server();
+    WQLanTransferConnectionSnapshot *snap = [WQLanTransferConnectionSnapshot new];
+    snap.serverRunning = srv.isRunning;
+    snap.pinText = srv.pin ?: @"----";
+    snap.rootLabel = srv.rootLabel ?: @"Downloads";
+    if (srv.isRunning && srv.ipAddress.length) {
+        snap.endpointText = [srv.ipAddress isEqualToString:@"127.0.0.1"]
+            ? @"USB Cable Ready"
+            : [NSString stringWithFormat:@"%@:%u", srv.ipAddress, (unsigned)srv.port];
+    } else {
+        snap.endpointText = @"Server Stopped";
+    }
+
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    [gWQTransferStateLock() lock];
+    if (now - gHostLastPeerSeen > 15.0 && ![gHostActiveTransport isEqualToString:@"none"]) {
+        gHostActiveTransport = @"none";
+        gHostActivePeerName = @"";
+    }
+    if (now - gActiveTransferBpsTime > 3.0) {
+        gActiveTransferBps = 0;
+    }
+    NSString *hostTrans = [gHostActiveTransport copy];
+    NSString *hostPeer = [gHostActivePeerName copy];
+    NSString *cliTrans = [gClientActiveTransport copy];
+    NSString *cliPeer = [gClientActivePeerName copy];
+    NSString *cliEp = [gClientActiveEndpoint copy];
+    NSString *cliRoot = [gClientActiveRoot copy];
+    double bps = gActiveTransferBps;
+    [gWQTransferStateLock() unlock];
+
+    snap.activeBytesPerSec = bps;
+
+    if ([hostTrans isEqualToString:@"usb"]) {
+        snap.mode = WQLanConnectionModeConnectedUSB;
+        snap.transport = @"usb";
+        snap.peerName = hostPeer.length ? hostPeer : @"Windows PC";
+    } else if ([cliTrans isEqualToString:@"usb"]) {
+        snap.mode = WQLanConnectionModeConnectedUSB;
+        snap.transport = @"usb";
+        snap.peerName = cliPeer.length ? cliPeer : @"USB Device";
+        snap.endpointText = cliEp;
+        snap.rootLabel = cliRoot;
+    } else if ([hostTrans isEqualToString:@"wifi"]) {
+        snap.mode = WQLanConnectionModeConnectedWiFi;
+        snap.transport = @"wifi";
+        snap.peerName = hostPeer.length ? hostPeer : @"Remote Device";
+    } else if ([cliTrans isEqualToString:@"wifi"]) {
+        snap.mode = WQLanConnectionModeConnectedWiFi;
+        snap.transport = @"wifi";
+        snap.peerName = cliPeer.length ? cliPeer : @"Remote Device";
+        snap.endpointText = cliEp;
+        snap.rootLabel = cliRoot;
+    } else if (srv.isRunning) {
+        snap.mode = WQLanConnectionModeWaitingReady;
+        snap.transport = @"none";
+        snap.peerName = @"";
+    } else {
+        snap.mode = WQLanConnectionModeNotConnected;
+        snap.transport = @"none";
+        snap.peerName = @"";
+    }
+    return snap;
+}
+
+@interface WQLanGlobalStatusPillView : UIControl
+@property (nonatomic, copy, nullable) void (^onTapHandler)(void);
+- (void)refreshState;
+@end
+
+@implementation WQLanGlobalStatusPillView {
+    UIView *_dotView;
+    UIImageView *_iconView;
+    UILabel *_titleLabel;
+    UILabel *_subLabel;
+    UILabel *_actionBadge;
+    NSTimer *_heartbeatTimer;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    if ((self = [super initWithFrame:frame])) {
+        self.translatesAutoresizingMaskIntoConstraints = NO;
+        self.layer.cornerRadius = 16.0;
+        self.layer.cornerCurve = kCACornerCurveContinuous;
+        self.layer.borderWidth = 1.0;
+        self.clipsToBounds = YES;
+
+        _dotView = [UIView new];
+        _dotView.translatesAutoresizingMaskIntoConstraints = NO;
+        _dotView.layer.cornerRadius = 5.0;
+        _dotView.userInteractionEnabled = NO;
+
+        _iconView = [UIImageView new];
+        _iconView.translatesAutoresizingMaskIntoConstraints = NO;
+        _iconView.contentMode = UIViewContentModeScaleAspectFit;
+        _iconView.userInteractionEnabled = NO;
+
+        _titleLabel = [UILabel new];
+        _titleLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightBold];
+        _titleLabel.numberOfLines = 1;
+        _titleLabel.userInteractionEnabled = NO;
+
+        _subLabel = [UILabel new];
+        _subLabel.font = [UIFont monospacedSystemFontOfSize:10.5 weight:UIFontWeightMedium];
+        _subLabel.numberOfLines = 1;
+        _subLabel.userInteractionEnabled = NO;
+
+        UIStackView *textStack = [[UIStackView alloc] initWithArrangedSubviews:@[_titleLabel, _subLabel]];
+        textStack.axis = UILayoutConstraintAxisVertical;
+        textStack.spacing = 1.5;
+        textStack.userInteractionEnabled = NO;
+
+        _actionBadge = [UILabel new];
+        _actionBadge.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        _actionBadge.textAlignment = NSTextAlignmentCenter;
+        _actionBadge.layer.cornerRadius = 8.0;
+        _actionBadge.clipsToBounds = YES;
+        _actionBadge.userInteractionEnabled = NO;
+        [_actionBadge setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+        [_actionBadge setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+        UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[_dotView, _iconView, textStack, _actionBadge]];
+        row.translatesAutoresizingMaskIntoConstraints = NO;
+        row.axis = UILayoutConstraintAxisHorizontal;
+        row.alignment = UIStackViewAlignmentCenter;
+        row.spacing = 8.0;
+        row.userInteractionEnabled = NO;
+        [self addSubview:row];
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_dotView.widthAnchor constraintEqualToConstant:10],
+            [_dotView.heightAnchor constraintEqualToConstant:10],
+            [_iconView.widthAnchor constraintEqualToConstant:18],
+            [_iconView.heightAnchor constraintEqualToConstant:18],
+            [_actionBadge.widthAnchor constraintGreaterThanOrEqualToConstant:62],
+            [_actionBadge.heightAnchor constraintEqualToConstant:24],
+            [row.topAnchor constraintEqualToAnchor:self.topAnchor constant:8],
+            [row.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-8],
+            [row.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:12],
+            [row.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-12],
+        ]];
+
+        [self addTarget:self action:@selector(handleTap) forControlEvents:UIControlEventTouchUpInside];
+        [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshState) name:WQLanTransferStatusDidChangeNotification object:nil];
+        _heartbeatTimer = [NSTimer scheduledTimerWithTimeInterval:2.5 target:self selector:@selector(refreshState) userInfo:nil repeats:YES];
+        [self refreshState];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [_heartbeatTimer invalidate];
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)handleTap
+{
+    wq_haptic_selection();
+    if (self.onTapHandler) self.onTapHandler();
+}
+
+- (void)refreshState
+{
+    WQLanTransferConnectionSnapshot *snap = wq_lan_transfer_current_status();
+    UIColor *accent = nil;
+    NSString *sym = @"bolt.horizontal.circle.fill";
+    NSString *badgeText = @"Transfer →";
+
+    switch (snap.mode) {
+        case WQLanConnectionModeConnectedUSB:
+            accent = UIColor.systemTealColor;
+            sym = @"cable.connector.horizontal";
+            badgeText = @"USB LIVE";
+            break;
+        case WQLanConnectionModeConnectedWiFi:
+            accent = UIColor.systemGreenColor;
+            sym = @"wifi";
+            badgeText = @"Wi-Fi LIVE";
+            break;
+        case WQLanConnectionModeWaitingReady:
+            accent = wq_theme_accent();
+            sym = @"antenna.radiowaves.left.and.right";
+            badgeText = @"USB / Wi-Fi";
+            break;
+        default:
+            accent = UIColor.systemOrangeColor;
+            sym = @"bolt.slash.fill";
+            badgeText = @"Connect";
+            break;
+    }
+
+    self.backgroundColor = [accent colorWithAlphaComponent:0.13];
+    self.layer.borderColor = [accent colorWithAlphaComponent:0.42].CGColor;
+    _dotView.backgroundColor = accent;
+    _iconView.image = [UIImage systemImageNamed:sym] ?: [UIImage systemImageNamed:@"arrow.left.arrow.right.circle.fill"];
+    _iconView.tintColor = accent;
+    _titleLabel.text = [snap statusTitle];
+    _titleLabel.textColor = wq_theme_primary_text();
+    _subLabel.text = [snap statusSubtitle];
+    _subLabel.textColor = wq_theme_secondary_text();
+    _actionBadge.text = [NSString stringWithFormat:@"  %@  ", badgeText];
+    _actionBadge.textColor = accent;
+    _actionBadge.backgroundColor = [accent colorWithAlphaComponent:0.18];
+}
+
+@end
+
+UIView *wq_lan_transfer_make_global_status_pill(void (^onTap)(void))
+{
+    wq_lan_transfer_ensure_background_server();
+    WQLanGlobalStatusPillView *pill = [[WQLanGlobalStatusPillView alloc] initWithFrame:CGRectZero];
+    pill.onTapHandler = onTap;
+    return pill;
+}
+
 #pragma mark - WQWinTransferViewController
 
 @interface WQWinTransferViewController () <UIDocumentPickerDelegate>
@@ -2277,14 +2846,16 @@ didCompleteWithError:(NSError *)error
     WQLanDiscoveryClient *_discovery;
     NSArray<WQLanPeer *> *_peers;
     UISegmentedControl *_modeControl;
-    NSInteger _mode; // 0 = Host (Share iPhone), 1 = Client (Connect to PC / Android / iPhone)
+    NSInteger _mode; // 0 = Share iPhone (Wi-Fi), 1 = USB Cable Mode, 2 = Connect to Device
     NSString *_errorText;
     NSMutableArray<NSString *> *_logs;
     UIView *_heroHeader;
+    UIView *_topConnectionPill;
     UIImageView *_qrView;
     UILabel *_pinLabel;
     UILabel *_addrLabel;
     UILabel *_statusLabel;
+    UILabel *_transportBadgeLabel;
     UIBackgroundTaskIdentifier _bgTask;
     BOOL _wasRunningBeforeBackground;
 }
@@ -2292,7 +2863,7 @@ didCompleteWithError:(NSError *)error
 - (instancetype)initWithInitialRootPath:(NSString *)rootPath title:(NSString *)rootTitle
 {
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
-        _server = [WQWinTransferServer new];
+        _server = wq_shared_transfer_server();
         if (rootPath.length) {
             _server.rootPath = rootPath;
             _server.rootLabel = rootTitle.length ? rootTitle : rootPath.lastPathComponent;
@@ -2303,7 +2874,7 @@ didCompleteWithError:(NSError *)error
         _mode = 0;
         _bgTask = UIBackgroundTaskInvalid;
         _wasRunningBeforeBackground = NO;
-        self.title = WQLocalized(@"LAN Transfer");
+        self.title = WQLocalized(@"USB & Wi-Fi Transfer");
         self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
     return self;
@@ -2314,7 +2885,7 @@ didCompleteWithError:(NSError *)error
     if (!entry.length) return;
     [_logs insertObject:entry atIndex:0];
     if (_logs.count > 60) [_logs removeLastObject];
-    if (_mode == 0) [self.tableView reloadData];
+    if (_mode == 0 || _mode == 1) [self.tableView reloadData];
 }
 
 - (void)viewDidLoad
@@ -2326,7 +2897,11 @@ didCompleteWithError:(NSError *)error
     }
     wq_theme_apply_scroll_insets(self.tableView, 40.0);
 
-    _modeControl = [[UISegmentedControl alloc] initWithItems:@[WQLocalized(@"Share iPhone"), WQLocalized(@"Connect to Device")]];
+    _modeControl = [[UISegmentedControl alloc] initWithItems:@[
+        WQLocalized(@"Wi-Fi Share"),
+        WQLocalized(@"⚡ USB Cable"),
+        WQLocalized(@"Connect Peer")
+    ]];
     _modeControl.selectedSegmentIndex = 0;
     [_modeControl addTarget:self action:@selector(modeChanged:) forControlEvents:UIControlEventValueChanged];
     self.navigationItem.titleView = _modeControl;
@@ -2336,19 +2911,21 @@ didCompleteWithError:(NSError *)error
         __strong typeof(weakSelf) me = weakSelf;
         if (!me) return;
         [me appendSessionLog:entry];
+        [me refreshHeader];
     };
 
     _server.onRootChanged = ^{
         __strong typeof(weakSelf) me = weakSelf;
         if (!me) return;
-        if (me->_mode == 0) [me.tableView reloadData];
+        [me refreshHeader];
+        [me.tableView reloadData];
     };
 
     _discovery.onPeersChanged = ^(NSArray<WQLanPeer *> *peers) {
         __strong typeof(weakSelf) me = weakSelf;
         if (!me) return;
         me->_peers = peers;
-        if (me->_mode == 1) [me.tableView reloadData];
+        if (me->_mode == 2) [me.tableView reloadData];
     };
 
     if (self.navigationController.viewControllers.firstObject == self) {
@@ -2360,8 +2937,13 @@ didCompleteWithError:(NSError *)error
 
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(appDidEnterBackground) name:UIApplicationDidEnterBackgroundNotification object:nil];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(appWillEnterForeground) name:UIApplicationWillEnterForegroundNotification object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(refreshHeader) name:WQLanTransferStatusDidChangeNotification object:nil];
     [self buildHeroHeader];
-    [self startServer];
+    if (!_server.isRunning) {
+        [self startServer];
+    } else {
+        [self refreshHeader];
+    }
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -2376,7 +2958,6 @@ didCompleteWithError:(NSError *)error
     if (self.isMovingFromParentViewController || self.isBeingDismissed) {
         UIApplication.sharedApplication.idleTimerDisabled = NO;
         [self endBackgroundKeepAliveTask];
-        [_server stop];
         [_discovery stop];
     }
 }
@@ -2385,7 +2966,6 @@ didCompleteWithError:(NSError *)error
 {
     UIApplication.sharedApplication.idleTimerDisabled = NO;
     [self endBackgroundKeepAliveTask];
-    [_server stop];
     [_discovery stop];
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
@@ -2422,7 +3002,7 @@ didCompleteWithError:(NSError *)error
     } else {
         [self refreshHeader];
     }
-    if (_mode == 1) {
+    if (_mode == 2) {
         [_discovery start];
         [_discovery sendProbeNow];
     }
@@ -2432,14 +3012,15 @@ didCompleteWithError:(NSError *)error
 {
     wq_haptic_selection();
     _mode = sender.selectedSegmentIndex;
-    if (_mode == 0) {
+    if (_mode == 0 || _mode == 1) {
         [_discovery stop];
         self.tableView.tableHeaderView = _heroHeader;
         [self refreshHeader];
     } else {
         _discovery.ignoreIP = _server.isRunning ? _server.ipAddress : nil;
         _discovery.ignorePort = _server.isRunning ? _server.port : 0;
-        self.tableView.tableHeaderView = nil;
+        self.tableView.tableHeaderView = _heroHeader;
+        [self refreshHeader];
         [_discovery start];
         [_discovery sendProbeNow];
     }
@@ -2457,18 +3038,32 @@ didCompleteWithError:(NSError *)error
     _discovery.ignoreIP = _server.isRunning ? _server.ipAddress : nil;
     _discovery.ignorePort = _server.isRunning ? _server.port : 0;
     [self refreshHeader];
-    if (_mode == 0) [self.tableView reloadData];
+    [self.tableView reloadData];
 }
 
 - (void)buildHeroHeader
 {
     CGFloat w = self.tableView.bounds.size.width ?: self.view.bounds.size.width ?: 360.0;
-    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 286)];
+    UIView *box = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 344)];
     box.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    __weak typeof(self) weakSelf = self;
+    _topConnectionPill = wq_lan_transfer_make_global_status_pill(^{
+        __strong typeof(weakSelf) me = weakSelf;
+        if (!me) return;
+        if (!me->_server.isRunning) [me startServer];
+    });
 
     UIVisualEffectView *card = wq_theme_make_glass_card(22.0, YES);
     card.translatesAutoresizingMaskIntoConstraints = NO;
+    [box addSubview:_topConnectionPill];
     [box addSubview:card];
+
+    _transportBadgeLabel = [UILabel new];
+    _transportBadgeLabel.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightBold];
+    _transportBadgeLabel.textAlignment = NSTextAlignmentCenter;
+    _transportBadgeLabel.layer.cornerRadius = 8.0;
+    _transportBadgeLabel.clipsToBounds = YES;
 
     _statusLabel = [UILabel new];
     _statusLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
@@ -2476,14 +3071,15 @@ didCompleteWithError:(NSError *)error
     _statusLabel.numberOfLines = 2;
 
     _pinLabel = [UILabel new];
-    _pinLabel.font = [UIFont monospacedDigitSystemFontOfSize:34 weight:UIFontWeightHeavy];
+    _pinLabel.font = [UIFont monospacedDigitSystemFontOfSize:32 weight:UIFontWeightHeavy];
     _pinLabel.textColor = wq_theme_accent();
     _pinLabel.textAlignment = NSTextAlignmentCenter;
 
     _addrLabel = [UILabel new];
-    _addrLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightMedium];
+    _addrLabel.font = [UIFont monospacedSystemFontOfSize:12.5 weight:UIFontWeightMedium];
     _addrLabel.textColor = wq_theme_primary_text();
     _addrLabel.textAlignment = NSTextAlignmentCenter;
+    _addrLabel.numberOfLines = 2;
 
     _qrView = [UIImageView new];
     _qrView.contentMode = UIViewContentModeScaleAspectFit;
@@ -2491,23 +3087,26 @@ didCompleteWithError:(NSError *)error
     _qrView.layer.cornerRadius = 12;
     _qrView.clipsToBounds = YES;
     _qrView.translatesAutoresizingMaskIntoConstraints = NO;
-    [_qrView.widthAnchor constraintEqualToConstant:124].active = YES;
-    [_qrView.heightAnchor constraintEqualToConstant:124].active = YES;
+    [_qrView.widthAnchor constraintEqualToConstant:118].active = YES;
+    [_qrView.heightAnchor constraintEqualToConstant:118].active = YES;
 
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[_statusLabel, _pinLabel, _addrLabel, _qrView]];
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[_transportBadgeLabel, _statusLabel, _pinLabel, _addrLabel, _qrView]];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
     stack.alignment = UIStackViewAlignmentCenter;
-    stack.spacing = 8;
+    stack.spacing = 6;
     [card.contentView addSubview:stack];
 
     [NSLayoutConstraint activateConstraints:@[
-        [card.topAnchor constraintEqualToAnchor:box.topAnchor constant:8],
+        [_topConnectionPill.topAnchor constraintEqualToAnchor:box.topAnchor constant:6],
+        [_topConnectionPill.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
+        [_topConnectionPill.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
+        [card.topAnchor constraintEqualToAnchor:_topConnectionPill.bottomAnchor constant:8],
         [card.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-8],
         [card.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:16],
         [card.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-16],
-        [stack.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:16],
-        [stack.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-16],
+        [stack.topAnchor constraintEqualToAnchor:card.contentView.topAnchor constant:12],
+        [stack.bottomAnchor constraintEqualToAnchor:card.contentView.bottomAnchor constant:-12],
         [stack.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor constant:14],
         [stack.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor constant:-14],
     ]];
@@ -2517,18 +3116,45 @@ didCompleteWithError:(NSError *)error
 
 - (void)refreshHeader
 {
+    if ([_topConnectionPill isKindOfClass:WQLanGlobalStatusPillView.class]) {
+        [(WQLanGlobalStatusPillView *)_topConnectionPill refreshState];
+    }
+    WQLanTransferConnectionSnapshot *snap = wq_lan_transfer_current_status();
+
+    if (snap.mode == WQLanConnectionModeConnectedUSB) {
+        _transportBadgeLabel.text = [NSString stringWithFormat:@"  ⚡ ACTIVE TRANSPORT: USB CABLE (%@)  ", snap.peerName];
+        _transportBadgeLabel.textColor = UIColor.systemTealColor;
+        _transportBadgeLabel.backgroundColor = [UIColor.systemTealColor colorWithAlphaComponent:0.18];
+    } else if (snap.mode == WQLanConnectionModeConnectedWiFi) {
+        _transportBadgeLabel.text = [NSString stringWithFormat:@"  📶 ACTIVE TRANSPORT: WI-FI (%@)  ", snap.peerName];
+        _transportBadgeLabel.textColor = UIColor.systemGreenColor;
+        _transportBadgeLabel.backgroundColor = [UIColor.systemGreenColor colorWithAlphaComponent:0.18];
+    } else if (_mode == 1) {
+        _transportBadgeLabel.text = @"  🔌 USB CABLE TRANSFER MODE (LIKE 3UTOOLS / ITUNES)  ";
+        _transportBadgeLabel.textColor = UIColor.systemTealColor;
+        _transportBadgeLabel.backgroundColor = [UIColor.systemTealColor colorWithAlphaComponent:0.18];
+    } else {
+        _transportBadgeLabel.text = @"  ⚡ DUAL ENGINE: USB CABLE + WI-FI READY  ";
+        _transportBadgeLabel.textColor = wq_theme_accent();
+        _transportBadgeLabel.backgroundColor = [wq_theme_accent() colorWithAlphaComponent:0.16];
+    }
+
     if (_server.isRunning && _server.ipAddress.length) {
-        BOOL usbOnly = [_server.ipAddress isEqualToString:@"127.0.0.1"];
+        BOOL usbOnly = [_server.ipAddress isEqualToString:@"127.0.0.1"] || (_mode == 1);
         if (usbOnly) {
-            _statusLabel.text = WQLocalized(@"● USB Cable Ready · Plug into Windows PC & click 🍎 iPhone App Docs (USB)");
+            _statusLabel.text = (snap.mode == WQLanConnectionModeConnectedUSB)
+                ? [NSString stringWithFormat:@"● Connected to %@ via USB Cable · Sharing /%@", snap.peerName, _server.rootLabel]
+                : WQLocalized(@"● USB Cable Ready · Plug into Windows PC (No PIN or Wi-Fi Needed!)");
             _statusLabel.textColor = UIColor.systemTealColor;
-            _pinLabel.text = [NSString stringWithFormat:@"PIN  %@", _server.pin];
-            _addrLabel.text = WQLocalized(@"USB Cable Mode (Wi-Fi Off · Direct Lightning / USB-C)");
+            _pinLabel.text = [NSString stringWithFormat:@"PIN  %@  (Auto-Paired on USB)", _server.pin];
+            _addrLabel.text = [NSString stringWithFormat:@"USB Port %u · Sharing /%@ (App Containers & Docs Ready)", (unsigned)_server.port, _server.rootLabel ?: @"Downloads"];
             _qrView.hidden = YES;
         } else {
             NSString *urlStr = [NSString stringWithFormat:@"http://%@:%u", _server.ipAddress, (unsigned)_server.port];
             NSString *qrStr = [NSString stringWithFormat:@"%@/?pin=%@", urlStr, wq_win_query_encode(_server.pin)];
-            _statusLabel.text = WQLocalized(@"● Live · Wi-Fi + USB Cable Ready (Windows, Android, or Browser)");
+            _statusLabel.text = (snap.mode == WQLanConnectionModeConnectedWiFi)
+                ? [NSString stringWithFormat:@"● Connected to %@ via Wi-Fi · Sharing /%@", snap.peerName, _server.rootLabel]
+                : WQLocalized(@"● Live · Wi-Fi + USB Cable Ready (Windows, Android, or Browser)");
             _statusLabel.textColor = UIColor.systemGreenColor;
             _pinLabel.text = [NSString stringWithFormat:@"PIN  %@", _server.pin];
             _addrLabel.text = urlStr;
@@ -2595,11 +3221,13 @@ didCompleteWithError:(NSError *)error
         NSString *entry = [NSString stringWithFormat:@"📤 Added %lu file(s) to My Selected Files — ready for PC!", (unsigned long)added];
         [_logs insertObject:entry atIndex:0];
         if (_logs.count > 40) [_logs removeLastObject];
+        wq_lan_notify_status_changed();
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        [self refreshHeader];
         [self.tableView reloadData];
         wq_alert(self,
                  WQLocalized(@"Files Ready to Share"),
-                 [NSString stringWithFormat:WQLocalized(@"Added %lu file(s) to \"My Selected Files\".\n\nOn Windows PC, click 🍎 iPhone App Docs (USB) or connect via Wi-Fi and click \"My Selected Files\" to download them."), (unsigned long)added]);
+                 [NSString stringWithFormat:WQLocalized(@"Added %lu file(s) to \"My Selected Files\".\n\nOn Windows PC, click 🍎 Connect iPhone (USB) or connect via Wi-Fi and click \"My Selected Files\" to download them."), (unsigned long)added]);
     } else {
         wq_alert(self, WQLocalized(@"Could Not Add Files"), WQLocalized(@"Please try selecting those files again."));
     }
@@ -2670,6 +3298,9 @@ didCompleteWithError:(NSError *)error
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:infoURL];
     req.timeoutInterval = (idx == 0) ? 5.0 : 2.5;
     [req setValue:cleanPin forHTTPHeaderField:@"X-WQ-PIN"];
+    BOOL isUsb = [host isEqualToString:@"127.0.0.1"];
+    [req setValue:(isUsb ? @"usb" : @"wifi") forHTTPHeaderField:@"X-WQ-TRANSPORT"];
+    [req setValue:(UIDevice.currentDevice.name ?: @"iPhone") forHTTPHeaderField:@"X-WQ-CLIENT"];
 
     __weak typeof(self) weakSelf = self;
     [[NSURLSession.sharedSession dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -2705,6 +3336,7 @@ didCompleteWithError:(NSError *)error
             NSString *resolvedEndpoint = [NSString stringWithFormat:@"%@:%ld", host, (long)port];
             [NSUserDefaults.standardUserDefaults setObject:resolvedEndpoint forKey:kWQWinLastEndpointPref];
             [NSUserDefaults.standardUserDefaults setObject:cleanPin forKey:kWQWinLastPinPref];
+            wq_lan_record_client_connected(isUsb ? @"usb" : @"wifi", dev, resolvedEndpoint, root);
             wq_log(@"[TransferClient] Connected to %@ (%@) at %@ · /%@", dev, platLabel, resolvedEndpoint, root);
             [me appendSessionLog:[NSString stringWithFormat:@"✓ Connected to %@ (%@) at %@", dev, platLabel, resolvedEndpoint]];
             wq_haptic_notify(UINotificationFeedbackTypeSuccess);
@@ -2814,6 +3446,7 @@ didCompleteWithError:(NSError *)error
     NSString *bld = info[@"CFBundleVersion"] ?: @"1";
     NSString *dev = [NSString stringWithFormat:@"%@ · iOS %@", UIDevice.currentDevice.model ?: @"iPhone", UIDevice.currentDevice.systemVersion ?: @"26.0"];
     NSString *ifaces = wq_win_all_network_interfaces_summary();
+    WQLanTransferConnectionSnapshot *snap = wq_lan_transfer_current_status();
     NSString *crashes = wq_crash_log_text();
     NSString *session = wq_log_text();
     NSString *xferLogs = _logs.count ? [_logs componentsJoinedByString:@"\n"] : @"(No recent transfer activity entries)";
@@ -2824,6 +3457,7 @@ didCompleteWithError:(NSError *)error
             @"App Version : %@ (%@)\n"
             @"Device      : %@\n"
             @"Server      : %@ (%@:%u · /%@)\n"
+            @"Connection  : %@\n"
             @"Active IPs  : %@\n"
             @"==================================================================\n\n"
             @"--- PERSISTED CRASH & ERROR LOG ---\n%@\n\n"
@@ -2834,6 +3468,7 @@ didCompleteWithError:(NSError *)error
             _server.ipAddress ?: @"127.0.0.1",
             (unsigned)_server.port,
             _server.rootLabel ?: @"Downloads",
+            [snap statusTitle],
             ifaces,
             crashes.length ? crashes : @"None recorded",
             xferLogs,
@@ -2874,7 +3509,7 @@ didCompleteWithError:(NSError *)error
 
 - (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger)section
 {
-    if (_mode == 0) {
+    if (_mode == 0 || _mode == 1) {
         if (section == 0) return 6;
         return MAX(1, (NSInteger)_logs.count);
     }
@@ -2887,7 +3522,10 @@ didCompleteWithError:(NSError *)error
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
 {
     if (_mode == 0) {
-        return (section == 0) ? WQLocalized(@"Transfer Controls (Wi-Fi & USB Cable)") : WQLocalized(@"Live Transfer Activity");
+        return (section == 0) ? WQLocalized(@"Wi-Fi & USB Transfer Controls") : WQLocalized(@"Live Transfer Activity (USB & Wi-Fi)");
+    }
+    if (_mode == 1) {
+        return (section == 0) ? WQLocalized(@"⚡ USB Cable Mode (Like 3uTools / iTunes)") : WQLocalized(@"Live USB Cable Activity");
     }
     return (section == 0) ? WQLocalized(@"Nearby Devices on Wi-Fi (PC · Android · iOS)") : WQLocalized(@"QR, Manual & Diagnostics");
 }
@@ -2897,7 +3535,7 @@ didCompleteWithError:(NSError *)error
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"win-row"]
         ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"win-row"];
 
-    if (_mode == 0) {
+    if (_mode == 0 || _mode == 1) {
         UIListContentConfiguration *c = [UIListContentConfiguration valueCellConfiguration];
         c.textProperties.color = wq_theme_primary_text();
         c.secondaryTextProperties.color = wq_theme_secondary_text();
@@ -2905,9 +3543,9 @@ didCompleteWithError:(NSError *)error
 
         if (indexPath.section == 0) {
             if (indexPath.row == 0) {
-                c.text = WQLocalized(@"Shared Folder");
+                c.text = (_mode == 1) ? WQLocalized(@"USB Shared Folder (App Containers / Docs)") : WQLocalized(@"Shared Folder");
                 c.secondaryText = _server.rootLabel;
-                c.image = [UIImage systemImageNamed:@"folder.fill"];
+                c.image = [UIImage systemImageNamed:(_mode == 1) ? @"cable.connector.horizontal" : @"folder.fill"];
             } else if (indexPath.row == 1) {
                 c.text = WQLocalized(@"Pick Files from iPhone to Share…");
                 NSUInteger cnt = [self selectedOutboxCount];
@@ -2916,9 +3554,15 @@ didCompleteWithError:(NSError *)error
                     : WQLocalized(@"Files / iCloud");
                 c.image = [UIImage systemImageNamed:@"plus.rectangle.on.folder.fill"];
             } else if (indexPath.row == 2) {
-                c.text = WQLocalized(@"Copy Wi-Fi Address & PIN");
-                c.secondaryText = _server.isRunning ? _server.pin : @"--";
-                c.image = [UIImage systemImageNamed:@"doc.on.doc"];
+                if (_mode == 1) {
+                    c.text = WQLocalized(@"Switch USB to App Data Containers");
+                    c.secondaryText = [_server.rootLabel isEqualToString:@"App Data"] ? WQLocalized(@"Active") : WQLocalized(@"All Apps");
+                    c.image = [UIImage systemImageNamed:@"square.grid.2x2.fill"];
+                } else {
+                    c.text = WQLocalized(@"Copy Wi-Fi Address & PIN");
+                    c.secondaryText = _server.isRunning ? _server.pin : @"--";
+                    c.image = [UIImage systemImageNamed:@"doc.on.doc"];
+                }
                 cell.accessoryType = UITableViewCellAccessoryNone;
             } else if (indexPath.row == 3) {
                 c.text = WQLocalized(@"Set Fixed Pairing PIN…");
@@ -2936,26 +3580,31 @@ didCompleteWithError:(NSError *)error
                 c.image = [UIImage systemImageNamed:_server.isRunning ? @"stop.circle.fill" : @"play.circle.fill"];
                 cell.accessoryType = UITableViewCellAccessoryNone;
             }
-            c.imageProperties.tintColor = (indexPath.row == 1 || indexPath.row == 4) ? UIColor.systemTealColor : wq_theme_accent();
+            c.imageProperties.tintColor = (indexPath.row == 1 || indexPath.row == 4 || _mode == 1) ? UIColor.systemTealColor : wq_theme_accent();
         } else {
             c = [UIListContentConfiguration subtitleCellConfiguration];
             if (!_logs.count) {
-                c.text = WQLocalized(@"Waiting for Windows PC (USB / Wi-Fi), Android, or Browser…");
-                c.secondaryText = WQLocalized(@"Tap 'Pick Files from iPhone to Share…' to choose files right from your screen, or plug into Windows PC & click 🍎 iPhone App Docs (USB).");
+                if (_mode == 1) {
+                    c.text = WQLocalized(@"⚡ USB Cable Mode Active — Plug iPhone into Windows PC");
+                    c.secondaryText = WQLocalized(@"On Windows PC, open WQGlass Transfer and click '🍎 Connect iPhone (USB)' to browse all App Data Containers, Documents, Downloads, or My Selected Files at full USB cable speed (even with Wi-Fi OFF).");
+                } else {
+                    c.text = WQLocalized(@"Waiting for Windows PC (USB / Wi-Fi), Android, or Browser…");
+                    c.secondaryText = WQLocalized(@"Tap 'Pick Files from iPhone to Share…' to choose files right from your screen, or plug into Windows PC & click 🍎 Connect iPhone (USB).");
+                }
             } else {
                 c.text = _logs[(NSUInteger)indexPath.row];
             }
             c.textProperties.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
             c.textProperties.color = wq_theme_primary_text();
             c.secondaryTextProperties.color = wq_theme_secondary_text();
-            c.secondaryTextProperties.numberOfLines = 2;
+            c.secondaryTextProperties.numberOfLines = 3;
             cell.accessoryType = UITableViewCellAccessoryNone;
         }
         cell.contentConfiguration = c;
         return cell;
     }
 
-    // Mode 1: Client (Connect to Device)
+    // Mode 2: Client (Connect to Device)
     UIListContentConfiguration *c = [UIListContentConfiguration subtitleCellConfiguration];
     c.textProperties.color = wq_theme_primary_text();
     c.secondaryTextProperties.color = wq_theme_secondary_text();
@@ -3005,7 +3654,7 @@ didCompleteWithError:(NSError *)error
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     wq_haptic_selection();
 
-    if (_mode == 1) {
+    if (_mode == 2) {
         if (indexPath.section == 0) {
             if ((NSUInteger)indexPath.row < _peers.count) {
                 [self promptPinForPeer:_peers[(NSUInteger)indexPath.row]];
@@ -3026,25 +3675,33 @@ didCompleteWithError:(NSError *)error
     if (indexPath.section != 0) return;
 
     if (indexPath.row == 0) {
-        UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Choose Folder to Share (Wi-Fi & USB)"), nil, UIAlertControllerStyleActionSheet);
+        UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Choose Folder to Share (Wi-Fi & USB Cable)"), nil, UIAlertControllerStyleActionSheet);
+        [sheet addAction:wq_alert_action(WQLocalized(@"App Data Containers (All Installed Apps · Like 3uTools)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            self->_server.rootPath = @"/private/var/mobile/Containers/Data/Application";
+            self->_server.rootLabel = @"App Data";
+            wq_lan_notify_status_changed();
+            [self refreshHeader];
+            [self.tableView reloadData];
+        })];
         [sheet addAction:wq_alert_action(WQLocalized(@"WQ Glass Downloads (Videos / Audio / Files)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             self->_server.rootPath = wq_win_downloads_dir();
             self->_server.rootLabel = @"Downloads";
+            wq_lan_notify_status_changed();
+            [self refreshHeader];
             [self.tableView reloadData];
         })];
         [sheet addAction:wq_alert_action(WQLocalized(@"WQ Glass Documents (All Saved Files)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             self->_server.rootPath = wq_win_documents_dir();
             self->_server.rootLabel = @"Documents";
+            wq_lan_notify_status_changed();
+            [self refreshHeader];
             [self.tableView reloadData];
         })];
         [sheet addAction:wq_alert_action(WQLocalized(@"My Selected Files (Picked on iPhone)"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             self->_server.rootPath = wq_win_selected_outbox_dir();
             self->_server.rootLabel = @"My Selected Files";
-            [self.tableView reloadData];
-        })];
-        [sheet addAction:wq_alert_action(WQLocalized(@"App Data Containers"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
-            self->_server.rootPath = @"/private/var/mobile/Containers/Data/Application";
-            self->_server.rootLabel = @"App Data";
+            wq_lan_notify_status_changed();
+            [self refreshHeader];
             [self.tableView reloadData];
         })];
         [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
@@ -3063,6 +3720,8 @@ didCompleteWithError:(NSError *)error
         [sheet addAction:wq_alert_action(WQLocalized(@"Switch Shared Folder to My Selected Files"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
             self->_server.rootPath = wq_win_selected_outbox_dir();
             self->_server.rootLabel = @"My Selected Files";
+            wq_lan_notify_status_changed();
+            [self refreshHeader];
             [self.tableView reloadData];
         })];
         if (cnt > 0) {
@@ -3076,7 +3735,15 @@ didCompleteWithError:(NSError *)error
         sheet.popoverPresentationController.sourceRect = cell ? cell.bounds : self.view.bounds;
         [self presentViewController:sheet animated:YES completion:nil];
     } else if (indexPath.row == 2) {
-        if (_server.isRunning && _server.ipAddress.length) {
+        if (_mode == 1) {
+            _server.rootPath = @"/private/var/mobile/Containers/Data/Application";
+            _server.rootLabel = @"App Data";
+            [self appendSessionLog:@"📦 Switched USB shared folder to App Data Containers (all installed apps)"];
+            wq_lan_notify_status_changed();
+            [self refreshHeader];
+            [self.tableView reloadData];
+            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+        } else if (_server.isRunning && _server.ipAddress.length) {
             NSString *copyText = [_server.ipAddress isEqualToString:@"127.0.0.1"]
                 ? [NSString stringWithFormat:@"USB Cable Mode · PIN: %@", _server.pin]
                 : [NSString stringWithFormat:@"http://%@:%u (PIN: %@)", _server.ipAddress, (unsigned)_server.port, _server.pin];
@@ -3106,6 +3773,7 @@ didCompleteWithError:(NSError *)error
                 wq_alert(self, WQLocalized(@"Invalid PIN"), WQLocalized(@"PIN must be 4 to 8 digits."));
                 return;
             }
+            wq_lan_notify_status_changed();
             [self refreshHeader];
             [self.tableView reloadData];
         })];

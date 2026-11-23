@@ -16,8 +16,12 @@ public sealed class TransferClient : IDisposable
     private readonly HttpClient _http;
     private readonly string _baseUrl;
     private readonly string _pin;
+    private readonly string _transport;
 
-    public TransferClient(string endpoint, string pin)
+    public string Endpoint { get; }
+    public bool IsUsbTunnel => string.Equals(_transport, "usb", StringComparison.OrdinalIgnoreCase);
+
+    public TransferClient(string endpoint, string pin, string? transportOverride = null)
     {
         string clean = endpoint.Trim().TrimEnd('/');
         if (!clean.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
@@ -26,7 +30,12 @@ public sealed class TransferClient : IDisposable
             clean = "http://" + clean;
         }
         _baseUrl = clean;
+        Endpoint = clean.Replace("http://", "", StringComparison.OrdinalIgnoreCase)
+                        .Replace("https://", "", StringComparison.OrdinalIgnoreCase);
         _pin = pin.Trim();
+        _transport = !string.IsNullOrWhiteSpace(transportOverride)
+            ? transportOverride.Trim().ToLowerInvariant()
+            : (Endpoint.StartsWith("127.0.0.1:", StringComparison.OrdinalIgnoreCase) ? "usb" : "wifi");
 
         var handler = new SocketsHttpHandler
         {
@@ -65,7 +74,23 @@ public sealed class TransferClient : IDisposable
     {
         var req = new HttpRequestMessage(method, _baseUrl + relativeUrl);
         req.Headers.Add("X-WQ-PIN", _pin);
+        req.Headers.Add("X-WQ-TRANSPORT", _transport);
+        req.Headers.Add("X-WQ-CLIENT", $"{Environment.MachineName} (Windows PC)");
         return req;
+    }
+
+    public async Task<bool> PingAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var req = CreateRequest(HttpMethod.Get, "/api/ping");
+            using var resp = await _http.SendAsync(req, ct);
+            return resp.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task<PhoneInfo> GetInfoAsync(CancellationToken ct = default)
