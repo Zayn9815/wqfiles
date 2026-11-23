@@ -369,7 +369,7 @@ private fun ClientScreen(
                 currentPath = ""
                 activeCategory = "All"
                 searchQuery = ""
-                AppLogger.info("Client", "Connected to ${info.device} (${info.platformBadge} ${info.osVersion}) at $cleanEp · /${info.root}")
+                AppLogger.info("Client", "Connected to ${info.device} (${info.osSummary}) at $cleanEp · /${info.root}")
                 refreshList(c, "")
             } catch (e: Exception) {
                 AppLogger.error("Client", "Connect failed to $cleanEp", e)
