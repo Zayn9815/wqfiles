@@ -2643,15 +2643,16 @@ static void wq_dl_fetch_video_thumb(NSString *path, void (^done)(UIImage *_Nulla
     clipDl.tintColor = wq_theme_accent();
     [clipDl setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
     [clipDl addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
-        if (!weakSelf->_clipURL.length) return;
-        NSString *u = weakSelf->_clipURL;
+        WQDownloadManagerViewController *me = weakSelf;
+        if (!me || !me->_clipURL.length) return;
+        NSString *u = me->_clipURL;
         if ([u.lowercaseString containsString:@".m3u8"]) {
-            wq_present_hls_quality_picker(weakSelf, u, nil, nil);
+            wq_present_hls_quality_picker(me, u, nil, nil);
         } else {
-            wq_present_add_download_sheet(weakSelf, u, nil, -1, nil, NO, nil);
+            wq_present_add_download_sheet(me, u, nil, -1, nil, NO, nil);
         }
-        weakSelf->_dismissedClipURL = u;
-        weakSelf->_clipBanner.hidden = YES;
+        me->_dismissedClipURL = u;
+        me->_clipBanner.hidden = YES;
     }] forControlEvents:UIControlEventTouchUpInside];
     UIStackView *clipRow = [[UIStackView alloc] initWithArrangedSubviews:@[_clipLabel, clipDl]];
     clipRow.translatesAutoresizingMaskIntoConstraints = NO;
@@ -2705,10 +2706,12 @@ static void wq_dl_fetch_video_thumb(NSString *path, void (^done)(UIImage *_Nulla
         pb.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
         NSInteger idx = (NSInteger)i;
         [pb addAction:[UIAction actionWithHandler:^(UIAction *__unused a) {
+            WQDownloadManagerViewController *me = weakSelf;
+            if (!me) return;
             wq_haptic_selection();
-            weakSelf->_selectedFilterIdx = idx;
-            [weakSelf refreshFilterPillStyles];
-            [weakSelf reloadItems];
+            me->_selectedFilterIdx = idx;
+            [me refreshFilterPillStyles];
+            [me reloadItems];
         }] forControlEvents:UIControlEventTouchUpInside];
         [pillStack addArrangedSubview:pb];
         [btns addObject:pb];

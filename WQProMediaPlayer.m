@@ -745,8 +745,10 @@ typedef NS_ENUM(NSInteger, WQPlayerLoopMode) {
     _resumeLabel.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightSemibold];
     _resumeLabel.textColor = UIColor.whiteColor;
     UIButton *restartBtn = [self makePillBtn:WQLocalized(@"Start Over") symbol:@"arrow.counterclockwise" action:^{
-        [weakSelf.player seekToTime:kCMTimeZero];
-        weakSelf->_resumeBanner.hidden = YES;
+        WQProMediaPlayerViewController *me = weakSelf;
+        if (!me) return;
+        [me.player seekToTime:kCMTimeZero];
+        me->_resumeBanner.hidden = YES;
     }];
     UIStackView *resStack = [[UIStackView alloc] initWithArrangedSubviews:@[_resumeLabel, restartBtn]];
     resStack.translatesAutoresizingMaskIntoConstraints = NO;
@@ -844,7 +846,7 @@ typedef NS_ENUM(NSInteger, WQPlayerLoopMode) {
     _scrubber.maximumTrackTintColor = [UIColor.whiteColor colorWithAlphaComponent:0.25];
     [_scrubber addTarget:self action:@selector(scrubberDown) forControlEvents:UIControlEventTouchDown];
     [_scrubber addTarget:self action:@selector(scrubberChanged) forControlEvents:UIControlEventValueChanged];
-    [_scrubber addTarget:self action:@selector(scrubberUp) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchOutside | UIControlEventTouchCancel];
+    [_scrubber addTarget:self action:@selector(scrubberUp) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
 
     UIStackView *timeRow = [[UIStackView alloc] initWithArrangedSubviews:@[_elapsedLabel, _scrubber, _durationLabel]];
     timeRow.axis = UILayoutConstraintAxisHorizontal;
@@ -853,11 +855,13 @@ typedef NS_ENUM(NSInteger, WQPlayerLoopMode) {
 
     _prevBtn = [self makeIconBtn:@"backward.end.fill" size:17 action:^{ [weakSelf playPreviousEpisode]; }];
     _skipBackBtn = [self makeIconBtn:[NSString stringWithFormat:@"gobackward.%ld", (long)_skipSeconds] size:19 action:^{
-        [weakSelf skipBy:-(NSTimeInterval)weakSelf->_skipSeconds showHUD:YES];
+        WQProMediaPlayerViewController *me = weakSelf;
+        if (me) [me skipBy:-(NSTimeInterval)me->_skipSeconds showHUD:YES];
     }];
     _playPauseBtn = [self makeIconBtn:@"pause.fill" size:24 action:^{ [weakSelf togglePlayPause]; }];
     _skipFwdBtn = [self makeIconBtn:[NSString stringWithFormat:@"goforward.%ld", (long)_skipSeconds] size:19 action:^{
-        [weakSelf skipBy:(NSTimeInterval)weakSelf->_skipSeconds showHUD:YES];
+        WQProMediaPlayerViewController *me = weakSelf;
+        if (me) [me skipBy:(NSTimeInterval)me->_skipSeconds showHUD:YES];
     }];
     _nextBtn = [self makeIconBtn:@"forward.end.fill" size:17 action:^{ [weakSelf playNextEpisode]; }];
     _prevBtn.enabled = (_playlistPaths.count > 1);

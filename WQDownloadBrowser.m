@@ -1646,7 +1646,7 @@ static NSString *wq_browser_media_sniffer_js(void)
         _previewImage.translatesAutoresizingMaskIntoConstraints = NO;
         _previewImage.contentMode = UIViewContentModeScaleAspectFill;
         _previewImage.clipsToBounds = YES;
-        _previewImage.backgroundColor = [wq_theme_canvas_bottom() colorWithAlphaComponent:0.7];
+        _previewImage.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.7];
 
         _hostLabel = [UILabel new];
         _hostLabel.translatesAutoresizingMaskIntoConstraints = NO;

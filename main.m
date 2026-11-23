@@ -8890,7 +8890,7 @@ static NSString *wq_format_short_duration(double secs)
                 thumbView.contentMode = UIViewContentModeScaleAspectFill;
                 thumbView.clipsToBounds = YES;
                 thumbView.layer.cornerRadius = 12;
-                thumbView.backgroundColor = [wq_theme_canvas_bottom() colorWithAlphaComponent:0.85];
+                thumbView.backgroundColor = [wq_theme_canvas_top() colorWithAlphaComponent:0.85];
                 thumbView.image = [thumbCache objectForKey:path] ?: [UIImage systemImageNamed:@"film.fill"];
                 thumbView.tintColor = wq_theme_aurora_teal();
                 if (![thumbCache objectForKey:path]) {
@@ -8973,7 +8973,7 @@ static NSString *wq_format_short_duration(double secs)
                     [hitBtn.leadingAnchor constraintEqualToAnchor:card.contentView.leadingAnchor],
                     [hitBtn.trailingAnchor constraintEqualToAnchor:card.contentView.trailingAnchor],
                 ]];
-                wq_theme_add_spring_tap(card);
+                wq_theme_add_spring_tap(hitBtn);
                 [me->_cinemaShelfStack addArrangedSubview:card];
 
                 if (![thumbCache objectForKey:path]) {
