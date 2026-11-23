@@ -961,7 +961,6 @@
 "Info" = "Thông tin";
 "More" = "Thêm (More)";
 "About" = "Giới thiệu";
-"New Design" = "Thiết kế Mới";
 "Troubleshooting" = "Khắc phục Sự cố";
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "Đặt lại Bộ nhớ Đệm Truy cập: sử dụng khi các thư mục trống hoặc quá trình kiểm tra khởi động thông báo truy cập hộp cát (sandbox) thất bại. Nó sẽ sửa chữa thư mục bộ nhớ đệm riêng của WQ Files trong Nhóm ứng dụng (App Group); không có gì bị xóa.";
 "Access Cache Reset" = "Đã Đặt lại Bộ nhớ đệm Truy cập";

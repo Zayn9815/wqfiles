@@ -638,16 +638,9 @@ void wq_prism_install_background(UIViewController *vc)
 }
 
 
-static NSString *const kWQClassicDesignPref = @"WQClassicDesign";
-
 BOOL wq_prism_enabled(void)
 {
-    return ![NSUserDefaults.standardUserDefaults boolForKey:kWQClassicDesignPref];
-}
-
-void wq_set_prism_enabled(BOOL enabled)
-{
-    [NSUserDefaults.standardUserDefaults setBool:!enabled forKey:kWQClassicDesignPref];
+    return YES;
 }
 
 #pragma mark - Glacier Header Shield (Anti-Bleed)

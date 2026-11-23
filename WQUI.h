@@ -62,8 +62,7 @@ void wq_present_glass_confirm(UIViewController *host,
                               NSString *confirmTitle,
                               BOOL destructive,
                               void (^onConfirm)(void));
-// Settings → New Design: WQ Prism (default) or the classic list design.
+// WQ Prism is the sole active design.
 BOOL wq_prism_enabled(void);
-void wq_set_prism_enabled(BOOL enabled);
 
 NS_ASSUME_NONNULL_END

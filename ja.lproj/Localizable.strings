@@ -957,7 +957,6 @@
 "Info" = "情報";
 "More" = "その他";
 "About" = "このアプリについて";
-"New Design" = "新しいデザイン";
 "Troubleshooting" = "トラブルシューティング";
 "Reset Access Cache: use it when folders stay empty or the startup check says sandbox access failed. It repairs WQ Files' own cache folder in its App Group; nothing is deleted." = "アクセスキャッシュをリセット: フォルダが空のままの場合や、起動時チェックでサンドボックスアクセスに失敗したと表示された場合に使います。App グループ内の WQ Files 自身のキャッシュフォルダを修復します。何も削除されません。";
 "Access Cache Reset" = "アクセスキャッシュをリセットしました";
