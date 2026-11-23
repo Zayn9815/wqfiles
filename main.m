@@ -3620,21 +3620,21 @@ typedef NS_ENUM(NSInteger, WQBatchRenameMode) {
     UIAlertController *sheet = wq_alert_controller(title, nil, UIAlertControllerStyleActionSheet);
     BOOL editable = [self canEditHere] && !_error;
     if (editable) {
-        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Copy Here") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Copy Here") style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
             [self shelfCopyOrMoveHere:YES];
         }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Move Here") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Move Here") style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
             [self shelfCopyOrMoveHere:NO];
         }]];
-        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Create ZIP Here") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+        [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Create ZIP Here") style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
             [self compressPaths:items];
             wq_drop_shelf_clear();
         }]];
     }
-    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Share via USB / Wi-Fi…") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Share via USB / Wi-Fi…") style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
         wq_present_windows_transfer(self, self->_path, self->_baseTitle);
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Inspect Shelf Items") style:UIAlertActionStyleDefault handler:^(UIAction *__unused a) {
+    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Inspect Shelf Items") style:UIAlertActionStyleDefault handler:^(UIAlertAction *__unused a) {
         NSMutableString *msg = [NSMutableString new];
         for (NSString *p in items) {
             [msg appendFormat:@"• %@\n  %@\n", p.lastPathComponent, p];
@@ -3646,7 +3646,7 @@ typedef NS_ENUM(NSInteger, WQBatchRenameMode) {
         [list addAction:wq_alert_action(@"OK", UIAlertActionStyleCancel, nil)];
         [self presentViewController:list animated:YES completion:nil];
     }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Clear Shelf") style:UIAlertActionStyleDestructive handler:^(UIAction *__unused a) {
+    [sheet addAction:[UIAlertAction actionWithTitle:WQLocalized(@"Clear Shelf") style:UIAlertActionStyleDestructive handler:^(UIAlertAction *__unused a) {
         wq_drop_shelf_clear();
     }]];
     [sheet addAction:wq_alert_action(@"Cancel", UIAlertActionStyleCancel, nil)];
@@ -3687,7 +3687,7 @@ typedef NS_ENUM(NSInteger, WQBatchRenameMode) {
                                          : wq_create_file_from(dst, src, &itemErr);
             } else {
                 NSString *dst = [destDir stringByAppendingPathComponent:src.lastPathComponent];
-                NSString *ident = wq_item_identity(src);
+                NSDictionary<NSString *, NSNumber *> *ident = wq_item_identity(src);
                 ok = ident ? wq_move_expecting(src, dst, ident, &itemErr) : NO;
                 if (!ok && !itemErr) itemErr = WQLocalized(@"Unable to verify source item identity");
             }
@@ -8517,7 +8517,7 @@ static NSString *const kWQOnboardingSeenPref = @"WQOnboardingSeen";
                                        identifier:nil
                                           handler:^(UIAction *__unused a) {
             wq_theme_set_selected_id(desc.themeID);
-            wq_haptic_success();
+            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
             [weakSelf refreshThemeSwitcherPill];
         }];
         if ([desc.themeID isEqualToString:currentID]) act.state = UIMenuElementStateOn;
@@ -10370,7 +10370,7 @@ static NSString *const kWQTroubleshootingFooter =
             if (h) [h goToPath];
         } else if ([commandID isEqualToString:@"theme_desert_sand"]) {
             wq_theme_set_selected_id(kWQThemeIDDesertSand);
-            wq_haptic_success();
+            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         } else if ([commandID isEqualToString:@"open_settings"]) {
             tab.selectedIndex = 4;
         } else if ([commandID isEqualToString:@"open_apps"]) {

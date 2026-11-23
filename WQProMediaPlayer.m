@@ -8,6 +8,7 @@
 #import "WQAccess.h"
 #import "WQCore.h"
 #import "WQLocalization.h"
+#import "WQMotion.h"
 #import "WQTheme.h"
 #import "WQUI.h"
 #import <AVKit/AVKit.h>
@@ -657,8 +658,10 @@ static NSString *wq_format_time(NSTimeInterval seconds)
     MPRemoteCommandCenter *rcc = MPRemoteCommandCenter.sharedCommandCenter;
     __weak typeof(self) weakSelf = self;
     [rcc.playCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *__unused event) {
-        [weakSelf.player play];
-        weakSelf.player.rate = weakSelf ? weakSelf->_rate : 1.0f;
+        typeof(self) me = weakSelf;
+        if (!me) return MPRemoteCommandHandlerStatusCommandFailed;
+        [me.player play];
+        me.player.rate = me->_rate;
         return MPRemoteCommandHandlerStatusSuccess;
     }];
     [rcc.pauseCommand addTargetWithHandler:^MPRemoteCommandHandlerStatus(MPRemoteCommandEvent *__unused event) {
@@ -977,11 +980,11 @@ BOOL wq_is_gallery_image_path(NSString *path)
     NSString *srcPath = _paths[_currentIndex];
     if (!img) return;
     UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Convert Image"), srcPath.lastPathComponent, UIAlertControllerStyleActionSheet);
-    [sheet addAction:wq_alert_action(@"Convert to JPEG", UIAlertActionStyleDefault, ^(UIAction *__unused a) {
+    [sheet addAction:wq_alert_action(@"Convert to JPEG", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         NSData *out = UIImageJPEGRepresentation(img, 0.92);
         [self writeConvertedData:out ext:@"jpg" from:srcPath];
     })];
-    [sheet addAction:wq_alert_action(@"Convert to PNG", UIAlertActionStyleDefault, ^(UIAction *__unused a) {
+    [sheet addAction:wq_alert_action(@"Convert to PNG", UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
         NSData *out = UIImagePNGRepresentation(img);
         [self writeConvertedData:out ext:@"png" from:srcPath];
     })];
@@ -997,7 +1000,7 @@ BOOL wq_is_gallery_image_path(NSString *path)
     NSString *base = srcPath.stringByDeletingPathExtension;
     NSString *dest = [base stringByAppendingPathExtension:ext];
     NSString *err = nil;
-    if (!wq_create_file_with_data(dest, data, &err)) {
+    if (!wq_create_file(dest, data, &err)) {
         NSString *dl = NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES).firstObject;
         if (dl.length) {
             [NSFileManager.defaultManager createDirectoryAtPath:dl withIntermediateDirectories:YES attributes:nil error:nil];

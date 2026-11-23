@@ -2757,7 +2757,7 @@ NSString *wq_recover_interrupted_restore(void)
             for (NSString *sub in @[@"Library/Caches", @"tmp"]) {
                 NSString *dir = [app.container stringByAppendingPathComponent:sub];
                 for (NSString *child in (wq_list(dir, nil) ?: @[])) {
-                    wq_delete_tree([dir stringByAppendingPathComponent:child], nil);
+                    wq_delete_tree([dir stringByAppendingPathComponent:child], nil, nil, nil, nil, nil);
                 }
             }
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -2829,7 +2829,7 @@ NSString *wq_recover_interrupted_restore(void)
                 NSString *dstPart = [dstContainer stringByAppendingPathComponent:part];
                 struct stat st;
                 if (wq_stat(srcPart, &st) && S_ISDIR(st.st_mode)) {
-                    wq_delete_tree(dstPart, nil);
+                    wq_delete_tree(dstPart, nil, nil, nil, nil, nil);
                     if (!wq_copy_tree_new(srcPart, dstPart, nil, &err)) {
                         ok = NO;
                         break;
