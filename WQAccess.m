@@ -148,9 +148,13 @@ void wq_log(NSString *format, ...)
     errno = savedErrno;
 }
 
-void wq_log_error(NSString *source, NSString *message)
+void wq_log_error(NSString *source, NSString *format, ...)
 {
-    wq_log(@"[ERROR] [%@] %@", source ?: @"App", message ?: @"");
+    va_list args;
+    va_start(args, format);
+    NSString *msg = format ? [[NSString alloc] initWithFormat:format arguments:args] : @"";
+    va_end(args);
+    wq_log(@"[ERROR] [%@] %@", source ?: @"App", msg);
 }
 
 NSString *wq_log_text(void)

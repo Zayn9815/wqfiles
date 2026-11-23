@@ -15,7 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Log shared with the UI, plus persistent crash & error log on disk.
 void wq_log(NSString *format, ...) NS_FORMAT_FUNCTION(1, 2);
-void wq_log_error(NSString *source, NSString *message);
+void wq_log_error(NSString *source, NSString *format, ...) NS_FORMAT_FUNCTION(2, 3);
 NSString *wq_log_text(void);
 NSString *wq_crash_log_text(void);
 void wq_clear_logs(void);
