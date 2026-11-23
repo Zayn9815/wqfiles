@@ -34,7 +34,6 @@
 static inline uint16_t wq_u16be(const uint8_t *p) { return (uint16_t)(((uint16_t)p[0] << 8) | p[1]); }
 static inline uint32_t wq_u24be(const uint8_t *p) { return ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2]; }
 static inline uint32_t wq_u32be(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
-static inline uint16_t wq_u16le(const uint8_t *p) { return (uint16_t)(p[0] | ((uint16_t)p[1] << 8)); }
 static inline uint32_t wq_u32le(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 static inline uint64_t wq_u64be(const uint8_t *p)
 {
