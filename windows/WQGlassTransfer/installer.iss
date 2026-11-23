@@ -1,5 +1,5 @@
 #define MyAppName "WQGlass Transfer"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "WQ Glass"
 #define MyAppExeName "WQGlassTransfer.exe"
 
@@ -10,6 +10,8 @@ AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
+SetupIconFile=Assets\AppIcon.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 AllowNoIcons=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog

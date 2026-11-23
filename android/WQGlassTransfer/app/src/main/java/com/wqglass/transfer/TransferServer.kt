@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -59,9 +60,16 @@ class TransferServer {
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
+    private val _receivedText = MutableStateFlow<String?>(null)
+    val receivedText: StateFlow<String?> = _receivedText.asStateFlow()
+
     fun isRunning(): Boolean = running.get()
 
     fun currentPort(): Int? = if (running.get()) _state.value.port else null
+
+    fun clearReceivedText() {
+        _receivedText.value = null
+    }
 
     fun start(sharedDir: File, label: String, desiredPin: String): Boolean {
         stop()
@@ -69,7 +77,7 @@ class TransferServer {
         rootLabel = label.ifBlank { "Downloads" }
         pin = desiredPin.ifBlank { generateRandomPin() }
 
-        if (!sharedDir.exists()) sharedDir.mkdirs()
+        if (!sharedDir.exists()) runCatching { sharedDir.mkdirs() }
 
         val ip = detectLanIpv4()
         if (ip.isBlank()) {
@@ -89,6 +97,7 @@ class TransferServer {
             try {
                 bound = ServerSocket().apply {
                     reuseAddress = true
+                    receiveBufferSize = ProtocolUtils.SOCKET_BUF_BYTES
                     bind(InetSocketAddress(p), 64)
                 }
                 chosenPort = p
@@ -130,7 +139,7 @@ class TransferServer {
         rootDir = sharedDir
         rootLabel = label
         _state.value = _state.value.copy(rootPath = sharedDir.absolutePath, rootLabel = label)
-        if (running.get()) log("Switched shared folder to \"$label\"")
+        if (running.get()) log("Switched shared folder to \"$label\" (${sharedDir.absolutePath})")
     }
 
     fun updatePin(newPin: String) {
@@ -144,14 +153,8 @@ class TransferServer {
 
     fun stop() {
         val wasRunning = running.getAndSet(false)
-        try {
-            serverSocket?.close()
-        } catch (_: Exception) {
-        }
-        try {
-            udpSocket?.close()
-        } catch (_: Exception) {
-        }
+        try { serverSocket?.close() } catch (_: Exception) {}
+        try { udpSocket?.close() } catch (_: Exception) {}
         serverSocket = null
         udpSocket = null
         _state.value = _state.value.copy(isRunning = false)
@@ -161,8 +164,7 @@ class TransferServer {
     private fun log(message: String) {
         val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
         val line = "[$ts] $message"
-        val updated = (listOf(line) + _logs.value).take(80)
-        _logs.value = updated
+        _logs.value = (listOf(line) + _logs.value).take(100)
     }
 
     private fun deviceName(): String {
@@ -179,7 +181,7 @@ class TransferServer {
         val st = _state.value
         val obj = JSONObject().apply {
             put("app", "WQGlass")
-            put("version", "1.1")
+            put("version", "2.0")
             put("device", deviceName())
             put("platform", "android")
             put("osVersion", Build.VERSION.RELEASE ?: "")
@@ -236,16 +238,10 @@ class TransferServer {
                     for (target in DiscoveryService.getBroadcastAddresses()) {
                         try {
                             sock.send(DatagramPacket(pkt, pkt.size, target, ProtocolUtils.DISCOVERY_PORT))
-                        } catch (_: Exception) {
-                        }
+                        } catch (_: Exception) {}
                     }
-                } catch (_: Exception) {
-                }
-                try {
-                    Thread.sleep(1500)
-                } catch (_: InterruptedException) {
-                    break
-                }
+                } catch (_: Exception) {}
+                try { Thread.sleep(1500) } catch (_: InterruptedException) { break }
             }
         }
     }
@@ -267,8 +263,12 @@ class TransferServer {
         socket.use { sock ->
             try {
                 sock.tcpNoDelay = true
+                runCatching {
+                    sock.sendBufferSize = ProtocolUtils.SOCKET_BUF_BYTES
+                    sock.receiveBufferSize = ProtocolUtils.SOCKET_BUF_BYTES
+                }
                 sock.soTimeout = 30_000
-                val input = sock.getInputStream()
+                val input = BufferedInputStream(sock.getInputStream(), ProtocolUtils.CHUNK_BYTES)
                 val out = BufferedOutputStream(sock.getOutputStream(), ProtocolUtils.CHUNK_BYTES)
 
                 val headerBuf = ByteArrayOutputStream()
@@ -338,11 +338,10 @@ class TransferServer {
                             val stat = StatFs(root.absolutePath)
                             freeBytes = stat.availableBytes
                             totalBytes = stat.totalBytes
-                        } catch (_: Exception) {
-                        }
+                        } catch (_: Exception) {}
                         val info = JSONObject().apply {
                             put("app", "WQGlass")
-                            put("version", "1.1")
+                            put("version", "2.0")
                             put("device", deviceName())
                             put("platform", "android")
                             put("osVersion", Build.VERSION.RELEASE ?: "")
@@ -362,7 +361,12 @@ class TransferServer {
                             sendJson(out, 404, JSONObject().put("error", "Directory not found"))
                             return
                         }
-                        val children = (target.listFiles() ?: emptyArray())
+                        val rawFiles = target.listFiles()
+                        if (rawFiles == null) {
+                            sendJson(out, 403, JSONObject().put("error", "Grant 'All Files Access' on Android to read this folder"))
+                            return
+                        }
+                        val children = rawFiles
                             .filter { !it.name.startsWith(".") }
                             .sortedWith(compareByDescending<File> { it.isDirectory }.thenBy { it.name.lowercase(Locale.ROOT) })
 
@@ -385,8 +389,8 @@ class TransferServer {
                     route == "/api/download" && (method == "GET" || method == "HEAD") -> {
                         val rel = query["path"] ?: ""
                         val target = ProtocolUtils.safeResolvePath(root, rel)
-                        if (target == null || !target.isFile) {
-                            sendJson(out, 404, JSONObject().put("error", "File not found"))
+                        if (target == null || !target.isFile || !target.canRead()) {
+                            sendJson(out, 404, JSONObject().put("error", "File not found or unreadable (check All Files Access)"))
                             return
                         }
                         val safeName = target.name.replace("\"", "_")
@@ -403,7 +407,7 @@ class TransferServer {
 
                         sock.soTimeout = 0
                         val buf = ByteArray(ProtocolUtils.CHUNK_BYTES)
-                        FileInputStream(target).use { fis ->
+                        BufferedInputStream(FileInputStream(target), ProtocolUtils.CHUNK_BYTES).use { fis ->
                             while (true) {
                                 val r = fis.read(buf)
                                 if (r <= 0) break
@@ -483,8 +487,7 @@ class TransferServer {
                             sendJson(out, 403, JSONObject().put("error", "Cannot delete root"))
                             return
                         }
-                        val ok = target.deleteRecursively()
-                        if (ok) {
+                        if (target.deleteRecursively()) {
                             sendJson(out, 200, JSONObject().put("ok", true))
                             log("🗑 Deleted: $rel")
                         } else {
@@ -509,6 +512,27 @@ class TransferServer {
                         }
                     }
 
+                    route == "/api/text" && method == "POST" -> {
+                        val len = (headers["content-length"]?.toLongOrNull() ?: 0L).coerceIn(0L, 256L * 1024L).toInt()
+                        val buf = ByteArrayOutputStream()
+                        if (leftover.isNotEmpty() && len > 0) {
+                            buf.write(leftover, 0, minOf(leftover.size, len))
+                        }
+                        val tbuf = ByteArray(8192)
+                        while (buf.size() < len) {
+                            val want = minOf(tbuf.size, len - buf.size())
+                            val r = input.read(tbuf, 0, want)
+                            if (r <= 0) break
+                            buf.write(tbuf, 0, r)
+                        }
+                        val text = buf.toString("UTF-8")
+                        sendJson(out, 200, JSONObject().put("ok", true))
+                        if (text.isNotBlank()) {
+                            _receivedText.value = text
+                            log("📋 Received text/link (${text.length} chars)")
+                        }
+                    }
+
                     else -> sendJson(out, 404, JSONObject().put("error", "Not found"))
                 }
             } catch (_: Exception) {
@@ -522,9 +546,7 @@ class TransferServer {
                 bytes[i + 1] == '\n'.code.toByte() &&
                 bytes[i + 2] == '\r'.code.toByte() &&
                 bytes[i + 3] == '\n'.code.toByte()
-            ) {
-                return i
-            }
+            ) return i
         }
         return -1
     }
@@ -562,17 +584,17 @@ class TransferServer {
             <meta name="viewport" content="width=device-width,initial-scale=1">
             <title>WQGlass Transfer — $dev</title>
             <style>
-            body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1120;color:#e2e8f0;margin:0;padding:20px;}
-            .wrap{max-width:860px;margin:0 auto;}
-            .card{background:#131c31;border:1px solid #24324d;border-radius:16px;padding:18px;margin-bottom:16px;}
+            body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#070d19;color:#e2e8f0;margin:0;padding:20px;}
+            .wrap{max-width:880px;margin:0 auto;}
+            .card{background:#101b30;border:1px solid #223556;border-radius:16px;padding:18px;margin-bottom:16px;}
             h1{margin:0 0 6px;font-size:21px;color:#fff;} .sub{color:#94a3b8;font-size:13px;}
             input,button{font-size:14px;border-radius:10px;border:1px solid #334155;padding:9px 12px;}
-            input{background:#0f172a;color:#fff;} button{background:#2563eb;color:#fff;border:none;cursor:pointer;font-weight:600;}
-            button.sec{background:#1e293b;border:1px solid #334155;}
+            input{background:#091020;color:#fff;} button{background:#2563eb;color:#fff;border:none;cursor:pointer;font-weight:600;}
+            button.sec{background:#17243d;border:1px solid #223556;}
             .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px;}
             table{width:100%;border-collapse:collapse;margin-top:10px;} th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #1e293b;font-size:14px;}
             a{color:#38bdf8;text-decoration:none;} .sz{color:#94a3b8;font-variant-numeric:tabular-nums;}
-            .prog{height:8px;background:#1e293b;border-radius:8px;overflow:hidden;margin-top:10px;display:none;} .prog>div{height:100%;background:#38bdf8;width:0%;}
+            .prog{height:8px;background:#13213b;border-radius:8px;overflow:hidden;margin-top:10px;display:none;} .prog>div{height:100%;background:linear-gradient(90deg,#38bdf8,#6366f1);width:0%;}
             </style></head><body><div class="wrap">
             <div class="card"><h1>🤖 WQGlass Transfer — $dev (Android)</h1>
             <div class="sub" id="info">Enter the PIN shown on your Android device to browse, download, or upload files.</div>
@@ -587,7 +609,7 @@ class TransferServer {
             let pin='',curPath='';
             function fmt(b){if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(1)+' KB';if(b<1073741824)return (b/1048576).toFixed(2)+' MB';return (b/1073741824).toFixed(2)+' GB';}
             async function connect(){pin=document.getElementById('pin').value.trim();const r=await fetch('/api/info',{headers:{'X-WQ-PIN':pin}});if(!r.ok){document.getElementById('status').innerText='Invalid PIN';return;}const j=await r.json();document.getElementById('info').innerText=j.device+' (Android '+(j.osVersion||'')+') · '+j.root+' · Free: '+fmt(j.freeBytes);refresh();}
-            async function refresh(){if(!pin)return;const r=await fetch('/api/list?path='+encodeURIComponent(curPath),{headers:{'X-WQ-PIN':pin}});if(!r.ok){document.getElementById('status').innerText='Auth failed';return;}const j=await r.json();const tb=document.getElementById('rows');tb.innerHTML='';for(const it of j.items){const tr=document.createElement('tr');const n=document.createElement('td');if(it.isDir){const a=document.createElement('a');a.href='#';a.textContent='📁 '+it.name;a.onclick=(e)=>{e.preventDefault();curPath=it.path;refresh();};n.appendChild(a);}else{n.textContent='📄 '+it.name;}const s=document.createElement('td');s.className='sz';s.textContent=it.isDir?'Folder':fmt(it.size);const ac=document.createElement('td');if(!it.isDir){const dl=document.createElement('a');dl.href='/api/download?path='+encodeURIComponent(it.path)+'&pin='+encodeURIComponent(pin);dl.textContent='Download';ac.appendChild(dl);}tr.appendChild(n);tr.appendChild(s);tr.appendChild(ac);tb.appendChild(tr);}document.getElementById('status').innerText='Path: /'+curPath+' ('+j.items.length+' items)';}
+            async function refresh(){if(!pin)return;const r=await fetch('/api/list?path='+encodeURIComponent(curPath),{headers:{'X-WQ-PIN':pin}});if(!r.ok){const e=await r.json().catch(()=>({}));document.getElementById('status').innerText=e.error||'Auth failed';return;}const j=await r.json();const tb=document.getElementById('rows');tb.innerHTML='';for(const it of j.items){const tr=document.createElement('tr');const n=document.createElement('td');if(it.isDir){const a=document.createElement('a');a.href='#';a.textContent='📁 '+it.name;a.onclick=(e)=>{e.preventDefault();curPath=it.path;refresh();};n.appendChild(a);}else{n.textContent='📄 '+it.name;}const s=document.createElement('td');s.className='sz';s.textContent=it.isDir?'Folder':fmt(it.size);const ac=document.createElement('td');if(!it.isDir){const dl=document.createElement('a');dl.href='/api/download?path='+encodeURIComponent(it.path)+'&pin='+encodeURIComponent(pin);dl.textContent='Download';ac.appendChild(dl);}tr.appendChild(n);tr.appendChild(s);tr.appendChild(ac);tb.appendChild(tr);}document.getElementById('status').innerText='Path: /'+curPath+' ('+j.items.length+' items)';}
             function goUp(){if(!curPath)return;const p=curPath.split('/');p.pop();curPath=p.join('/');refresh();}
             async function makeFolder(){const n=prompt('New folder name:');if(!n||!pin)return;const p=curPath?(curPath+'/'+n):n;await fetch('/api/mkdir?path='+encodeURIComponent(p),{method:'POST',headers:{'X-WQ-PIN':pin}});refresh();}
             async function uploadFiles(files){if(!pin||!files.length)return;const pb=document.getElementById('prog'),pf=document.getElementById('pfill');pb.style.display='block';for(let i=0;i<files.length;i++){const f=files[i];document.getElementById('status').innerText='Sending '+f.name+' ('+(i+1)+'/'+files.length+')…';await new Promise((res,rej)=>{const xhr=new XMLHttpRequest();xhr.open('POST','/api/upload?path='+encodeURIComponent(curPath)+'&name='+encodeURIComponent(f.name));xhr.setRequestHeader('X-WQ-PIN',pin);xhr.upload.onprogress=(e)=>{if(e.lengthComputable)pf.style.width=(100*e.loaded/e.total).toFixed(1)+'%';};xhr.onload=()=>res();xhr.onerror=()=>rej();xhr.send(f);});}pb.style.display='none';document.getElementById('status').innerText='Upload complete!';refresh();}
@@ -622,8 +644,7 @@ class TransferServer {
                         }
                     }
                 }
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
             return fallback
         }
     }

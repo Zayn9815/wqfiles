@@ -71,6 +71,8 @@
 	<true/>
 	<key>MinimumOSVersion</key>
 	<string>26.0</string>
+	<key>NSCameraUsageDescription</key>
+	<string>WQ Glass uses the camera to scan LAN Transfer QR codes on Windows PC, Android, or another iPhone.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

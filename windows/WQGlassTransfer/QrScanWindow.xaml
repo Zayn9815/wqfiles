@@ -1,0 +1,45 @@
+<Window x:Class="WQGlassTransfer.QrScanWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Scan QR Code — WQGlass Transfer"
+        Width="540" Height="500"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{StaticResource BgCanvas}"
+        Foreground="{StaticResource TextPrimary}">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="📷  Scan WQGlass QR Code" FontSize="17" FontWeight="Bold" Foreground="{StaticResource TextPrimary}"/>
+            <TextBlock Text="Hold your iPhone or Android QR code up to your PC webcam, capture your screen, paste a screenshot, or pick an image."
+                       FontSize="12" Foreground="{StaticResource TextSecondary}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Background="{StaticResource InputBg}" BorderBrush="{StaticResource CardBorderBright}"
+                BorderThickness="1.5" CornerRadius="14" Padding="8" Margin="0,0,0,12">
+            <Grid>
+                <Image x:Name="PreviewImage" Stretch="Uniform"/>
+                <TextBlock x:Name="PlaceholderText" Text="Click 'Start Webcam' or use Screen Capture / Clipboard / Image File below"
+                           Foreground="{StaticResource TextMuted}" FontSize="12.5" TextAlignment="Center"
+                           HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap" Margin="24"/>
+            </Grid>
+        </Border>
+
+        <TextBlock x:Name="ScanStatusText" Grid.Row="2" Text="Ready to scan." FontSize="12"
+                   Foreground="{StaticResource AccentCyan}" Margin="0,0,0,12"/>
+
+        <WrapPanel Grid.Row="3" HorizontalAlignment="Right">
+            <Button x:Name="WebcamBtn" Content="🎥 Start Webcam" Style="{StaticResource PrimaryBtn}" Margin="0,0,8,0" Click="WebcamBtn_Click"/>
+            <Button Content="🖥️ Scan Screen" Style="{StaticResource GlassBtn}" Margin="0,0,8,0" Click="ScreenScanBtn_Click"/>
+            <Button Content="📋 Paste Image" Style="{StaticResource GlassBtn}" Margin="0,0,8,0" Click="ClipboardBtn_Click"/>
+            <Button Content="🖼️ Open Image" Style="{StaticResource GlassBtn}" Margin="0,0,8,0" Click="OpenImageBtn_Click"/>
+            <Button Content="Close" Style="{StaticResource DangerBtn}" Click="CloseBtn_Click"/>
+        </WrapPanel>
+    </Grid>
+</Window>

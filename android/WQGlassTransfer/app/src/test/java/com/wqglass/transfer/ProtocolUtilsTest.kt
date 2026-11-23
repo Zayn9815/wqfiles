@@ -45,10 +45,21 @@ class ProtocolUtilsTest {
     }
 
     @Test
-    fun formatBytes_andPlatformBadges() {
+    fun resolveTreeDocIdToPath_mapsPrimaryAndSdCard() {
+        assertEquals("/storage/emulated/0", ProtocolUtils.resolveTreeDocIdToPath("primary:"))
+        assertEquals("/storage/emulated/0/DCIM/Camera", ProtocolUtils.resolveTreeDocIdToPath("primary:DCIM/Camera"))
+        assertEquals("/storage/9C33-6BBD/Movies", ProtocolUtils.resolveTreeDocIdToPath("9C33-6BBD:Movies"))
+        assertEquals("/storage/emulated/0/Documents/Work", ProtocolUtils.resolveTreeDocIdToPath("home:Work"))
+    }
+
+    @Test
+    fun formatBytes_categories_andPlatformBadges() {
         assertEquals("512 B", ProtocolUtils.formatBytes(512))
         assertEquals("2.0 KB", ProtocolUtils.formatBytes(2048))
         assertEquals("1.00 MB", ProtocolUtils.formatBytes(1024L * 1024L))
+        assertEquals("Videos", ProtocolUtils.categorizeFileName("movie.mp4"))
+        assertEquals("Photos", ProtocolUtils.categorizeFileName("IMG_001.HEIC"))
+        assertEquals("Archives", ProtocolUtils.categorizeFileName("app.apk"))
 
         val win = DiscoveredPeer(device = "DESKTOP-PC", platform = "windows", ip = "192.168.1.9", port = 8765)
         assertEquals("Windows", win.platformBadge)

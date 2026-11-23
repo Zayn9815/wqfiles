@@ -11,6 +11,7 @@
 #import "WQTheme.h"
 #import "WQMotion.h"
 #import "WQUI.h"
+#import <AVFoundation/AVFoundation.h>
 #import <CoreImage/CoreImage.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <arpa/inet.h>
@@ -19,6 +20,7 @@
 #import <ifaddrs.h>
 #import <net/if.h>
 #import <netinet/in.h>
+#import <netinet/tcp.h>
 #import <stdatomic.h>
 #import <stdlib.h>
 #import <string.h>
@@ -32,7 +34,8 @@ static NSString *const kWQWinLastEndpointPref = @"WQWinTransferLastEndpoint";
 static NSString *const kWQWinLastPinPref = @"WQWinTransferLastPIN";
 static const uint16_t kWQWinDiscoveryPort = 45888;
 static const uint16_t kWQWinBasePort = 8765;
-static const size_t kWQWinChunkBytes = 256 * 1024;
+static const size_t kWQWinChunkBytes = 1024 * 1024;
+static const int kWQWinSocketBufBytes = 4 * 1024 * 1024;
 static const NSUInteger kWQWinMaxHeaderBytes = 16384;
 
 static NSString *wq_win_downloads_dir(void)
@@ -463,6 +466,12 @@ static NSString *wq_win_web_ui_html(void)
 
 - (void)handleClientFD:(int)fd
 {
+    int nodelay = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+    int sbuf = kWQWinSocketBufBytes;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sbuf, sizeof(sbuf));
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sbuf, sizeof(sbuf));
+
     NSMutableData *buf = [NSMutableData dataWithCapacity:4096];
     uint8_t tmp[4096];
     NSRange hdrEnd = NSMakeRange(NSNotFound, 0);
@@ -765,6 +774,35 @@ static NSString *wq_win_web_ui_html(void)
         return;
     }
 
+    if ([route isEqualToString:@"/api/text"] && [method isEqualToString:@"POST"]) {
+        long long contentLen = [headers[@"content-length"] longLongValue];
+        if (contentLen < 0) contentLen = 0;
+        if (contentLen > 256 * 1024) contentLen = 256 * 1024;
+        NSMutableData *textData = [NSMutableData dataWithCapacity:(NSUInteger)contentLen];
+        if (initialBody.length && contentLen > 0) {
+            NSUInteger take = (NSUInteger)MIN((long long)initialBody.length, contentLen);
+            [textData appendBytes:initialBody.bytes length:take];
+        }
+        uint8_t tbuf[8192];
+        while ((long long)textData.length < contentLen) {
+            size_t want = (size_t)MIN((long long)sizeof(tbuf), contentLen - (long long)textData.length);
+            ssize_t r = recv(fd, tbuf, want, 0);
+            if (r < 0 && errno == EINTR) continue;
+            if (r <= 0) break;
+            [textData appendBytes:tbuf length:(NSUInteger)r];
+        }
+        NSString *txt = [[NSString alloc] initWithData:textData encoding:NSUTF8StringEncoding] ?: @"";
+        [self sendJSON:@{ @"ok": @YES } status:200 toFD:fd];
+        if (txt.length) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIPasteboard.generalPasteboard.string = txt;
+                wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+            });
+            [self emitActivity:[NSString stringWithFormat:@"📋 Copied received text/link (%lu chars)", (unsigned long)txt.length]];
+        }
+        return;
+    }
+
     [self sendJSON:@{ @"error": @"Not found" } status:404 toFD:fd];
 }
 
@@ -1049,6 +1087,154 @@ static NSString *wq_win_speed_text(double bytesPerSec)
 
 @end
 
+#pragma mark - WQLanQRScannerViewController
+
+@interface WQLanQRScannerViewController : UIViewController <AVCaptureMetadataOutputObjectsDelegate>
+@property (nonatomic, copy, nullable) void (^onCodeScanned)(NSString *payload);
+@end
+
+@implementation WQLanQRScannerViewController {
+    AVCaptureSession *_captureSession;
+    AVCaptureVideoPreviewLayer *_previewLayer;
+    BOOL _delivered;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.blackColor;
+    self.title = WQLocalized(@"Scan WQGlass QR Code");
+
+    __weak typeof(self) weakSelf = self;
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"Cancel") image:nil identifier:nil handler:^(UIAction *__unused a) {
+        [weakSelf dismissViewControllerAnimated:YES completion:nil];
+    }]];
+
+    AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+    if (!device) {
+        [self showCameraError:WQLocalized(@"Camera is not available on this device.")];
+        return;
+    }
+
+    NSError *err = nil;
+    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&err];
+    if (!input) {
+        [self showCameraError:err.localizedDescription ?: WQLocalized(@"Unable to open camera. Check Camera permission in Settings.")];
+        return;
+    }
+
+    _captureSession = [AVCaptureSession new];
+    if ([_captureSession canAddInput:input]) [_captureSession addInput:input];
+
+    AVCaptureMetadataOutput *output = [AVCaptureMetadataOutput new];
+    if ([_captureSession canAddOutput:output]) {
+        [_captureSession addOutput:output];
+        [output setMetadataObjectsDelegate:self queue:dispatch_get_main_queue()];
+        if ([output.availableMetadataObjectTypes containsObject:AVMetadataObjectTypeQRCode]) {
+            output.metadataObjectTypes = @[AVMetadataObjectTypeQRCode];
+        }
+    }
+
+    _previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:_captureSession];
+    _previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    _previewLayer.frame = self.view.bounds;
+    [self.view.layer addSublayer:_previewLayer];
+
+    // Sleek cyan reticle frame
+    UIView *reticle = [UIView new];
+    reticle.translatesAutoresizingMaskIntoConstraints = NO;
+    reticle.layer.borderColor = UIColor.systemTealColor.CGColor;
+    reticle.layer.borderWidth = 2.5;
+    reticle.layer.cornerRadius = 18.0;
+    reticle.userInteractionEnabled = NO;
+    [self.view addSubview:reticle];
+
+    UILabel *hint = [UILabel new];
+    hint.translatesAutoresizingMaskIntoConstraints = NO;
+    hint.text = WQLocalized(@"Point at the QR code on Windows PC, Android, or iPhone");
+    hint.textColor = UIColor.whiteColor;
+    hint.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightSemibold];
+    hint.textAlignment = NSTextAlignmentCenter;
+    hint.numberOfLines = 2;
+    [self.view addSubview:hint];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [reticle.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [reticle.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:-20],
+        [reticle.widthAnchor constraintEqualToConstant:240],
+        [reticle.heightAnchor constraintEqualToConstant:240],
+        [hint.topAnchor constraintEqualToAnchor:reticle.bottomAnchor constant:20],
+        [hint.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:24],
+        [hint.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-24],
+    ]];
+
+    AVCaptureSession *session = _captureSession;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [session startRunning];
+    });
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    _previewLayer.frame = self.view.bounds;
+}
+
+- (void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    AVCaptureSession *session = _captureSession;
+    if (session.isRunning) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            [session stopRunning];
+        });
+    }
+}
+
+- (void)showCameraError:(NSString *)msg
+{
+    UILabel *lbl = [UILabel new];
+    lbl.translatesAutoresizingMaskIntoConstraints = NO;
+    lbl.text = msg;
+    lbl.textColor = UIColor.whiteColor;
+    lbl.textAlignment = NSTextAlignmentCenter;
+    lbl.numberOfLines = 0;
+    [self.view addSubview:lbl];
+    [NSLayoutConstraint activateConstraints:@[
+        [lbl.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [lbl.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:24],
+        [lbl.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-24],
+    ]];
+}
+
+- (void)captureOutput:(AVCaptureOutput *__unused)output
+didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
+       fromConnection:(AVCaptureConnection *__unused)connection
+{
+    if (_delivered) return;
+    for (AVMetadataObject *obj in metadataObjects) {
+        if ([obj isKindOfClass:AVMetadataMachineReadableCodeObject.class]) {
+            NSString *val = ((AVMetadataMachineReadableCodeObject *)obj).stringValue;
+            if (val.length) {
+                _delivered = YES;
+                wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+                AVCaptureSession *session = _captureSession;
+                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                    [session stopRunning];
+                });
+                void (^cb)(NSString *) = self.onCodeScanned;
+                [self dismissViewControllerAnimated:YES completion:^{
+                    if (cb) cb(val);
+                }];
+                return;
+            }
+        }
+    }
+}
+
+@end
+
 #pragma mark - WQLanPeerBrowserViewController
 
 @interface WQLanPeerBrowserViewController : UITableViewController <UIDocumentPickerDelegate, NSURLSessionDownloadDelegate, NSURLSessionTaskDelegate>
@@ -1062,13 +1248,21 @@ static NSString *wq_win_speed_text(double bytesPerSec)
     NSString *_platformLabel;
     NSString *_rootLabel;
     NSString *_currentPath;
+    NSArray<WQLanRemoteItem *> *_allItems;
     NSArray<WQLanRemoteItem *> *_items;
+    NSInteger _categoryFilter; // 0=All, 1=Folders, 2=Media, 3=Docs
+    NSInteger _sortMode;       // 0=Name, 1=Size, 2=Newest
+    BOOL _selecting;
+    NSMutableSet<NSString *> *_selectedPaths;
 
     NSURLSession *_session;
     NSURLSessionTask *_activeTask;
     NSString *_activeFileName;
     NSTimeInterval _transferStartTime;
     NSMutableArray<NSURL *> *_uploadQueue;
+    NSMutableArray<WQLanRemoteItem *> *_downloadQueue;
+    NSUInteger _batchTotalCount;
+    NSUInteger _batchDoneCount;
     BOOL _isDownloading;
 
     UIView *_progressHeader;
@@ -1086,8 +1280,11 @@ static NSString *wq_win_speed_text(double bytesPerSec)
         _platformLabel = platformLabel.length ? [platformLabel copy] : @"LAN";
         _rootLabel = rootLabel.length ? [rootLabel copy] : @"Shared";
         _currentPath = @"";
+        _allItems = @[];
         _items = @[];
+        _selectedPaths = [NSMutableSet new];
         _uploadQueue = [NSMutableArray new];
+        _downloadQueue = [NSMutableArray new];
         self.title = [NSString stringWithFormat:@"%@ (%@)", _deviceName, _platformLabel];
         self.hidesBottomBarWhenPushed = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPhone;
     }
@@ -1112,19 +1309,170 @@ static NSString *wq_win_speed_text(double bytesPerSec)
     [rc addTarget:self action:@selector(refreshDirectory) forControlEvents:UIControlEventValueChanged];
     self.refreshControl = rc;
 
+    [self rebuildNavButtons];
+    [self buildProgressHeader];
+    [self refreshDirectory];
+}
+
+- (void)rebuildNavButtons
+{
     __weak typeof(self) weakSelf = self;
+    if (_selecting) {
+        UIBarButtonItem *doneBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
+            [UIAction actionWithTitle:WQLocalized(@"Done") image:nil identifier:nil handler:^(UIAction *__unused a) {
+            [weakSelf toggleSelectMode:NO];
+        }]];
+        UIBarButtonItem *batchBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
+            [UIAction actionWithTitle:WQLocalized(@"Actions") image:[UIImage systemImageNamed:@"ellipsis.circle.fill"] identifier:nil handler:^(UIAction *__unused a) {
+            [weakSelf showSelectionBatchMenu];
+        }]];
+        self.navigationItem.rightBarButtonItems = @[doneBtn, batchBtn];
+        return;
+    }
+
     UIBarButtonItem *uploadBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
         [UIAction actionWithTitle:WQLocalized(@"Upload") image:[UIImage systemImageNamed:@"arrow.up.circle.fill"] identifier:nil handler:^(UIAction *__unused a) {
         [weakSelf showUploadMenu];
     }]];
-    UIBarButtonItem *mkdirBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
-        [UIAction actionWithTitle:WQLocalized(@"New Folder") image:[UIImage systemImageNamed:@"folder.badge.plus"] identifier:nil handler:^(UIAction *__unused a) {
-        [weakSelf promptNewFolder];
+    UIBarButtonItem *moreBtn = [[UIBarButtonItem alloc] initWithPrimaryAction:
+        [UIAction actionWithTitle:WQLocalized(@"More") image:[UIImage systemImageNamed:@"ellipsis.circle"] identifier:nil handler:^(UIAction *__unused a) {
+        [weakSelf showBrowserToolsMenu];
     }]];
-    self.navigationItem.rightBarButtonItems = @[uploadBtn, mkdirBtn];
+    self.navigationItem.rightBarButtonItems = @[moreBtn, uploadBtn];
+}
 
-    [self buildProgressHeader];
-    [self refreshDirectory];
+- (void)toggleSelectMode:(BOOL)enabled
+{
+    wq_haptic_selection();
+    _selecting = enabled;
+    if (!enabled) [_selectedPaths removeAllObjects];
+    [self rebuildNavButtons];
+    [self.tableView reloadData];
+}
+
+- (void)showBrowserToolsMenu
+{
+    wq_haptic_selection();
+    UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Explorer Tools"), nil, UIAlertControllerStyleActionSheet);
+    [sheet addAction:wq_alert_action(WQLocalized(@"Select Multiple Files…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self toggleSelectMode:YES];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Select All Files in Folder"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        self->_selecting = YES;
+        [self->_selectedPaths removeAllObjects];
+        for (WQLanRemoteItem *it in self->_items) {
+            if (!it.isDir) [self->_selectedPaths addObject:it.path];
+        }
+        [self rebuildNavButtons];
+        [self.tableView reloadData];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"New Remote Folder…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self promptNewFolder];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Send Text / Link to Device…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self promptSendText];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Filter Category…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self showFilterMenu];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Sort By…"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self showSortMenu];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showSelectionBatchMenu
+{
+    wq_haptic_selection();
+    NSMutableArray<WQLanRemoteItem *> *chosen = [NSMutableArray new];
+    for (WQLanRemoteItem *it in _items) {
+        if ([_selectedPaths containsObject:it.path]) [chosen addObject:it];
+    }
+    NSString *title = [NSString stringWithFormat:WQLocalized(@"%lu Selected"), (unsigned long)chosen.count];
+    UIAlertController *sheet = wq_alert_controller(title, nil, UIAlertControllerStyleActionSheet);
+    [sheet addAction:wq_alert_action(WQLocalized(@"Select All"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        for (WQLanRemoteItem *it in self->_items) {
+            if (!it.isDir) [self->_selectedPaths addObject:it.path];
+        }
+        [self.tableView reloadData];
+    })];
+    [sheet addAction:wq_alert_action(WQLocalized(@"Deselect All"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+        [self->_selectedPaths removeAllObjects];
+        [self.tableView reloadData];
+    })];
+    if (chosen.count) {
+        [sheet addAction:wq_alert_action([NSString stringWithFormat:WQLocalized(@"Download %lu File(s) to Downloads"), (unsigned long)chosen.count], UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            [self enqueueDownloads:chosen];
+            [self toggleSelectMode:NO];
+        })];
+        [sheet addAction:wq_alert_action([NSString stringWithFormat:WQLocalized(@"Delete %lu Selected"), (unsigned long)chosen.count], UIAlertActionStyleDestructive, ^(UIAlertAction *__unused a) {
+            [self confirmBatchDelete:chosen];
+        })];
+    }
+    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showFilterMenu
+{
+    UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Filter Category"), nil, UIAlertControllerStyleActionSheet);
+    NSArray<NSString *> *labels = @[WQLocalized(@"All Items"), WQLocalized(@"Folders Only"), WQLocalized(@"Videos / Photos / Audio"), WQLocalized(@"Documents & Archives")];
+    for (NSUInteger i = 0; i < labels.count; i++) {
+        NSInteger mode = (NSInteger)i;
+        [sheet addAction:wq_alert_action(labels[i], UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            self->_categoryFilter = mode;
+            [self applyFilterAndSort];
+        })];
+    }
+    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showSortMenu
+{
+    UIAlertController *sheet = wq_alert_controller(WQLocalized(@"Sort Items"), nil, UIAlertControllerStyleActionSheet);
+    NSArray<NSString *> *labels = @[WQLocalized(@"Name (A–Z)"), WQLocalized(@"Size (Largest First)"), WQLocalized(@"Date Modified (Newest)")];
+    for (NSUInteger i = 0; i < labels.count; i++) {
+        NSInteger mode = (NSInteger)i;
+        [sheet addAction:wq_alert_action(labels[i], UIAlertActionStyleDefault, ^(UIAlertAction *__unused a) {
+            self->_sortMode = mode;
+            [self applyFilterAndSort];
+        })];
+    }
+    [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)applyFilterAndSort
+{
+    NSMutableArray<WQLanRemoteItem *> *filtered = [NSMutableArray new];
+    NSSet<NSString *> *mediaExts = [NSSet setWithArray:@[@"mp4", @"mov", @"m4v", @"mkv", @"webm", @"jpg", @"jpeg", @"png", @"heic", @"gif", @"webp", @"mp3", @"m4a", @"wav", @"flac", @"aac"]];
+    NSSet<NSString *> *docExts = [NSSet setWithArray:@[@"pdf", @"doc", @"docx", @"txt", @"md", @"csv", @"json", @"zip", @"rar", @"7z", @"apk", @"ipa"]];
+
+    for (WQLanRemoteItem *it in _allItems) {
+        if (_categoryFilter == 1 && !it.isDir) continue;
+        if (_categoryFilter == 2 && (it.isDir || ![mediaExts containsObject:it.name.pathExtension.lowercaseString])) continue;
+        if (_categoryFilter == 3 && (it.isDir || ![docExts containsObject:it.name.pathExtension.lowercaseString])) continue;
+        [filtered addObject:it];
+    }
+
+    [filtered sortUsingComparator:^NSComparisonResult(WQLanRemoteItem *a, WQLanRemoteItem *b) {
+        if (a.isDir != b.isDir) return a.isDir ? NSOrderedAscending : NSOrderedDescending;
+        if (self->_sortMode == 1) {
+            if (a.size != b.size) return a.size > b.size ? NSOrderedAscending : NSOrderedDescending;
+        } else if (self->_sortMode == 2) {
+            if (a.mtime != b.mtime) return a.mtime > b.mtime ? NSOrderedAscending : NSOrderedDescending;
+        }
+        return [a.name localizedCaseInsensitiveCompare:b.name];
+    }];
+
+    _items = filtered;
+    [self.tableView reloadData];
 }
 
 - (void)viewWillDisappear:(BOOL)animated
@@ -1253,8 +1601,9 @@ static NSString *wq_win_speed_text(double bytesPerSec)
             it.mtime = [d[@"mtime"] respondsToSelector:@selector(longLongValue)] ? [d[@"mtime"] longLongValue] : 0;
             if (it.name.length) [parsed addObject:it];
         }
-        me->_items = parsed;
-        [me.tableView reloadData];
+        me->_allItems = parsed;
+        [me->_selectedPaths removeAllObjects];
+        [me applyFilterAndSort];
     }];
     [task resume];
 }
@@ -1262,26 +1611,59 @@ static NSString *wq_win_speed_text(double bytesPerSec)
 - (void)cancelActiveTransfer
 {
     [_uploadQueue removeAllObjects];
+    [_downloadQueue removeAllObjects];
     [_activeTask cancel];
     _activeTask = nil;
     [self hideProgress];
 }
 
-- (void)startDownloadItem:(WQLanRemoteItem *)item
+- (void)enqueueDownloads:(NSArray<WQLanRemoteItem *> *)items
 {
-    if (!_session || _activeTask) {
-        wq_alert(self, WQLocalized(@"Transfer In Progress"), WQLocalized(@"Wait for the current transfer to finish or cancel it first."));
+    if (!_session || !items.count) return;
+    for (WQLanRemoteItem *it in items) {
+        if (!it.isDir) [_downloadQueue addObject:it];
+    }
+    if (!_downloadQueue.count) return;
+    if (!_activeTask) {
+        _batchTotalCount = _downloadQueue.count;
+        _batchDoneCount = 0;
+        [self pumpNextDownload];
+    }
+}
+
+- (void)pumpNextDownload
+{
+    if (!_session || _activeTask || !_downloadQueue.count) {
+        if (!_activeTask && _batchDoneCount > 0) {
+            NSUInteger done = _batchDoneCount;
+            _batchDoneCount = 0;
+            _batchTotalCount = 0;
+            [self hideProgress];
+            wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+            wq_alert(self, WQLocalized(@"Saved to Downloads"),
+                     [NSString stringWithFormat:WQLocalized(@"Saved %lu file(s) into WQ Glass Downloads."), (unsigned long)done]);
+        }
         return;
     }
+    WQLanRemoteItem *item = _downloadQueue.firstObject;
+    [_downloadQueue removeObjectAtIndex:0];
+
     NSString *rel = [NSString stringWithFormat:@"/api/download?path=%@", wq_win_query_encode(item.path)];
     NSMutableURLRequest *req = [self requestForMethod:@"GET" relativePath:rel];
     _activeFileName = item.name;
     _isDownloading = YES;
     _transferStartTime = CFAbsoluteTimeGetCurrent();
-    [self showProgress:[NSString stringWithFormat:@"↓ %@", item.name] detail:WQLocalized(@"Starting download…") fraction:0.0f];
+    [self showProgress:[NSString stringWithFormat:@"↓ (%lu/%lu) %@", (unsigned long)(_batchDoneCount + 1), (unsigned long)MAX(1UL, _batchTotalCount), item.name]
+                detail:WQLocalized(@"Starting download…")
+              fraction:0.0f];
     NSURLSessionDownloadTask *dt = [_session downloadTaskWithRequest:req];
     _activeTask = dt;
     [dt resume];
+}
+
+- (void)startDownloadItem:(WQLanRemoteItem *)item
+{
+    [self enqueueDownloads:@[item]];
 }
 
 - (void)showUploadMenu
@@ -1298,7 +1680,7 @@ static NSString *wq_win_speed_text(double bytesPerSec)
         [self promptLocalDownloadFileUpload];
     })];
     [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
-    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
@@ -1330,21 +1712,21 @@ static NSString *wq_win_speed_text(double bytesPerSec)
         })];
     }
     [sheet addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
-    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.firstObject;
+    sheet.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems.lastObject;
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *__unused)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 {
-    if (urls.count) {
-        [self enqueueUploadURLs:urls];
-    }
+    if (urls.count) [self enqueueUploadURLs:urls];
 }
 
 - (void)enqueueUploadURLs:(NSArray<NSURL *> *)urls
 {
     [_uploadQueue addObjectsFromArray:urls];
     if (!_activeTask) {
+        _batchTotalCount = _uploadQueue.count;
+        _batchDoneCount = 0;
         [self pumpNextUpload];
     }
 }
@@ -1353,6 +1735,8 @@ static NSString *wq_win_speed_text(double bytesPerSec)
 {
     if (!_session || _activeTask || !_uploadQueue.count) {
         if (!_activeTask) {
+            _batchTotalCount = 0;
+            _batchDoneCount = 0;
             [self hideProgress];
             [self refreshDirectory];
         }
@@ -1370,11 +1754,46 @@ static NSString *wq_win_speed_text(double bytesPerSec)
     _activeFileName = name;
     _isDownloading = NO;
     _transferStartTime = CFAbsoluteTimeGetCurrent();
-    [self showProgress:[NSString stringWithFormat:@"↑ %@", name] detail:WQLocalized(@"Starting upload…") fraction:0.0f];
+    [self showProgress:[NSString stringWithFormat:@"↑ (%lu/%lu) %@", (unsigned long)(_batchDoneCount + 1), (unsigned long)MAX(1UL, _batchTotalCount), name]
+                detail:WQLocalized(@"Starting upload…")
+              fraction:0.0f];
 
     NSURLSessionUploadTask *ut = [_session uploadTaskWithRequest:req fromFile:fileURL];
     _activeTask = ut;
     [ut resume];
+}
+
+- (void)promptSendText
+{
+    UIAlertController *a = wq_alert_controller(WQLocalized(@"Send Text / Link"),
+                                               [NSString stringWithFormat:WQLocalized(@"Instantly copy a link or note to %@:"), _deviceName],
+                                               UIAlertControllerStyleAlert);
+    [a addTextFieldWithConfigurationHandler:^(UITextField *tf) {
+        tf.placeholder = WQLocalized(@"Paste link or note…");
+        NSString *clip = UIPasteboard.generalPasteboard.string;
+        if (clip.length > 0 && clip.length < 1000) tf.text = clip;
+    }];
+    [a addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
+    [a addAction:wq_alert_action(WQLocalized(@"Send"), UIAlertActionStyleDefault, ^(UIAlertAction *__unused act) {
+        NSString *txt = a.textFields.firstObject.text ?: @"";
+        if (!txt.length || !self->_session) return;
+        NSMutableURLRequest *req = [self requestForMethod:@"POST" relativePath:@"/api/text"];
+        [req setValue:@"text/plain; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+        req.HTTPBody = [txt dataUsingEncoding:NSUTF8StringEncoding];
+        __weak typeof(self) weakSelf = self;
+        [[self->_session dataTaskWithRequest:req completionHandler:^(NSData *__unused d, NSURLResponse *r, NSError *e) {
+            __strong typeof(weakSelf) me = weakSelf;
+            if (!me) return;
+            NSHTTPURLResponse *http = (NSHTTPURLResponse *)r;
+            if (!e && http.statusCode >= 200 && http.statusCode < 300) {
+                wq_haptic_notify(UINotificationFeedbackTypeSuccess);
+                wq_alert(me, WQLocalized(@"Sent"), WQLocalized(@"Text/link sent to remote device."));
+            } else {
+                wq_alert(me, WQLocalized(@"Send Failed"), e.localizedDescription ?: WQLocalized(@"Remote device did not accept text."));
+            }
+        }] resume];
+    })];
+    [self presentViewController:a animated:YES completion:nil];
 }
 
 - (void)promptNewFolder
@@ -1414,13 +1833,23 @@ static NSString *wq_win_speed_text(double bytesPerSec)
 
 - (void)confirmDeleteItem:(WQLanRemoteItem *)item
 {
-    UIAlertController *a = wq_alert_controller(WQLocalized(@"Delete Remote Item?"),
-                                               [NSString stringWithFormat:WQLocalized(@"Delete \"%@\" from %@?"), item.name, _deviceName],
-                                               UIAlertControllerStyleAlert);
+    [self confirmBatchDelete:@[item]];
+}
+
+- (void)confirmBatchDelete:(NSArray<WQLanRemoteItem *> *)items
+{
+    if (!items.count) return;
+    NSString *msg = (items.count == 1)
+        ? [NSString stringWithFormat:WQLocalized(@"Delete \"%@\" from %@?"), items.firstObject.name, _deviceName]
+        : [NSString stringWithFormat:WQLocalized(@"Delete %lu selected item(s) from %@?"), (unsigned long)items.count, _deviceName];
+    UIAlertController *a = wq_alert_controller(WQLocalized(@"Delete Remote Item(s)?"), msg, UIAlertControllerStyleAlert);
     [a addAction:wq_alert_action(WQLocalized(@"Cancel"), UIAlertActionStyleCancel, nil)];
     [a addAction:wq_alert_action(WQLocalized(@"Delete"), UIAlertActionStyleDestructive, ^(UIAlertAction *__unused act) {
-        NSString *rel = [NSString stringWithFormat:@"/api/delete?path=%@", wq_win_query_encode(item.path)];
-        [self performSimplePost:rel];
+        for (WQLanRemoteItem *it in items) {
+            NSString *rel = [NSString stringWithFormat:@"/api/delete?path=%@", wq_win_query_encode(it.path)];
+            [self performSimplePost:rel];
+        }
+        [self toggleSelectMode:NO];
     })];
     [self presentViewController:a animated:YES completion:nil];
 }
@@ -1462,7 +1891,9 @@ totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
                         wq_size_text((unsigned long long)MAX(0LL, totalBytesWritten)),
                         totalBytesExpectedToWrite > 0 ? wq_size_text((unsigned long long)totalBytesExpectedToWrite) : @"--",
                         wq_win_speed_text(speed)];
-    [self showProgress:[NSString stringWithFormat:@"↓ %@", _activeFileName ?: @""] detail:detail fraction:frac];
+    [self showProgress:[NSString stringWithFormat:@"↓ (%lu/%lu) %@", (unsigned long)(_batchDoneCount + 1), (unsigned long)MAX(1UL, _batchTotalCount), _activeFileName ?: @""]
+                detail:detail
+              fraction:frac];
 }
 
 - (void)URLSession:(NSURLSession *__unused)session
@@ -1473,11 +1904,12 @@ didFinishDownloadingToURL:(NSURL *)location
     NSError *mvErr = nil;
     BOOL ok = [NSFileManager.defaultManager moveItemAtURL:location toURL:[NSURL fileURLWithPath:dst] error:&mvErr];
     _activeTask = nil;
-    [self hideProgress];
     if (ok) {
-        wq_haptic_notify(UINotificationFeedbackTypeSuccess);
-        wq_alert(self, WQLocalized(@"Saved to Downloads"), [NSString stringWithFormat:WQLocalized(@"Saved \"%@\" into WQ Glass Downloads."), dst.lastPathComponent]);
+        _batchDoneCount++;
+        [self pumpNextDownload];
     } else {
+        [_downloadQueue removeAllObjects];
+        [self hideProgress];
         wq_alert(self, WQLocalized(@"Save Failed"), mvErr.localizedDescription ?: WQLocalized(@"Could not save file."));
     }
 }
@@ -1495,7 +1927,9 @@ totalBytesExpectedToSend:(int64_t)totalBytesExpectedToSend
                         wq_size_text((unsigned long long)MAX(0LL, totalBytesSent)),
                         totalBytesExpectedToSend > 0 ? wq_size_text((unsigned long long)totalBytesExpectedToSend) : @"--",
                         wq_win_speed_text(speed)];
-    [self showProgress:[NSString stringWithFormat:@"↑ %@", _activeFileName ?: @""] detail:detail fraction:frac];
+    [self showProgress:[NSString stringWithFormat:@"↑ (%lu/%lu) %@", (unsigned long)(_batchDoneCount + 1), (unsigned long)MAX(1UL, _batchTotalCount), _activeFileName ?: @""]
+                detail:detail
+              fraction:frac];
 }
 
 - (void)URLSession:(NSURLSession *__unused)session
@@ -1505,6 +1939,8 @@ didCompleteWithError:(NSError *)error
     if (task != _activeTask) return;
     _activeTask = nil;
     if (error) {
+        [_downloadQueue removeAllObjects];
+        [_uploadQueue removeAllObjects];
         [self hideProgress];
         if (error.code != NSURLErrorCancelled) {
             wq_alert(self, WQLocalized(@"Transfer Error"), error.localizedDescription ?: WQLocalized(@"Transfer failed."));
@@ -1514,10 +1950,12 @@ didCompleteWithError:(NSError *)error
     if (!_isDownloading) {
         NSHTTPURLResponse *http = [task.response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)task.response : nil;
         if (http && (http.statusCode < 200 || http.statusCode >= 300)) {
+            [_uploadQueue removeAllObjects];
             [self hideProgress];
             wq_alert(self, WQLocalized(@"Upload Failed"), [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]);
             return;
         }
+        _batchDoneCount++;
         wq_haptic_notify(UINotificationFeedbackTypeSuccess);
         [self pumpNextUpload];
     }
@@ -1529,9 +1967,13 @@ didCompleteWithError:(NSError *)error
 
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger __unused)section
 {
-    return _currentPath.length
+    NSString *base = _currentPath.length
         ? [NSString stringWithFormat:@"/%@/%@ (%lu)", _rootLabel, _currentPath, (unsigned long)_items.count]
         : [NSString stringWithFormat:@"/%@ (%lu)", _rootLabel, (unsigned long)_items.count];
+    if (_selecting) {
+        return [NSString stringWithFormat:@"%@ · %lu selected", base, (unsigned long)_selectedPaths.count];
+    }
+    return base;
 }
 
 - (NSInteger)tableView:(UITableView *__unused)tableView numberOfRowsInSection:(NSInteger __unused)section
@@ -1573,9 +2015,16 @@ didCompleteWithError:(NSError *)error
     WQLanRemoteItem *it = _items[(NSUInteger)idx];
     c.text = it.name;
     c.secondaryText = it.isDir ? WQLocalized(@"Folder") : wq_size_text((unsigned long long)MAX(0LL, it.size));
-    c.image = [UIImage systemImageNamed:it.isDir ? @"folder.fill" : @"doc.fill"];
-    c.imageProperties.tintColor = it.isDir ? wq_theme_accent() : wq_theme_secondary_text();
-    cell.accessoryType = it.isDir ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+    if (_selecting && !it.isDir) {
+        BOOL checked = [_selectedPaths containsObject:it.path];
+        c.image = [UIImage systemImageNamed:checked ? @"checkmark.circle.fill" : @"circle"];
+        c.imageProperties.tintColor = checked ? wq_theme_accent() : wq_theme_secondary_text();
+        cell.accessoryType = UITableViewCellAccessoryNone;
+    } else {
+        c.image = [UIImage systemImageNamed:it.isDir ? @"folder.fill" : @"doc.fill"];
+        c.imageProperties.tintColor = it.isDir ? wq_theme_accent() : wq_theme_secondary_text();
+        cell.accessoryType = it.isDir ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+    }
     cell.contentConfiguration = c;
     return cell;
 }
@@ -1599,6 +2048,13 @@ didCompleteWithError:(NSError *)error
     if (it.isDir) {
         _currentPath = it.path;
         [self refreshDirectory];
+        return;
+    }
+
+    if (_selecting) {
+        if ([_selectedPaths containsObject:it.path]) [_selectedPaths removeObject:it.path];
+        else [_selectedPaths addObject:it.path];
+        [self.tableView reloadData];
         return;
     }
 
@@ -1928,6 +2384,53 @@ didCompleteWithError:(NSError *)error
     [self presentViewController:a animated:YES completion:nil];
 }
 
+- (void)presentQRScanner
+{
+    WQLanQRScannerViewController *scanner = [WQLanQRScannerViewController new];
+    __weak typeof(self) weakSelf = self;
+    scanner.onCodeScanned = ^(NSString *payload) {
+        __strong typeof(weakSelf) me = weakSelf;
+        if (!me) return;
+        [me handleScannedQRPayload:payload];
+    };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:scanner];
+    nav.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)handleScannedQRPayload:(NSString *)raw
+{
+    NSString *trimmed = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSURLComponents *comps = [NSURLComponents componentsWithString:trimmed];
+    if (!comps.host.length) {
+        NSString *prefixed = [@"http://" stringByAppendingString:trimmed];
+        comps = [NSURLComponents componentsWithString:prefixed];
+    }
+    if (!comps.host.length) {
+        wq_alert(self, WQLocalized(@"Invalid QR Code"), WQLocalized(@"This QR code is not a WQGlass Transfer address."));
+        return;
+    }
+    NSInteger port = comps.port ? comps.port.integerValue : kWQWinBasePort;
+    NSString *ep = [NSString stringWithFormat:@"%@:%ld", comps.host, (long)port];
+    NSString *pin = nil;
+    for (NSURLQueryItem *qi in comps.queryItems) {
+        if ([qi.name.lowercaseString isEqualToString:@"pin"] && qi.value.length) {
+            pin = qi.value;
+            break;
+        }
+    }
+    if (pin.length >= 4) {
+        [self connectToEndpoint:ep pin:pin fallbackName:comps.host fallbackPlatform:@"windows"];
+    } else {
+        WQLanPeer *p = [WQLanPeer new];
+        p.device = comps.host;
+        p.ip = comps.host;
+        p.port = (uint16_t)port;
+        p.platform = @"windows";
+        [self promptPinForPeer:p];
+    }
+}
+
 #pragma mark - TableView DataSource & Delegate
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *__unused)tableView { return 2; }
@@ -1941,7 +2444,7 @@ didCompleteWithError:(NSError *)error
     if (section == 0) {
         return (NSInteger)_peers.count + 1;
     }
-    return 1;
+    return 2;
 }
 
 - (NSString *)tableView:(UITableView *__unused)tableView titleForHeaderInSection:(NSInteger)section
@@ -1949,7 +2452,7 @@ didCompleteWithError:(NSError *)error
     if (_mode == 0) {
         return (section == 0) ? WQLocalized(@"Transfer Controls") : WQLocalized(@"Live Transfer Activity");
     }
-    return (section == 0) ? WQLocalized(@"Nearby Devices on Wi-Fi (PC · Android · iOS)") : WQLocalized(@"Manual Connection");
+    return (section == 0) ? WQLocalized(@"Nearby Devices on Wi-Fi (PC · Android · iOS)") : WQLocalized(@"QR & Manual Connection");
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -2023,6 +2526,12 @@ didCompleteWithError:(NSError *)error
             c.imageProperties.tintColor = wq_theme_accent();
             cell.accessoryType = UITableViewCellAccessoryNone;
         }
+    } else if (indexPath.row == 0) {
+        c.text = WQLocalized(@"Scan QR Code to Connect…");
+        c.secondaryText = WQLocalized(@"Instant pairing with Windows PC, Android, or another iPhone");
+        c.image = [UIImage systemImageNamed:@"qrcode.viewfinder"];
+        c.imageProperties.tintColor = UIColor.systemTealColor;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else {
         c.text = WQLocalized(@"Connect by IP:Port & PIN…");
         NSString *last = [NSUserDefaults.standardUserDefaults stringForKey:kWQWinLastEndpointPref];
@@ -2048,6 +2557,8 @@ didCompleteWithError:(NSError *)error
             } else {
                 [_discovery sendProbeNow];
             }
+        } else if (indexPath.row == 0) {
+            [self presentQRScanner];
         } else {
             [self promptManualConnect];
         }

@@ -5,10 +5,11 @@ import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.ceil
 
 data class DiscoveredPeer(
     val app: String = "WQGlass",
-    val version: String = "1.1",
+    val version: String = "2.0",
     val device: String = "Device",
     val platform: String = "ios",
     val osVersion: String = "",
@@ -72,6 +73,9 @@ data class RemoteInfo(
 
     val osSummary: String
         get() = if (effectiveOsVersion.isBlank()) platformLabel else "$platformLabel $effectiveOsVersion"
+
+    val usedFraction: Float
+        get() = if (totalBytes > 0L) ((totalBytes - freeBytes).toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0f, 1f) else 0f
 }
 
 data class RemoteFileItem(
@@ -80,7 +84,10 @@ data class RemoteFileItem(
     val isDir: Boolean,
     val size: Long,
     val mtime: Long
-)
+) {
+    val category: String
+        get() = if (isDir) "Folders" else ProtocolUtils.categorizeFileName(name)
+}
 
 data class TransferProgress(
     val verb: String,
@@ -93,7 +100,22 @@ data class TransferProgress(
 ) {
     val fraction: Float
         get() = if (totalBytes > 0L) (transferredBytes.toDouble() / totalBytes.toDouble()).toFloat().coerceIn(0f, 1f) else 0f
+
+    val etaText: String
+        get() {
+            if (bytesPerSec < 100.0 || totalBytes <= transferredBytes) return "--"
+            return ProtocolUtils.formatEta((totalBytes - transferredBytes) / bytesPerSec)
+        }
 }
+
+data class TransferHistoryItem(
+    val timestamp: String,
+    val direction: String,
+    val fileName: String,
+    val bytes: Long,
+    val avgBytesPerSec: Double,
+    val status: String
+)
 
 data class ParsedQrEndpoint(
     val endpoint: String,
@@ -103,7 +125,20 @@ data class ParsedQrEndpoint(
 object ProtocolUtils {
     const val DISCOVERY_PORT = 45888
     const val BASE_HTTP_PORT = 8765
-    const val CHUNK_BYTES = 256 * 1024
+    const val CHUNK_BYTES = 1024 * 1024        // 1 MB chunks for fast Wi-Fi streaming
+    const val SOCKET_BUF_BYTES = 4 * 1024 * 1024 // 4 MB TCP socket windows
+
+    fun categorizeFileName(name: String): String {
+        val ext = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return when (ext) {
+            "mp4", "mov", "m4v", "mkv", "webm", "avi", "ts", "wmv" -> "Videos"
+            "jpg", "jpeg", "png", "heic", "gif", "webp", "bmp", "dng" -> "Photos"
+            "mp3", "m4a", "wav", "aac", "flac", "ogg", "opus", "aiff" -> "Audio"
+            "zip", "rar", "7z", "tar", "gz", "ipa", "apk", "exe" -> "Archives"
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "csv", "json" -> "Docs"
+            else -> "Other"
+        }
+    }
 
     fun formatBytes(bytes: Long): String {
         val safe = bytes.coerceAtLeast(0L)
@@ -121,6 +156,16 @@ object ProtocolUtils {
             safe < 1024.0 -> String.format(Locale.US, "%.0f B/s", safe)
             safe < 1024.0 * 1024.0 -> String.format(Locale.US, "%.1f KB/s", safe / 1024.0)
             else -> String.format(Locale.US, "%.2f MB/s", safe / (1024.0 * 1024.0))
+        }
+    }
+
+    fun formatEta(seconds: Double): String {
+        if (seconds.isNaN() || seconds.isInfinite() || seconds < 0.0 || seconds > 86400.0 * 7) return "--"
+        val s = ceil(seconds).toLong()
+        return when {
+            s < 60L -> "${s}s"
+            s < 3600L -> "${s / 60L}m ${s % 60L}s"
+            else -> "${s / 3600L}h ${(s % 3600L) / 60L}m"
         }
     }
 
@@ -190,5 +235,24 @@ object ProtocolUtils {
         val queryPart = if (qIdx >= 0) noScheme.substring(qIdx + 1) else ""
         val pin = parseQueryParams(queryPart)["pin"]?.trim()?.takeIf { it.isNotEmpty() }
         return ParsedQrEndpoint(endpoint = hostPart, pin = pin)
+    }
+
+    fun resolveTreeDocIdToPath(docId: String, primaryStorageRoot: String = "/storage/emulated/0"): String? {
+        val parts = docId.split(':', limit = 2)
+        if (parts.isEmpty()) return null
+        val volume = parts[0]
+        val rel = if (parts.size > 1) parts[1].trim('/') else ""
+        return when {
+            volume.equals("primary", ignoreCase = true) -> {
+                if (rel.isEmpty()) primaryStorageRoot else "$primaryStorageRoot/$rel"
+            }
+            volume.isNotBlank() && !volume.equals("home", ignoreCase = true) -> {
+                if (rel.isEmpty()) "/storage/$volume" else "/storage/$volume/$rel"
+            }
+            volume.equals("home", ignoreCase = true) -> {
+                if (rel.isEmpty()) "$primaryStorageRoot/Documents" else "$primaryStorageRoot/Documents/$rel"
+            }
+            else -> null
+        }
     }
 }

@@ -13,7 +13,8 @@ public sealed class TransferServer : IDisposable
 {
     private const int DiscoveryPort = 45888;
     private const int BasePort = 8765;
-    private const int ChunkBytes = 256 * 1024;
+    private const int ChunkBytes = 1024 * 1024;
+    private const int SocketBufBytes = 4 * 1024 * 1024;
     private const int MaxHeaderBytes = 16384;
 
     private CancellationTokenSource? _cts;
@@ -28,6 +29,7 @@ public sealed class TransferServer : IDisposable
     public string RootLabel { get; set; }
 
     public event Action<string>? ActivityLogged;
+    public event Action<string>? TextReceived;
 
     public TransferServer()
     {
@@ -232,8 +234,8 @@ public sealed class TransferServer : IDisposable
         using (client)
         {
             client.NoDelay = true;
-            client.SendBufferSize = ChunkBytes;
-            client.ReceiveBufferSize = ChunkBytes;
+            client.SendBufferSize = SocketBufBytes;
+            client.ReceiveBufferSize = SocketBufBytes;
 
             try
             {
@@ -569,6 +571,36 @@ public sealed class TransferServer : IDisposable
                     }
                     await SendJsonAsync(net, 200, new { ok = true }, ct);
                     EmitActivity($"✎ Renamed to: {newName}");
+                    return;
+                }
+
+                if (route == "/api/text" && method == "POST")
+                {
+                    long len = 0;
+                    if (headers.TryGetValue("Content-Length", out string? clStr))
+                        long.TryParse(clStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out len);
+                    len = Math.Clamp(len, 0, 256 * 1024);
+                    using var ms = new MemoryStream();
+                    if (leftover.Length > 0 && len > 0)
+                    {
+                        int take = (int)Math.Min(leftover.Length, len);
+                        ms.Write(leftover, 0, take);
+                    }
+                    byte[] tbuf = new byte[8192];
+                    while (ms.Length < len)
+                    {
+                        int want = (int)Math.Min(tbuf.Length, len - ms.Length);
+                        int r = await net.ReadAsync(tbuf.AsMemory(0, want), ct);
+                        if (r <= 0) break;
+                        ms.Write(tbuf, 0, r);
+                    }
+                    string text = Encoding.UTF8.GetString(ms.ToArray());
+                    await SendJsonAsync(net, 200, new { ok = true }, ct);
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        EmitActivity($"📋 Received text/link ({text.Length} chars)");
+                        TextReceived?.Invoke(text);
+                    }
                     return;
                 }
 

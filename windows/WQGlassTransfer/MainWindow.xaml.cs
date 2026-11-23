@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using QRCoder;
 
@@ -16,16 +17,36 @@ public partial class MainWindow : Window
 {
     private readonly DiscoveryService _discovery = new();
     private readonly TransferServer _server = new();
+    private readonly UsbTransferService _usb = new();
+    private readonly DispatcherTimer _usbPollTimer;
+
     private readonly ObservableCollection<DiscoveredPhone> _phones = new();
     private readonly List<RemoteFileItem> _allItems = new();
     private readonly ObservableCollection<RemoteFileItem> _visibleItems = new();
+
+    private readonly ObservableCollection<UsbDeviceSummary> _usbDevices = new();
+    private readonly List<UsbFileItem> _allUsbItems = new();
+    private readonly ObservableCollection<UsbFileItem> _visibleUsbItems = new();
+
     private readonly ObservableCollection<string> _hostLogs = new();
+    private readonly ObservableCollection<TransferHistoryEntry> _history = new();
 
     private TransferClient? _client;
     private PhoneInfo? _phoneInfo;
     private string _currentPath = "";
+    private string _wifiCategory = "All";
+    private string _usbCurrentPath = "\\";
+    private string _usbCategory = "All";
+
     private string _pcDownloadDir;
+    private int _parallelStreams = 3;
+    private string _conflictPolicy = "Rename";
+    private bool _loadingSettings = true;
+
+    private long _sessionTotalBytes;
+    private double _sessionPeakBps;
     private CancellationTokenSource? _transferCts;
+    private int _activeNav; // 0=WiFi, 1=USB, 2=Host, 3=History, 4=Settings
 
     private static string SettingsPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "WQGlassTransfer", "settings.json");
@@ -34,13 +55,20 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         _pcDownloadDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "WQGlass");
+
         DiscoveredBox.ItemsSource = _phones;
         FilesList.ItemsSource = _visibleItems;
+        UsbDevicesBox.ItemsSource = _usbDevices;
+        UsbFilesList.ItemsSource = _visibleUsbItems;
         HostLogList.ItemsSource = _hostLogs;
+        HistoryList.ItemsSource = _history;
 
         LoadSettings();
+        _loadingSettings = false;
 
         HostFolderBox.Text = _server.RootPath;
+        SettingsDownloadDirBox.Text = _pcDownloadDir;
+
         _discovery.LocalServerPortProvider = () => _server.IsRunning ? _server.Port : null;
         _discovery.PhoneDiscovered += OnPhoneDiscovered;
         _discovery.Start();
@@ -50,19 +78,37 @@ public partial class MainWindow : Window
             Dispatcher.Invoke(() =>
             {
                 _hostLogs.Insert(0, line);
-                while (_hostLogs.Count > 100) _hostLogs.RemoveAt(_hostLogs.Count - 1);
+                while (_hostLogs.Count > 120) _hostLogs.RemoveAt(_hostLogs.Count - 1);
             });
         };
+        _server.TextReceived += text =>
+        {
+            Dispatcher.Invoke(() =>
+            {
+                try { Clipboard.SetText(text); } catch { }
+                TransferStatusText.Text = $"📋 Received text/link from phone (copied to PC clipboard): {(text.Length > 80 ? text[..80] + "…" : text)}";
+            });
+        };
+
+        RefreshUsbDevicesList();
+        _usbPollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        _usbPollTimer.Tick += (_, _) => RefreshUsbDevicesList();
+        _usbPollTimer.Start();
 
         RefreshHostUI();
 
         Closed += (_, _) =>
         {
+            _usbPollTimer.Stop();
+            _transferCts?.Cancel();
             _discovery.Dispose();
             _server.Dispose();
+            _usb.Dispose();
             _client?.Dispose();
         };
     }
+
+    #region Settings & Persistence
 
     private void LoadSettings()
     {
@@ -79,18 +125,28 @@ public partial class MainWindow : Window
                     if (!string.IsNullOrWhiteSpace(s.HostSharedDirectory) && Directory.Exists(s.HostSharedDirectory))
                     {
                         _server.RootPath = s.HostSharedDirectory;
-                        _server.RootLabel = Path.GetFileName(s.HostSharedDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                        if (string.IsNullOrWhiteSpace(_server.RootLabel)) _server.RootLabel = "PC";
+                        string lbl = Path.GetFileName(s.HostSharedDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                        _server.RootLabel = string.IsNullOrWhiteSpace(lbl) ? "PC" : lbl;
                     }
                     if (!string.IsNullOrWhiteSpace(s.HostFixedPin) && s.HostFixedPin.Length >= 4)
                     {
                         _server.Pin = s.HostFixedPin.Trim();
                         HostFixedPinBox.Text = _server.Pin;
                     }
+                    _parallelStreams = Math.Clamp(s.ParallelStreams <= 0 ? 3 : s.ParallelStreams, 1, 4);
+                    _conflictPolicy = string.IsNullOrWhiteSpace(s.ConflictPolicy) ? "Rename" : s.ConflictPolicy;
                 }
             }
         }
         catch { }
+
+        ParallelStreamsBox.SelectedIndex = _parallelStreams - 1;
+        ConflictPolicyBox.SelectedIndex = _conflictPolicy switch
+        {
+            "Overwrite" => 1,
+            "Skip" => 2,
+            _ => 0
+        };
     }
 
     private void SaveSettings()
@@ -105,189 +161,139 @@ public partial class MainWindow : Window
                 LastPin = PinBox.Text.Trim(),
                 DownloadDirectory = _pcDownloadDir,
                 HostSharedDirectory = _server.RootPath,
-                HostFixedPin = HostFixedPinBox.Text.Trim()
+                HostFixedPin = HostFixedPinBox.Text.Trim(),
+                ParallelStreams = _parallelStreams,
+                ConflictPolicy = _conflictPolicy
             };
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(s));
         }
         catch { }
     }
 
-    #region Mode Switching
-
-    private void ClientTabBtn_Click(object sender, RoutedEventArgs e)
+    private void SettingsChooseDownloadDir_Click(object sender, RoutedEventArgs e)
     {
-        ClientPanel.Visibility = Visibility.Visible;
-        HostPanel.Visibility = Visibility.Collapsed;
-        ClientTabBtn.Style = (Style)FindResource("PrimaryBtn");
-        HostTabBtn.Style = (Style)FindResource("GlassBtn");
-    }
-
-    private void HostTabBtn_Click(object sender, RoutedEventArgs e)
-    {
-        ClientPanel.Visibility = Visibility.Collapsed;
-        HostPanel.Visibility = Visibility.Visible;
-        ClientTabBtn.Style = (Style)FindResource("GlassBtn");
-        HostTabBtn.Style = (Style)FindResource("PrimaryBtn");
-        RefreshHostUI();
-    }
-
-    #endregion
-
-    #region Host Mode ("Share This PC")
-
-    private void HostToggleBtn_Click(object sender, RoutedEventArgs e)
-    {
-        if (_server.IsRunning)
-        {
-            _server.Stop();
-            _hostLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] PC Host stopped.");
-            RefreshHostUI();
-            return;
-        }
-
-        string fixedPin = HostFixedPinBox.Text.Trim();
-        if (fixedPin.Length >= 4 && fixedPin.Length <= 8)
-        {
-            _server.Pin = fixedPin;
-        }
-        else if (string.IsNullOrWhiteSpace(_server.Pin))
-        {
-            _server.Pin = TransferServer.GenerateRandomPin();
-        }
-
-        if (!_server.Start(out string? err))
-        {
-            MessageBox.Show(this, err ?? "Unable to start PC Host Server.", "Share This PC", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        SaveSettings();
-        RefreshHostUI();
-    }
-
-    private void HostChooseFolderBtn_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFolderDialog { Title = "Choose Folder to Share with iPhone / Android / PC" };
+        var dlg = new OpenFolderDialog { Title = "Choose Default PC Download Folder" };
         if (dlg.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
         {
-            _server.RootPath = dlg.FolderName;
-            string lbl = Path.GetFileName(dlg.FolderName.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            _server.RootLabel = string.IsNullOrWhiteSpace(lbl) ? "PC" : lbl;
-            HostFolderBox.Text = _server.RootPath;
+            _pcDownloadDir = dlg.FolderName;
+            SettingsDownloadDirBox.Text = _pcDownloadDir;
             SaveSettings();
-            if (_server.IsRunning)
-            {
-                _hostLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] Switched shared folder to: {_server.RootPath}");
-            }
-            RefreshHostUI();
         }
     }
 
-    private void HostApplyPinBtn_Click(object sender, RoutedEventArgs e)
+    private void SettingsChanged(object sender, SelectionChangedEventArgs e)
     {
-        string val = HostFixedPinBox.Text.Trim();
-        if (string.IsNullOrEmpty(val))
-        {
-            _server.Pin = TransferServer.GenerateRandomPin();
-        }
-        else if (val.Length >= 4 && val.Length <= 8)
-        {
-            _server.Pin = val;
-        }
-        else
-        {
-            MessageBox.Show(this, "PIN must be 4 to 8 characters.", "Invalid PIN", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
+        if (_loadingSettings) return;
+        if (ParallelStreamsBox.SelectedItem is ComboBoxItem pItem && int.TryParse(pItem.Tag?.ToString(), out int p))
+            _parallelStreams = Math.Clamp(p, 1, 4);
+        if (ConflictPolicyBox.SelectedItem is ComboBoxItem cItem && cItem.Tag is string pol)
+            _conflictPolicy = pol;
         SaveSettings();
-        RefreshHostUI();
     }
 
-    private void HostRandomPinBtn_Click(object sender, RoutedEventArgs e)
+    #endregion
+
+    #region Sidebar Navigation & Keyboard Shortcuts
+
+    private void SwitchNav(int index)
     {
-        HostFixedPinBox.Text = "";
-        _server.Pin = TransferServer.GenerateRandomPin();
-        SaveSettings();
-        RefreshHostUI();
+        _activeNav = index;
+        WifiPanel.Visibility = index == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UsbPanel.Visibility = index == 1 ? Visibility.Visible : Visibility.Collapsed;
+        HostPanel.Visibility = index == 2 ? Visibility.Visible : Visibility.Collapsed;
+        HistoryPanel.Visibility = index == 3 ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPanel.Visibility = index == 4 ? Visibility.Visible : Visibility.Collapsed;
+
+        Style normal = (Style)FindResource("SidebarNavBtn");
+        Style active = (Style)FindResource("SidebarNavActiveBtn");
+        NavWifiBtn.Style = index == 0 ? active : normal;
+        NavUsbBtn.Style = index == 1 ? active : normal;
+        NavHostBtn.Style = index == 2 ? active : normal;
+        NavHistoryBtn.Style = index == 3 ? active : normal;
+        NavSettingsBtn.Style = index == 4 ? active : normal;
+
+        if (index == 1) RefreshUsbDevicesList();
+        if (index == 2) RefreshHostUI();
     }
 
-    private void HostCopyBtn_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_server.IsRunning) return;
-        Clipboard.SetText($"http://{_server.IpAddress}:{_server.Port} (PIN: {_server.Pin})");
-        _hostLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] Copied Wi-Fi address & PIN to clipboard.");
-    }
+    private void NavWifiBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(0);
+    private void NavUsbBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(1);
+    private void NavHostBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(2);
+    private void NavHistoryBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(3);
+    private void NavSettingsBtn_Click(object sender, RoutedEventArgs e) => SwitchNav(4);
 
-    private void HostOpenFolderBtn_Click(object sender, RoutedEventArgs e)
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        try
+        if (Keyboard.FocusedElement is TextBox) return;
+        if (e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
         {
-            Directory.CreateDirectory(_server.RootPath);
-            Process.Start(new ProcessStartInfo { FileName = _server.RootPath, UseShellExecute = true });
+            if (_activeNav == 0 && _client is not null) { SelectAllWifi(); e.Handled = true; }
+            else if (_activeNav == 1 && _usb.IsConnected) { SelectAllUsb(); e.Handled = true; }
         }
-        catch { }
-    }
-
-    private void HostClearLogBtn_Click(object sender, RoutedEventArgs e) => _hostLogs.Clear();
-
-    private void RefreshHostUI()
-    {
-        HostFolderBox.Text = _server.RootPath;
-        if (_server.IsRunning && !string.IsNullOrWhiteSpace(_server.IpAddress))
+        else if (e.Key == Key.Escape)
         {
-            string url = $"http://{_server.IpAddress}:{_server.Port}";
-            string qrUrl = $"{url}/?pin={Uri.EscapeDataString(_server.Pin)}";
-            HostStatusText.Text = $"● Live — Visible on Wi-Fi as \"{Environment.MachineName}\" ({_server.RootLabel})";
-            HostStatusText.Foreground = new SolidColorBrush(Color.FromRgb(74, 222, 128));
-            HostPinBigText.Text = _server.Pin;
-            HostUrlText.Text = $"{url}   (Auto-discovered by iPhone & Android on Wi-Fi)";
-            HostToggleBtn.Content = "■ Stop Sharing PC";
-            HostToggleBtn.Style = (Style)FindResource("DangerBtn");
-            HostCopyBtn.IsEnabled = true;
-            HostQrImage.Source = RenderQrBitmap(qrUrl);
-
-            HostLivePill.Visibility = Visibility.Visible;
-            HostLivePillText.Text = $"● PC Live :{ _server.Port } · PIN {_server.Pin}";
-        }
-        else
-        {
-            HostStatusText.Text = "PC Host Server Stopped";
-            HostStatusText.Foreground = new SolidColorBrush(Color.FromRgb(251, 191, 36));
-            HostPinBigText.Text = "----";
-            HostUrlText.Text = "Click Start Sharing PC below to share this folder with iPhone, Android, or any browser";
-            HostToggleBtn.Content = "▶ Start Sharing PC";
-            HostToggleBtn.Style = (Style)FindResource("PrimaryBtn");
-            HostCopyBtn.IsEnabled = false;
-            HostQrImage.Source = null;
-
-            HostLivePill.Visibility = Visibility.Collapsed;
-        }
-    }
-
-    private static BitmapImage? RenderQrBitmap(string content)
-    {
-        try
-        {
-            using var gen = new QRCodeGenerator();
-            using QRCodeData data = gen.CreateQrCode(content, QRCodeGenerator.ECCLevel.M);
-            var png = new PngByteQRCode(data);
-            byte[] bytes = png.GetGraphic(8);
-            var bmp = new BitmapImage();
-            using var ms = new MemoryStream(bytes);
-            bmp.BeginInit();
-            bmp.CacheOption = BitmapCacheOption.OnLoad;
-            bmp.StreamSource = ms;
-            bmp.EndInit();
-            bmp.Freeze();
-            return bmp;
-        }
-        catch
-        {
-            return null;
+            if (_activeNav == 0 && _client is not null) { DeselectAllWifi(); e.Handled = true; }
+            else if (_activeNav == 1 && _usb.IsConnected) { DeselectAllUsb(); e.Handled = true; }
         }
     }
 
     #endregion
 
-    #region Client Mode (Connect to iPhone / Android / PC)
+    #region QR Code Scanning on PC
+
+    private void QrScanBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var win = new QrScanWindow { Owner = this };
+        if (win.ShowDialog() == true && !string.IsNullOrWhiteSpace(win.ScannedPayload))
+        {
+            ApplyQrPayloadAndConnect(win.ScannedPayload);
+        }
+    }
+
+    private void ApplyQrPayloadAndConnect(string raw)
+    {
+        string clean = raw.Trim();
+        string noScheme = clean.Replace("http://", "", StringComparison.OrdinalIgnoreCase)
+                               .Replace("https://", "", StringComparison.OrdinalIgnoreCase);
+        int qIdx = noScheme.IndexOf('?');
+        string hostPart = (qIdx >= 0 ? noScheme[..qIdx] : noScheme).Split('/')[0].Trim();
+        string? pin = null;
+        if (qIdx >= 0)
+        {
+            string qs = noScheme[(qIdx + 1)..];
+            foreach (string kv in qs.Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                int eq = kv.IndexOf('=');
+                if (eq > 0 && string.Equals(kv[..eq], "pin", StringComparison.OrdinalIgnoreCase))
+                {
+                    pin = Uri.UnescapeDataString(kv[(eq + 1)..]).Trim();
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(hostPart))
+        {
+            MessageBox.Show(this, $"QR code did not contain a valid WQGlass address:\n{raw}", "QR Scan", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (_client is not null) Disconnect();
+        EndpointBox.Text = hostPart;
+        if (!string.IsNullOrWhiteSpace(pin))
+        {
+            PinBox.Text = pin;
+            ConnectBtn_Click(this, new RoutedEventArgs());
+        }
+        else
+        {
+            PinBox.Focus();
+            TransferStatusText.Text = $"QR scanned ({hostPart}). Enter PIN and click Connect.";
+        }
+    }
+
+    #endregion
+
+    #region Wi-Fi Client Mode (Multi-Select, Filters, Parallel Streams)
 
     private void OnPhoneDiscovered(DiscoveredPhone phone)
     {
@@ -317,6 +323,7 @@ public partial class MainWindow : Window
                     EndpointBox.Text = phone.Endpoint;
                 }
             }
+            WifiCountText.Text = _phones.Count.ToString();
             if (_client is null)
             {
                 StatusBadgeText.Text = $"Found {_phones.Count} device(s) on Wi-Fi";
@@ -336,10 +343,7 @@ public partial class MainWindow : Window
     private void ScanBtn_Click(object sender, RoutedEventArgs e)
     {
         _discovery.SendProbeNow();
-        if (_client is null)
-        {
-            StatusBadgeText.Text = "Scanning Wi-Fi for iPhone, Android & PC…";
-        }
+        if (_client is null) StatusBadgeText.Text = "Scanning Wi-Fi for iPhone, Android & PC…";
     }
 
     private void PinBox_KeyDown(object sender, KeyEventArgs e)
@@ -359,12 +363,12 @@ public partial class MainWindow : Window
         string pin = PinBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(ep))
         {
-            MessageBox.Show(this, "Enter a device IP:Port or select an auto-discovered iPhone, Android, or PC.", "WQGlass Transfer", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Select a discovered device, enter an IP:Port, or click Scan QR.", "WQGlass Transfer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
         if (pin.Length < 4)
         {
-            MessageBox.Show(this, "Enter the pairing PIN shown on the target device.", "WQGlass Transfer", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Enter the 4–8 digit pairing PIN shown on the target device.", "WQGlass Transfer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -380,10 +384,12 @@ public partial class MainWindow : Window
             SaveSettings();
 
             ConnectBtn.Content = "Disconnect";
-            StatusBadgeText.Text = $"● Connected: {info.PlatformIcon} {info.Device} [{info.OsSummary}] · {info.Root}";
+            StatusBadgeText.Text = $"● {info.PlatformIcon} {info.Device} [{info.OsSummary}] · /{info.Root}";
             StatusBadgeText.Foreground = new SolidColorBrush(Color.FromRgb(74, 222, 128));
-            StorageLabel.Text = $"{info.OsSummary} · {RemoteFileItem.FormatBytes(info.FreeBytes)} free of {RemoteFileItem.FormatBytes(info.TotalBytes)}";
-            SetConnectedUI(true);
+            StorageLabel.Text = $"{RemoteFileItem.FormatBytes(info.FreeBytes)} free / {RemoteFileItem.FormatBytes(info.TotalBytes)}";
+            StorageUsedBar.Value = info.UsedPercent;
+            StorageMeterPanel.Visibility = info.TotalBytes > 0 ? Visibility.Visible : Visibility.Collapsed;
+            SetWifiConnectedUI(true);
             await RefreshDirectoryAsync();
         }
         catch (Exception ex)
@@ -409,28 +415,94 @@ public partial class MainWindow : Window
         ConnectBtn.Content = "Connect";
         StatusBadgeText.Text = _phones.Count > 0 ? $"Found {_phones.Count} device(s) on Wi-Fi" : "Disconnected";
         StatusBadgeText.Foreground = (Brush)FindResource("AccentCyan");
-        StorageLabel.Text = "";
-        PathLabel.Text = "Not connected — Open WQGlass Transfer on iPhone, Android, or another PC";
-        SetConnectedUI(false);
+        StorageMeterPanel.Visibility = Visibility.Collapsed;
+        PathLabel.Text = "Not connected — Pick a Wi-Fi device above, Scan QR, or switch to 🔌 USB Cable";
+        SetWifiConnectedUI(false);
     }
 
-    private void SetConnectedUI(bool connected)
+    private void SetWifiConnectedUI(bool connected)
     {
         SendFilesBtn.IsEnabled = connected;
         SendFolderBtn.IsEnabled = connected;
         NewFolderBtn.IsEnabled = connected;
+        SendTextBtn.IsEnabled = connected;
+        SelectAllBtn.IsEnabled = connected;
+        DeselectAllBtn.IsEnabled = connected;
+        InvertSelBtn.IsEnabled = connected;
         UpBtn.IsEnabled = connected && !string.IsNullOrEmpty(_currentPath);
         RefreshBtn.IsEnabled = connected;
-        UpdateSelectionButtons();
+        UpdateWifiSelectionState();
     }
 
-    private void UpdateSelectionButtons()
+    private List<RemoteFileItem> GetSelectedWifiItems()
     {
-        bool hasSel = _client is not null && FilesList.SelectedItems.Count > 0;
+        var checkedItems = _visibleItems.Where(i => i.IsSelected).ToList();
+        if (checkedItems.Count > 0) return checkedItems;
+        return FilesList.SelectedItems.Cast<RemoteFileItem>().ToList();
+    }
+
+    private void UpdateWifiSelectionState()
+    {
+        var sel = GetSelectedWifiItems();
+        bool hasSel = _client is not null && sel.Count > 0;
         DownloadBtn.IsEnabled = hasSel;
         DeleteBtn.IsEnabled = hasSel;
-        RenameBtn.IsEnabled = _client is not null && FilesList.SelectedItems.Count == 1;
+        RenameBtn.IsEnabled = _client is not null && sel.Count == 1;
+
+        long totalBytes = sel.Where(i => !i.IsDir).Sum(i => i.Size);
+        int folders = sel.Count(i => i.IsDir);
+        if (sel.Count == 0)
+            WifiSelectionSummary.Text = "0 selected";
+        else if (folders > 0 && totalBytes > 0)
+            WifiSelectionSummary.Text = $"{sel.Count} selected ({folders} folder(s) + {RemoteFileItem.FormatBytes(totalBytes)})";
+        else if (folders > 0)
+            WifiSelectionSummary.Text = $"{folders} folder(s) selected";
+        else
+            WifiSelectionSummary.Text = $"{sel.Count} selected · {RemoteFileItem.FormatBytes(totalBytes)}";
     }
+
+    private void SelectAllWifi()
+    {
+        foreach (var it in _visibleItems) it.IsSelected = true;
+        UpdateWifiSelectionState();
+    }
+
+    private void DeselectAllWifi()
+    {
+        foreach (var it in _visibleItems) it.IsSelected = false;
+        FilesList.UnselectAll();
+        UpdateWifiSelectionState();
+    }
+
+    private void SelectAllBtn_Click(object sender, RoutedEventArgs e) => SelectAllWifi();
+    private void DeselectAllBtn_Click(object sender, RoutedEventArgs e) => DeselectAllWifi();
+
+    private void InvertSelBtn_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var it in _visibleItems) it.IsSelected = !it.IsSelected;
+        UpdateWifiSelectionState();
+    }
+
+    private void WifiItemCheckBox_Click(object sender, RoutedEventArgs e) => UpdateWifiSelectionState();
+    private void FilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateWifiSelectionState();
+
+    private void WifiCategoryChip_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string cat) return;
+        _wifiCategory = cat;
+        Style inactive = (Style)FindResource("FilterChipBtn");
+        Style active = (Style)FindResource("FilterChipActiveBtn");
+        foreach (Button b in new[] { ChipAll, ChipFolders, ChipVideos, ChipPhotos, ChipAudio, ChipDocs, ChipArchives })
+            b.Style = ReferenceEquals(b, btn) ? active : inactive;
+        ApplyWifiFilterAndSort();
+    }
+
+    private void SortBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_allItems.Count > 0) ApplyWifiFilterAndSort();
+    }
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplyWifiFilterAndSort();
 
     private async Task RefreshDirectoryAsync()
     {
@@ -440,11 +512,11 @@ public partial class MainWindow : Window
             RemoteListResponse res = await _client.ListAsync(_currentPath);
             _allItems.Clear();
             _allItems.AddRange(res.Items);
-            ApplySearchFilter();
+            ApplyWifiFilterAndSort();
             string rootName = _phoneInfo?.Root ?? "Downloads";
             PathLabel.Text = string.IsNullOrEmpty(_currentPath)
-                ? $"/{rootName}  ({_allItems.Count} items)"
-                : $"/{rootName}/{_currentPath}  ({_allItems.Count} items)";
+                ? $"/{rootName}   ({_allItems.Count} items)"
+                : $"/{rootName}/{_currentPath}   ({_allItems.Count} items)";
             UpBtn.IsEnabled = !string.IsNullOrEmpty(_currentPath);
         }
         catch (Exception ex)
@@ -453,23 +525,26 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ApplySearchFilter()
+    private void ApplyWifiFilterAndSort()
     {
-        string q = SearchBox.Text.Trim();
-        _visibleItems.Clear();
-        foreach (var item in _allItems)
+        string q = SearchBox?.Text?.Trim() ?? "";
+        IEnumerable<RemoteFileItem> filtered = _allItems.Where(item =>
+            (_wifiCategory == "All" || string.Equals(item.Category, _wifiCategory, StringComparison.OrdinalIgnoreCase)) &&
+            (string.IsNullOrEmpty(q) || item.Name.Contains(q, StringComparison.OrdinalIgnoreCase)));
+
+        int sortIdx = SortBox?.SelectedIndex ?? 0;
+        filtered = sortIdx switch
         {
-            if (string.IsNullOrEmpty(q) || item.Name.Contains(q, StringComparison.OrdinalIgnoreCase))
-            {
-                _visibleItems.Add(item);
-            }
-        }
-        UpdateSelectionButtons();
+            1 => filtered.OrderByDescending(i => i.IsDir).ThenByDescending(i => i.Size),
+            2 => filtered.OrderByDescending(i => i.IsDir).ThenByDescending(i => i.Mtime),
+            3 => filtered.OrderByDescending(i => i.IsDir).ThenBy(i => i.TypeLabel, StringComparer.OrdinalIgnoreCase).ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase),
+            _ => filtered.OrderByDescending(i => i.IsDir).ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
+        };
+
+        _visibleItems.Clear();
+        foreach (var item in filtered) _visibleItems.Add(item);
+        UpdateWifiSelectionState();
     }
-
-    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplySearchFilter();
-
-    private void FilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateSelectionButtons();
 
     private async void FilesList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -500,9 +575,7 @@ public partial class MainWindow : Window
         if (_client is null) return;
         var dlg = new OpenFileDialog { Multiselect = true, Title = "Select Files to Send" };
         if (dlg.ShowDialog(this) == true && dlg.FileNames.Length > 0)
-        {
             await UploadLocalPathsAsync(dlg.FileNames);
-        }
     }
 
     private async void SendFolderBtn_Click(object sender, RoutedEventArgs e)
@@ -510,16 +583,32 @@ public partial class MainWindow : Window
         if (_client is null) return;
         var dlg = new OpenFolderDialog { Title = "Select Folder to Send" };
         if (dlg.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
-        {
             await UploadLocalPathsAsync(new[] { dlg.FolderName });
-        }
     }
 
     private async void DownloadBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_client is null || FilesList.SelectedItems.Count == 0) return;
-        var selected = FilesList.SelectedItems.Cast<RemoteFileItem>().ToList();
-        await DownloadItemsAsync(selected);
+        var sel = GetSelectedWifiItems();
+        if (_client is null || sel.Count == 0) return;
+        await DownloadItemsAsync(sel);
+    }
+
+    private async void SendTextBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_client is null) return;
+        string initial = Clipboard.ContainsText() ? Clipboard.GetText() : "";
+        if (initial.Length > 2000) initial = initial[..2000];
+        string? text = PromptInput("Send Text / Link", $"Send a note or URL to {_phoneInfo?.Device ?? "device"}:", initial);
+        if (string.IsNullOrWhiteSpace(text)) return;
+        try
+        {
+            await _client.SendClipboardTextAsync(text);
+            TransferStatusText.Text = $"📋 Sent text/link ({text.Length} chars) to {_phoneInfo?.Device ?? "device"}!";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Target device may not support /api/text yet: {ex.Message}", "Send Text", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
     }
 
     private async Task DownloadItemsAsync(IReadOnlyList<RemoteFileItem> items)
@@ -527,7 +616,7 @@ public partial class MainWindow : Window
         if (_client is null || items.Count == 0) return;
         Directory.CreateDirectory(_pcDownloadDir);
 
-        var fileJobs = new List<(string remotePath, string localPath)>();
+        var fileJobs = new List<(string remotePath, string localPath, long estSize)>();
         async Task CollectRemoteAsync(RemoteFileItem it, string localBase)
         {
             if (it.IsDir)
@@ -536,30 +625,51 @@ public partial class MainWindow : Window
                 Directory.CreateDirectory(subLocal);
                 var listing = await _client.ListAsync(it.Path);
                 foreach (var child in listing.Items)
-                {
                     await CollectRemoteAsync(child, subLocal);
-                }
             }
             else
             {
-                fileJobs.Add((it.Path, Path.Combine(localBase, it.Name)));
+                fileJobs.Add((it.Path, Path.Combine(localBase, it.Name), it.Size));
             }
         }
 
-        BeginTransferUI("Preparing download list…");
+        BeginTransferUI("Scanning folders & preparing batch download…");
+        var sw = Stopwatch.StartNew();
+        long totalDoneBytes = 0;
+        int completedCount = 0;
         try
         {
-            foreach (var it in items)
-            {
-                await CollectRemoteAsync(it, _pcDownloadDir);
-            }
-            var progress = CreateProgressHandler("Downloading");
+            foreach (var it in items) await CollectRemoteAsync(it, _pcDownloadDir);
+            if (fileJobs.Count == 0) { EndTransferUI("No files found inside selected folder(s)."); return; }
+
+            long grandTotal = fileJobs.Sum(j => Math.Max(0, j.estSize));
+            using var sem = new SemaphoreSlim(Math.Min(_parallelStreams, fileJobs.Count));
+            var tasks = new List<Task>();
+            var progress = CreateProgressHandler("Downloading", grandTotal);
+
             for (int i = 0; i < fileJobs.Count; i++)
             {
-                _transferCts!.Token.ThrowIfCancellationRequested();
-                await _client.DownloadFileAsync(fileJobs[i].remotePath, fileJobs[i].localPath, i + 1, fileJobs.Count, progress, _transferCts.Token);
+                int idx = i;
+                var job = fileJobs[i];
+                tasks.Add(Task.Run(async () =>
+                {
+                    await sem.WaitAsync(_transferCts!.Token);
+                    try
+                    {
+                        var fsw = Stopwatch.StartNew();
+                        long bytes = await _client.DownloadFileAsync(job.remotePath, job.localPath, idx + 1, fileJobs.Count, _conflictPolicy, progress, _transferCts.Token);
+                        Interlocked.Add(ref totalDoneBytes, bytes);
+                        Interlocked.Increment(ref completedCount);
+                        double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
+                        RecordHistory("Wi-Fi", "↓", Path.GetFileName(job.localPath), bytes, bps, "Completed", job.localPath);
+                    }
+                    finally { sem.Release(); }
+                }, _transferCts!.Token));
             }
-            EndTransferUI($"Downloaded {fileJobs.Count} file(s) to {_pcDownloadDir}");
+
+            await Task.WhenAll(tasks);
+            double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalDoneBytes / sw.Elapsed.TotalSeconds : 0;
+            EndTransferUI($"Downloaded {completedCount} file(s) ({RemoteFileItem.FormatBytes(totalDoneBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s → {_pcDownloadDir}");
         }
         catch (OperationCanceledException)
         {
@@ -575,7 +685,7 @@ public partial class MainWindow : Window
     private async Task UploadLocalPathsAsync(IReadOnlyList<string> localPaths)
     {
         if (_client is null || localPaths.Count == 0) return;
-        var jobs = new List<(string localFile, string remoteDir)>();
+        var jobs = new List<(string localFile, string remoteDir, long size)>();
 
         void CollectLocal(string path, string remoteBase)
         {
@@ -584,17 +694,13 @@ public partial class MainWindow : Window
                 string folderName = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
                 string nextRemote = string.IsNullOrEmpty(remoteBase) ? folderName : $"{remoteBase}/{folderName}";
                 foreach (string file in Directory.GetFiles(path))
-                {
-                    jobs.Add((file, nextRemote));
-                }
+                    jobs.Add((file, nextRemote, new FileInfo(file).Length));
                 foreach (string sub in Directory.GetDirectories(path))
-                {
                     CollectLocal(sub, nextRemote);
-                }
             }
             else if (File.Exists(path))
             {
-                jobs.Add((path, remoteBase));
+                jobs.Add((path, remoteBase, new FileInfo(path).Length));
             }
         }
 
@@ -602,16 +708,39 @@ public partial class MainWindow : Window
         if (jobs.Count == 0) return;
 
         string targetName = _phoneInfo?.Device ?? "device";
-        BeginTransferUI($"Sending {jobs.Count} file(s) to {targetName}…");
+        long grandTotal = jobs.Sum(j => j.size);
+        BeginTransferUI($"Sending {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(grandTotal)}) to {targetName} ({_parallelStreams}x streams)…");
+        var sw = Stopwatch.StartNew();
+        long totalSent = 0;
+
         try
         {
-            var progress = CreateProgressHandler("Sending");
+            using var sem = new SemaphoreSlim(Math.Min(_parallelStreams, jobs.Count));
+            var tasks = new List<Task>();
+            var progress = CreateProgressHandler("Sending", grandTotal);
+
             for (int i = 0; i < jobs.Count; i++)
             {
-                _transferCts!.Token.ThrowIfCancellationRequested();
-                await _client.UploadFileAsync(jobs[i].remoteDir, jobs[i].localFile, i + 1, jobs.Count, progress, _transferCts.Token);
+                int idx = i;
+                var job = jobs[i];
+                tasks.Add(Task.Run(async () =>
+                {
+                    await sem.WaitAsync(_transferCts!.Token);
+                    try
+                    {
+                        var fsw = Stopwatch.StartNew();
+                        long bytes = await _client.UploadFileAsync(job.remoteDir, job.localFile, idx + 1, jobs.Count, progress, _transferCts.Token);
+                        Interlocked.Add(ref totalSent, bytes);
+                        double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
+                        RecordHistory("Wi-Fi", "↑", Path.GetFileName(job.localFile), bytes, bps, "Completed", job.localFile);
+                    }
+                    finally { sem.Release(); }
+                }, _transferCts!.Token));
             }
-            EndTransferUI($"Sent {jobs.Count} file(s) to {targetName} successfully!");
+
+            await Task.WhenAll(tasks);
+            double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalSent / sw.Elapsed.TotalSeconds : 0;
+            EndTransferUI($"Sent {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalSent)}) to {targetName} at {RemoteFileItem.FormatBytes((long)avgBps)}/s!");
             await RefreshDirectoryAsync();
         }
         catch (OperationCanceledException)
@@ -624,6 +753,572 @@ public partial class MainWindow : Window
             MessageBox.Show(this, ex.Message, "Upload Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private async void NewFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_client is null) return;
+        string? name = PromptInput("New Folder", $"Enter folder name to create on {_phoneInfo?.Device ?? "device"}:", "");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        string target = string.IsNullOrEmpty(_currentPath) ? name.Trim() : $"{_currentPath}/{name.Trim()}";
+        try { await _client.CreateFolderAsync(target); await RefreshDirectoryAsync(); }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private async void RenameBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var sel = GetSelectedWifiItems();
+        if (_client is null || sel.Count != 1) return;
+        var item = sel[0];
+        string? newName = PromptInput("Rename", $"Rename '{item.Name}' to:", item.Name);
+        if (string.IsNullOrWhiteSpace(newName) || newName.Trim() == item.Name) return;
+        try { await _client.RenameAsync(item.Path, newName.Trim()); await RefreshDirectoryAsync(); }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Rename Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private async void DeleteBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var items = GetSelectedWifiItems();
+        if (_client is null || items.Count == 0) return;
+        var confirm = MessageBox.Show(this, $"Delete {items.Count} selected item(s) from {_phoneInfo?.Device ?? "device"}?", "Confirm Delete", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes) return;
+        try
+        {
+            foreach (var it in items) await _client.DeleteAsync(it.Path);
+            await RefreshDirectoryAsync();
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    #endregion
+
+    #region USB Cable Mode (Native WPD/MTP + ADB USB Bridge)
+
+    private void RefreshUsbDevicesList()
+    {
+        Task.Run(() => _usb.EnumerateConnectedDevices()).ContinueWith(t =>
+        {
+            if (t.IsFaulted || t.Result is null) return;
+            Dispatcher.Invoke(() =>
+            {
+                var found = t.Result;
+                string? selectedId = (UsbDevicesBox.SelectedItem as UsbDeviceSummary)?.DeviceId;
+                _usbDevices.Clear();
+                foreach (var d in found) _usbDevices.Add(d);
+                UsbCountText.Text = _usbDevices.Count.ToString();
+
+                if (_usbDevices.Count > 0)
+                {
+                    var match = _usbDevices.FirstOrDefault(d => d.DeviceId == selectedId) ?? _usbDevices[0];
+                    UsbDevicesBox.SelectedItem = match;
+                    if (!_usb.IsConnected)
+                        UsbStatusBadge.Text = $"Detected {_usbDevices.Count} USB cable device(s) — click Open USB Device";
+                }
+                else if (!_usb.IsConnected)
+                {
+                    UsbStatusBadge.Text = "No USB phone detected — plug in Android (File Transfer/MTP) or iPhone & unlock";
+                }
+            });
+        });
+    }
+
+    private void UsbDetectBtn_Click(object sender, RoutedEventArgs e) => RefreshUsbDevicesList();
+
+    private async void UsbConnectBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_usb.IsConnected)
+        {
+            _usb.Disconnect();
+            _allUsbItems.Clear();
+            _visibleUsbItems.Clear();
+            _usbCurrentPath = "\\";
+            UsbConnectBtn.Content = "🔌 Open USB Device";
+            UsbStatusBadge.Text = "USB device disconnected.";
+            UsbPathLabel.Text = "No USB device opened";
+            SetUsbConnectedUI(false);
+            return;
+        }
+
+        if (UsbDevicesBox.SelectedItem is not UsbDeviceSummary summary)
+        {
+            MessageBox.Show(this, "Plug in an Android phone (File Transfer / MTP mode) or iPhone via USB cable and click Detect USB.", "USB Transfer", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        UsbConnectBtn.IsEnabled = false;
+        UsbStatusBadge.Text = $"Opening {summary.FriendlyName} over USB…";
+        try
+        {
+            string? err = null;
+            bool ok = await Task.Run(() => _usb.Connect(summary, out err));
+            if (!ok)
+            {
+                UsbStatusBadge.Text = "USB open failed";
+                MessageBox.Show(this, err ?? "Could not open USB device.", "USB Cable Transfer", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            _usbCurrentPath = "\\";
+            UsbConnectBtn.Content = "Disconnect USB";
+            UsbStatusBadge.Text = $"● USB Cable Connected: {summary.DisplayName}";
+            SetUsbConnectedUI(true);
+            await RefreshUsbDirectoryAsync();
+        }
+        finally
+        {
+            UsbConnectBtn.IsEnabled = true;
+        }
+    }
+
+    private void UsbAdbBridgeBtn_Click(object sender, RoutedEventArgs e)
+    {
+        bool ok = UsbTransferService.TrySetupAdbUsbTunnel(18765, 8765, out string msg);
+        MessageBox.Show(this, msg, "ADB USB Turbo Bridge", MessageBoxButton.OK, ok ? MessageBoxImage.Information : MessageBoxImage.Warning);
+        if (ok)
+        {
+            EndpointBox.Text = "127.0.0.1:18765";
+            SwitchNav(0);
+            PinBox.Focus();
+        }
+    }
+
+    private void SetUsbConnectedUI(bool connected)
+    {
+        bool isApple = _usb.ConnectedSummary?.IsApple == true;
+        UsbImportFilesBtn.IsEnabled = connected && !isApple;
+        UsbImportFolderBtn.IsEnabled = connected && !isApple;
+        UsbNewFolderBtn.IsEnabled = connected && !isApple;
+        UsbSelectAllBtn.IsEnabled = connected;
+        UsbDeselectAllBtn.IsEnabled = connected;
+        UsbInvertSelBtn.IsEnabled = connected;
+        UsbUpBtn.IsEnabled = connected && _usbCurrentPath != "\\";
+        UsbRefreshBtn.IsEnabled = connected;
+        UpdateUsbSelectionState();
+    }
+
+    private async Task RefreshUsbDirectoryAsync()
+    {
+        if (!_usb.IsConnected) return;
+        try
+        {
+            var listed = await Task.Run(() => _usb.ListDirectory(_usbCurrentPath));
+            _allUsbItems.Clear();
+            _allUsbItems.AddRange(listed);
+            ApplyUsbFilter();
+            UsbPathLabel.Text = $"USB:{_usbCurrentPath}   ({_allUsbItems.Count} items)";
+            UsbUpBtn.IsEnabled = _usbCurrentPath != "\\";
+        }
+        catch (Exception ex)
+        {
+            TransferStatusText.Text = $"USB folder read error: {ex.Message}";
+        }
+    }
+
+    private void ApplyUsbFilter()
+    {
+        string q = UsbSearchBox?.Text?.Trim() ?? "";
+        _visibleUsbItems.Clear();
+        foreach (var it in _allUsbItems)
+        {
+            if ((_usbCategory == "All" || string.Equals(it.Category, _usbCategory, StringComparison.OrdinalIgnoreCase)) &&
+                (string.IsNullOrEmpty(q) || it.Name.Contains(q, StringComparison.OrdinalIgnoreCase)))
+            {
+                _visibleUsbItems.Add(it);
+            }
+        }
+        UpdateUsbSelectionState();
+    }
+
+    private List<UsbFileItem> GetSelectedUsbItems()
+    {
+        var checkedItems = _visibleUsbItems.Where(i => i.IsSelected).ToList();
+        if (checkedItems.Count > 0) return checkedItems;
+        return UsbFilesList.SelectedItems.Cast<UsbFileItem>().ToList();
+    }
+
+    private void UpdateUsbSelectionState()
+    {
+        var sel = GetSelectedUsbItems();
+        bool hasSel = _usb.IsConnected && sel.Count > 0;
+        UsbExportBtn.IsEnabled = hasSel;
+        UsbDeleteBtn.IsEnabled = hasSel && _usb.ConnectedSummary?.IsApple != true;
+        long total = sel.Where(i => !i.IsDir).Sum(i => i.Size);
+        int folders = sel.Count(i => i.IsDir);
+        UsbSelectionSummary.Text = sel.Count == 0
+            ? "0 selected"
+            : folders > 0 ? $"{sel.Count} selected ({folders} folder(s))" : $"{sel.Count} selected · {RemoteFileItem.FormatBytes(total)}";
+    }
+
+    private void SelectAllUsb() { foreach (var it in _visibleUsbItems) it.IsSelected = true; UpdateUsbSelectionState(); }
+    private void DeselectAllUsb() { foreach (var it in _visibleUsbItems) it.IsSelected = false; UsbFilesList.UnselectAll(); UpdateUsbSelectionState(); }
+    private void UsbSelectAllBtn_Click(object sender, RoutedEventArgs e) => SelectAllUsb();
+    private void UsbDeselectAllBtn_Click(object sender, RoutedEventArgs e) => DeselectAllUsb();
+    private void UsbInvertSelBtn_Click(object sender, RoutedEventArgs e) { foreach (var it in _visibleUsbItems) it.IsSelected = !it.IsSelected; UpdateUsbSelectionState(); }
+    private void UsbItemCheckBox_Click(object sender, RoutedEventArgs e) => UpdateUsbSelectionState();
+    private void UsbFilesList_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateUsbSelectionState();
+    private void UsbSearchBox_TextChanged(object sender, TextChangedEventArgs e) => ApplyUsbFilter();
+
+    private void UsbCategoryChip_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string cat) return;
+        _usbCategory = cat;
+        Style inactive = (Style)FindResource("FilterChipBtn");
+        Style active = (Style)FindResource("FilterChipActiveBtn");
+        foreach (Button b in new[] { UsbChipAll, UsbChipFolders, UsbChipVideos, UsbChipPhotos, UsbChipAudio, UsbChipDocs })
+            b.Style = ReferenceEquals(b, btn) ? active : inactive;
+        ApplyUsbFilter();
+    }
+
+    private async void UsbFilesList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (!_usb.IsConnected || UsbFilesList.SelectedItem is not UsbFileItem item) return;
+        if (item.IsDir)
+        {
+            _usbCurrentPath = item.FullPath;
+            await RefreshUsbDirectoryAsync();
+        }
+        else
+        {
+            await ExportUsbItemsAsync(new[] { item });
+        }
+    }
+
+    private async void UsbUpBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _usbCurrentPath = UsbTransferService.GetParentUsbPath(_usbCurrentPath);
+        await RefreshUsbDirectoryAsync();
+    }
+
+    private async void UsbRefreshBtn_Click(object sender, RoutedEventArgs e) => await RefreshUsbDirectoryAsync();
+
+    private async void UsbExportBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var sel = GetSelectedUsbItems();
+        if (!_usb.IsConnected || sel.Count == 0) return;
+        await ExportUsbItemsAsync(sel);
+    }
+
+    private async Task ExportUsbItemsAsync(IReadOnlyList<UsbFileItem> items)
+    {
+        Directory.CreateDirectory(_pcDownloadDir);
+        BeginTransferUI("Scanning USB folders for export…");
+        var sw = Stopwatch.StartNew();
+        long totalBytes = 0;
+
+        try
+        {
+            var jobs = new List<(string remotePath, string localPath, long size)>();
+            void CollectUsb(UsbFileItem it, string localBase)
+            {
+                _transferCts!.Token.ThrowIfCancellationRequested();
+                if (it.IsDir)
+                {
+                    string subLocal = Path.Combine(localBase, it.Name);
+                    Directory.CreateDirectory(subLocal);
+                    foreach (var child in _usb.ListDirectory(it.FullPath))
+                        CollectUsb(child, subLocal);
+                }
+                else
+                {
+                    jobs.Add((it.FullPath, Path.Combine(localBase, it.Name), it.Size));
+                }
+            }
+
+            await Task.Run(() => { foreach (var it in items) CollectUsb(it, _pcDownloadDir); }, _transferCts!.Token);
+            if (jobs.Count == 0) { EndTransferUI("No files found in selected USB folder(s)."); return; }
+
+            long grandTotal = jobs.Sum(j => Math.Max(0, j.size));
+            var progress = CreateProgressHandler("USB Export", grandTotal);
+
+            await Task.Run(() =>
+            {
+                for (int i = 0; i < jobs.Count; i++)
+                {
+                    _transferCts.Token.ThrowIfCancellationRequested();
+                    var fsw = Stopwatch.StartNew();
+                    long bytes = _usb.ExportFile(jobs[i].remotePath, jobs[i].localPath, jobs[i].size, i + 1, jobs.Count, _conflictPolicy, progress, _transferCts.Token);
+                    totalBytes += bytes;
+                    double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
+                    RecordHistory("USB", "↓", Path.GetFileName(jobs[i].localPath), bytes, bps, "Completed", jobs[i].localPath);
+                }
+            }, _transferCts.Token);
+
+            double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalBytes / sw.Elapsed.TotalSeconds : 0;
+            EndTransferUI($"USB Export complete: {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s → {_pcDownloadDir}");
+        }
+        catch (OperationCanceledException)
+        {
+            EndTransferUI("USB Export cancelled.");
+        }
+        catch (Exception ex)
+        {
+            EndTransferUI($"USB Export error: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "USB Export Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void UsbImportFilesBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_usb.IsConnected) return;
+        var dlg = new OpenFileDialog { Multiselect = true, Title = "Select Files to Import via USB Cable" };
+        if (dlg.ShowDialog(this) == true && dlg.FileNames.Length > 0)
+            await ImportLocalPathsToUsbAsync(dlg.FileNames);
+    }
+
+    private async void UsbImportFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_usb.IsConnected) return;
+        var dlg = new OpenFolderDialog { Title = "Select Folder to Import via USB Cable" };
+        if (dlg.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
+            await ImportLocalPathsToUsbAsync(new[] { dlg.FolderName });
+    }
+
+    private async Task ImportLocalPathsToUsbAsync(IReadOnlyList<string> localPaths)
+    {
+        if (!_usb.IsConnected || localPaths.Count == 0) return;
+        if (_usbCurrentPath == "\\")
+        {
+            MessageBox.Show(this, "Double-click a storage volume (e.g. Internal shared storage) first before importing files over USB.", "Choose USB Storage Folder", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var jobs = new List<(string localFile, string usbDir, long size)>();
+        var dirsToCreate = new List<(string parent, string name)>();
+
+        void CollectLocal(string path, string usbBase)
+        {
+            if (Directory.Exists(path))
+            {
+                string folderName = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                dirsToCreate.Add((usbBase, folderName));
+                string nextUsb = usbBase.EndsWith('\\') ? usbBase + folderName : usbBase + "\\" + folderName;
+                foreach (string file in Directory.GetFiles(path))
+                    jobs.Add((file, nextUsb, new FileInfo(file).Length));
+                foreach (string sub in Directory.GetDirectories(path))
+                    CollectLocal(sub, nextUsb);
+            }
+            else if (File.Exists(path))
+            {
+                jobs.Add((path, usbBase, new FileInfo(path).Length));
+            }
+        }
+
+        foreach (string p in localPaths) CollectLocal(p, _usbCurrentPath);
+        if (jobs.Count == 0) return;
+
+        BeginTransferUI($"Importing {jobs.Count} file(s) via USB Cable…");
+        var sw = Stopwatch.StartNew();
+        long totalBytes = 0;
+
+        try
+        {
+            long grandTotal = jobs.Sum(j => j.size);
+            var progress = CreateProgressHandler("USB Import", grandTotal);
+
+            await Task.Run(() =>
+            {
+                foreach (var (parent, name) in dirsToCreate)
+                {
+                    try { _usb.CreateFolder(parent, name); } catch { }
+                }
+                for (int i = 0; i < jobs.Count; i++)
+                {
+                    _transferCts!.Token.ThrowIfCancellationRequested();
+                    var fsw = Stopwatch.StartNew();
+                    long bytes = _usb.ImportFile(jobs[i].localFile, jobs[i].usbDir, i + 1, jobs.Count, progress, _transferCts.Token);
+                    totalBytes += bytes;
+                    double bps = fsw.Elapsed.TotalSeconds > 0.01 ? bytes / fsw.Elapsed.TotalSeconds : 0;
+                    RecordHistory("USB", "↑", Path.GetFileName(jobs[i].localFile), bytes, bps, "Completed", jobs[i].localFile);
+                }
+            }, _transferCts!.Token);
+
+            double avgBps = sw.Elapsed.TotalSeconds > 0.05 ? totalBytes / sw.Elapsed.TotalSeconds : 0;
+            EndTransferUI($"USB Import complete: {jobs.Count} file(s) ({RemoteFileItem.FormatBytes(totalBytes)}) at {RemoteFileItem.FormatBytes((long)avgBps)}/s!");
+            await RefreshUsbDirectoryAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            EndTransferUI("USB Import cancelled.");
+        }
+        catch (Exception ex)
+        {
+            EndTransferUI($"USB Import error: {ex.Message}");
+            MessageBox.Show(this, ex.Message, "USB Import Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async void UsbNewFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_usb.IsConnected || _usbCurrentPath == "\\") return;
+        string? name = PromptInput("New USB Folder", "Folder name to create on phone:", "");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        try
+        {
+            await Task.Run(() => _usb.CreateFolder(_usbCurrentPath, name.Trim()));
+            await RefreshUsbDirectoryAsync();
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "USB New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private async void UsbDeleteBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var sel = GetSelectedUsbItems();
+        if (!_usb.IsConnected || sel.Count == 0) return;
+        if (MessageBox.Show(this, $"Delete {sel.Count} selected item(s) on USB device?", "Confirm USB Delete", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+        try
+        {
+            await Task.Run(() => { foreach (var it in sel) _usb.DeleteItem(it); });
+            await RefreshUsbDirectoryAsync();
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "USB Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    #endregion
+
+    #region Host Mode ("Share This PC")
+
+    private void HostToggleBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_server.IsRunning)
+        {
+            _server.Stop();
+            _hostLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] PC Host stopped.");
+            RefreshHostUI();
+            return;
+        }
+
+        string fixedPin = HostFixedPinBox.Text.Trim();
+        if (fixedPin.Length >= 4 && fixedPin.Length <= 8) _server.Pin = fixedPin;
+        else if (string.IsNullOrWhiteSpace(_server.Pin)) _server.Pin = TransferServer.GenerateRandomPin();
+
+        if (!_server.Start(out string? err))
+            MessageBox.Show(this, err ?? "Unable to start PC Host Server.", "Share This PC", MessageBoxButton.OK, MessageBoxImage.Warning);
+
+        SaveSettings();
+        RefreshHostUI();
+    }
+
+    private void HostChooseFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFolderDialog { Title = "Choose Folder to Share on Wi-Fi" };
+        if (dlg.ShowDialog(this) == true && !string.IsNullOrWhiteSpace(dlg.FolderName))
+            SetHostRootFolder(dlg.FolderName);
+    }
+
+    private void HostQuickFolder_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button btn || btn.Tag is not string tag) return;
+        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string dir = tag switch
+        {
+            "Downloads" => Path.Combine(profile, "Downloads"),
+            "Desktop" => Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            "Documents" => Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            "Videos" => Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+            "Pictures" => Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+            _ => profile
+        };
+        if (Directory.Exists(dir)) SetHostRootFolder(dir);
+    }
+
+    private void SetHostRootFolder(string folder)
+    {
+        _server.RootPath = folder;
+        string lbl = Path.GetFileName(folder.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        _server.RootLabel = string.IsNullOrWhiteSpace(lbl) ? "PC" : lbl;
+        HostFolderBox.Text = _server.RootPath;
+        SaveSettings();
+        if (_server.IsRunning) _hostLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] Switched shared folder to: {_server.RootPath}");
+        RefreshHostUI();
+    }
+
+    private void HostApplyPinBtn_Click(object sender, RoutedEventArgs e)
+    {
+        string val = HostFixedPinBox.Text.Trim();
+        if (string.IsNullOrEmpty(val)) _server.Pin = TransferServer.GenerateRandomPin();
+        else if (val.Length >= 4 && val.Length <= 8) _server.Pin = val;
+        else { MessageBox.Show(this, "PIN must be 4 to 8 characters.", "Invalid PIN", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        SaveSettings();
+        RefreshHostUI();
+    }
+
+    private void HostRandomPinBtn_Click(object sender, RoutedEventArgs e)
+    {
+        HostFixedPinBox.Text = "";
+        _server.Pin = TransferServer.GenerateRandomPin();
+        SaveSettings();
+        RefreshHostUI();
+    }
+
+    private void HostCopyBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_server.IsRunning) return;
+        Clipboard.SetText($"http://{_server.IpAddress}:{_server.Port} (PIN: {_server.Pin})");
+        _hostLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] Copied Wi-Fi address & PIN to clipboard.");
+    }
+
+    private void HostOpenFolderBtn_Click(object sender, RoutedEventArgs e)
+    {
+        try { Directory.CreateDirectory(_server.RootPath); Process.Start(new ProcessStartInfo { FileName = _server.RootPath, UseShellExecute = true }); }
+        catch { }
+    }
+
+    private void HostClearLogBtn_Click(object sender, RoutedEventArgs e) => _hostLogs.Clear();
+
+    private void RefreshHostUI()
+    {
+        HostFolderBox.Text = _server.RootPath;
+        if (_server.IsRunning && !string.IsNullOrWhiteSpace(_server.IpAddress))
+        {
+            string url = $"http://{_server.IpAddress}:{_server.Port}";
+            string qrUrl = $"{url}/?pin={Uri.EscapeDataString(_server.Pin)}";
+            HostStatusText.Text = $"● Live — Visible on Wi-Fi as \"{Environment.MachineName}\" (/{_server.RootLabel})";
+            HostStatusText.Foreground = new SolidColorBrush(Color.FromRgb(74, 222, 128));
+            HostPinBigText.Text = _server.Pin;
+            HostUrlText.Text = $"{url}   (Auto-discovered by iPhone & Android)";
+            HostToggleBtn.Content = "■ Stop Sharing PC";
+            HostToggleBtn.Style = (Style)FindResource("DangerBtn");
+            HostCopyBtn.IsEnabled = true;
+            HostQrImage.Source = RenderQrBitmap(qrUrl);
+            HostLiveBadge.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            HostStatusText.Text = "PC Host Server Stopped";
+            HostStatusText.Foreground = new SolidColorBrush(Color.FromRgb(251, 191, 36));
+            HostPinBigText.Text = "----";
+            HostUrlText.Text = "Click Start Sharing PC below to share this folder with iPhone, Android, or any browser";
+            HostToggleBtn.Content = "▶ Start Sharing PC";
+            HostToggleBtn.Style = (Style)FindResource("EmeraldBtn");
+            HostCopyBtn.IsEnabled = false;
+            HostQrImage.Source = null;
+            HostLiveBadge.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private static BitmapImage? RenderQrBitmap(string content)
+    {
+        try
+        {
+            using var gen = new QRCodeGenerator();
+            using QRCodeData data = gen.CreateQrCode(content, QRCodeGenerator.ECCLevel.M);
+            var png = new PngByteQRCode(data);
+            byte[] bytes = png.GetGraphic(8);
+            var bmp = new BitmapImage();
+            using var ms = new MemoryStream(bytes);
+            bmp.BeginInit();
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.StreamSource = ms;
+            bmp.EndInit();
+            bmp.Freeze();
+            return bmp;
+        }
+        catch { return null; }
+    }
+
+    #endregion
+
+    #region Shared Transfer Dock, History, Drag-and-Drop & Helpers
 
     private void BeginTransferUI(string message)
     {
@@ -645,73 +1340,54 @@ public partial class MainWindow : Window
         _transferCts = null;
     }
 
-    private IProgress<TransferProgressInfo> CreateProgressHandler(string verb)
+    private IProgress<TransferProgressInfo> CreateProgressHandler(string verb, long batchTotalBytes)
     {
         return new Progress<TransferProgressInfo>(p =>
         {
             double pct = p.TotalBytes > 0 ? Math.Clamp(100.0 * p.TransferredBytes / p.TotalBytes, 0, 100) : 0;
             TransferBar.Value = pct;
+            double remainingBytes = Math.Max(0, p.TotalBytes - p.TransferredBytes);
+            string eta = p.BytesPerSecond > 100 ? RemoteFileItem.FormatEta(remainingBytes / p.BytesPerSecond) : "--";
             TransferStatusText.Text = $"{verb} ({p.FileIndex}/{p.FileCount}): {p.FileName} — {RemoteFileItem.FormatBytes(p.TransferredBytes)} / {RemoteFileItem.FormatBytes(p.TotalBytes)}";
-            TransferSpeedText.Text = $"{RemoteFileItem.FormatBytes((long)p.BytesPerSecond)}/s · {pct:0}%";
+            TransferSpeedText.Text = $"{RemoteFileItem.FormatBytes((long)p.BytesPerSecond)}/s · ETA {eta} · {pct:0}%";
+            if (p.BytesPerSecond > _sessionPeakBps)
+            {
+                _sessionPeakBps = p.BytesPerSecond;
+                SessionPeakText.Text = $"{RemoteFileItem.FormatBytes((long)_sessionPeakBps)}/s";
+            }
         });
     }
 
-    private void CancelTransferBtn_Click(object sender, RoutedEventArgs e)
+    private void RecordHistory(string transport, string direction, string fileName, long bytes, double avgBps, string status, string localPath)
     {
-        _transferCts?.Cancel();
+        Dispatcher.Invoke(() =>
+        {
+            _sessionTotalBytes += bytes;
+            if (avgBps > _sessionPeakBps) _sessionPeakBps = avgBps;
+            SessionBytesText.Text = RemoteFileItem.FormatBytes(_sessionTotalBytes);
+            SessionPeakText.Text = _sessionPeakBps > 0 ? $"{RemoteFileItem.FormatBytes((long)_sessionPeakBps)}/s" : "--";
+            _history.Insert(0, new TransferHistoryEntry
+            {
+                Timestamp = DateTime.Now.ToString("HH:mm:ss"),
+                Transport = transport,
+                Direction = direction,
+                FileName = fileName,
+                Bytes = bytes,
+                AvgBytesPerSec = avgBps,
+                Status = status,
+                LocalPath = localPath
+            });
+            HistoryCountText.Text = _history.Count.ToString();
+        });
     }
 
-    private async void NewFolderBtn_Click(object sender, RoutedEventArgs e)
+    private void ClearHistoryBtn_Click(object sender, RoutedEventArgs e)
     {
-        if (_client is null) return;
-        string targetName = _phoneInfo?.Device ?? "device";
-        string? name = PromptInput("New Folder", $"Enter folder name to create on {targetName}:", "");
-        if (string.IsNullOrWhiteSpace(name)) return;
-        string target = string.IsNullOrEmpty(_currentPath) ? name.Trim() : $"{_currentPath}/{name.Trim()}";
-        try
-        {
-            await _client.CreateFolderAsync(target);
-            await RefreshDirectoryAsync();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "New Folder Failed", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        _history.Clear();
+        HistoryCountText.Text = "0";
     }
 
-    private async void RenameBtn_Click(object sender, RoutedEventArgs e)
-    {
-        if (_client is null || FilesList.SelectedItem is not RemoteFileItem item) return;
-        string? newName = PromptInput("Rename", $"Rename '{item.Name}' to:", item.Name);
-        if (string.IsNullOrWhiteSpace(newName) || newName.Trim() == item.Name) return;
-        try
-        {
-            await _client.RenameAsync(item.Path, newName.Trim());
-            await RefreshDirectoryAsync();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "Rename Failed", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private async void DeleteBtn_Click(object sender, RoutedEventArgs e)
-    {
-        if (_client is null || FilesList.SelectedItems.Count == 0) return;
-        var items = FilesList.SelectedItems.Cast<RemoteFileItem>().ToList();
-        string targetName = _phoneInfo?.Device ?? "device";
-        var confirm = MessageBox.Show(this, $"Delete {items.Count} selected item(s) from {targetName}?", "Confirm Delete", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.Yes) return;
-        try
-        {
-            foreach (var it in items) await _client.DeleteAsync(it.Path);
-            await RefreshDirectoryAsync();
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show(this, ex.Message, "Delete Failed", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
+    private void CancelTransferBtn_Click(object sender, RoutedEventArgs e) => _transferCts?.Cancel();
 
     private void OpenPcDirBtn_Click(object sender, RoutedEventArgs e)
     {
@@ -721,10 +1397,21 @@ public partial class MainWindow : Window
 
     private void Window_DragOver(object sender, DragEventArgs e)
     {
-        if (ClientPanel.Visibility == Visibility.Visible && _client is not null && e.Data.GetDataPresent(DataFormats.FileDrop))
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+        if (_activeNav == 0 && _client is not null)
         {
             e.Effects = DragDropEffects.Copy;
             DropOverlay.Visibility = Visibility.Visible;
+        }
+        else if (_activeNav == 1 && _usb.IsConnected && _usb.ConnectedSummary?.IsApple != true)
+        {
+            e.Effects = DragDropEffects.Copy;
+            UsbDropOverlay.Visibility = Visibility.Visible;
         }
         else
         {
@@ -736,36 +1423,38 @@ public partial class MainWindow : Window
     private void Window_DragLeave(object sender, DragEventArgs e)
     {
         DropOverlay.Visibility = Visibility.Collapsed;
+        UsbDropOverlay.Visibility = Visibility.Collapsed;
     }
 
     private async void Window_Drop(object sender, DragEventArgs e)
     {
         DropOverlay.Visibility = Visibility.Collapsed;
-        if (ClientPanel.Visibility != Visibility.Visible || _client is null || !e.Data.GetDataPresent(DataFormats.FileDrop)) return;
-        if (e.Data.GetData(DataFormats.FileDrop) is string[] dropped && dropped.Length > 0)
-        {
-            await UploadLocalPathsAsync(dropped);
-        }
-    }
+        UsbDropOverlay.Visibility = Visibility.Collapsed;
+        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+        if (e.Data.GetData(DataFormats.FileDrop) is not string[] dropped || dropped.Length == 0) return;
 
-    #endregion
+        if (_activeNav == 0 && _client is not null)
+            await UploadLocalPathsAsync(dropped);
+        else if (_activeNav == 1 && _usb.IsConnected && _usb.ConnectedSummary?.IsApple != true)
+            await ImportLocalPathsToUsbAsync(dropped);
+    }
 
     private string? PromptInput(string title, string label, string initialValue)
     {
         var win = new Window
         {
             Title = title,
-            Width = 400,
-            Height = 175,
+            Width = 440,
+            Height = 190,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
             ResizeMode = ResizeMode.NoResize,
             Background = (Brush)FindResource("BgCanvas"),
             Foreground = (Brush)FindResource("TextPrimary")
         };
-        var panel = new StackPanel { Margin = new Thickness(16) };
-        panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 0, 0, 8), Foreground = (Brush)FindResource("TextSecondary") });
-        var tb = new TextBox { Text = initialValue, Style = (Style)FindResource("GlassTextBox"), Height = 34 };
+        var panel = new StackPanel { Margin = new Thickness(18) };
+        panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 0, 0, 8), Foreground = (Brush)FindResource("TextSecondary"), TextWrapping = TextWrapping.Wrap });
+        var tb = new TextBox { Text = initialValue, Style = (Style)FindResource("GlassTextBox"), Height = 36 };
         panel.Children.Add(tb);
         var btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
         var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GlassBtn"), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
@@ -779,4 +1468,6 @@ public partial class MainWindow : Window
         tb.Focus();
         return win.ShowDialog() == true ? tb.Text : null;
     }
+
+    #endregion
 }
